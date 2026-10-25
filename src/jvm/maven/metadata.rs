@@ -149,8 +149,7 @@ fn read_metadata_file(file: &Path) -> Result<MavenMetadata, String> {
 fn repository_directory(url: &str) -> String {
     let location = url.split_once("://").map_or(url, |(_, location)| location);
 
-    return location
-        .chars()
+    return location.chars()
         .map(
             |char| match char.is_ascii_alphanumeric() || matches!(char, '.' | '-') {
                 true => char,
@@ -166,8 +165,7 @@ fn is_expired(file: &Path) -> bool {
         return true;
     };
 
-    if REFRESHED_AT
-        .get()
+    if REFRESHED_AT.get()
         .is_some_and(|refreshed| modified < *refreshed)
     {
         return true;
@@ -197,10 +195,7 @@ impl MavenMetadata {
     pub fn snapshot_build(&self, file: &SnapshotFile) -> Option<String> {
         let versioning = &self.versioning;
 
-        if let Some(build) = versioning
-            .snapshot_versions
-            .snapshot_version
-            .iter()
+        if let Some(build) = versioning.snapshot_versions.snapshot_version.iter()
             .find(|build| {
                 build.classifier.as_deref() == file.classifier && build.extension == file.extension
             })
@@ -236,8 +231,7 @@ impl<'a> SnapshotFile<'a> {
             return None;
         }
 
-        let rest = name
-            .strip_prefix(artifact)?
+        let rest = name.strip_prefix(artifact)?
             .strip_prefix('-')?
             .strip_prefix(version)?;
 
@@ -260,9 +254,7 @@ impl<'a> SnapshotFile<'a> {
 
     /// The path of the file in the build: spigot-api-26.3-R0.1-20261004.024323-9.jar
     pub fn path_of_build(&self, build: &str) -> String {
-        let classifier = self
-            .classifier
-            .map(|classifier| format!("-{classifier}"))
+        let classifier = self.classifier.map(|classifier| format!("-{classifier}"))
             .unwrap_or_default();
 
         return format!(
@@ -308,8 +300,7 @@ mod tests {
         let metadata = MavenMetadata::parse(METADATA).unwrap();
         let build = |path: &str| {
             let file = SnapshotFile::parse(path).unwrap();
-            metadata
-                .snapshot_build(&file)
+            metadata.snapshot_build(&file)
                 .map(|build| file.path_of_build(&build))
         };
 

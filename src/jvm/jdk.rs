@@ -46,8 +46,7 @@ impl Jdk {
         project_dir: &Path, // base of relative JDK dirs
     ) -> Result<Self, String> {
         let is_version = !version_or_path.is_empty()
-            && version_or_path
-                .chars()
+            && version_or_path.chars()
                 .all(|char| char.is_ascii_digit() || char == '.');
 
         if is_version {
@@ -68,17 +67,14 @@ impl Jdk {
     }
 
     pub fn tool_path(&self, name: &str) -> PathBuf {
-        return self
-            .home
-            .join("bin")
+        return self.home.join("bin")
             .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     }
 
     /// `java -cp <classpath> <main class>`, the arguments of the program follow
     pub fn java_command(&self, classpath: &[PathBuf], main_class: &str) -> Result<Command, String> {
         let mut command = Command::new(self.tool_path("java"));
-        command
-            .arg("-cp")
+        command.arg("-cp")
             .arg(join_classpath(classpath)?)
             .arg(main_class);
 
@@ -88,18 +84,21 @@ impl Jdk {
     /// From the `release` file: 21 for "21.0.12", 8 for "1.8.0_402"
     pub fn major_version(&self) -> Option<u32> {
         let release = fs::read_to_string(self.home.join("release")).ok()?;
-        let version = release
-            .lines()
+        let version = release.lines()
             .find_map(|line| line.strip_prefix("JAVA_VERSION="))?
             .trim_matches('"');
 
         let mut parts = version.split(|char: char| !char.is_ascii_digit());
 
         // up to java 8 the major version came after "1."
-        let major = parts.next()?.parse().ok()?;
+        let major = parts.next()?
+            .parse()
+            .ok()?;
 
         if major == 1 {
-            return parts.next()?.parse().ok();
+            return parts.next()?
+                .parse()
+                .ok();
         }
 
         return Some(major);
@@ -175,8 +174,7 @@ fn install_jdk(
             return Err(format!("{} does not contain a JDK", package.filename));
         };
 
-        let relative_home = home
-            .strip_prefix(&unpacked)
+        let relative_home = home.strip_prefix(&unpacked)
             .unwrap_or(Path::new(""))
             .to_path_buf();
 
@@ -215,8 +213,7 @@ fn find_jdk_home(
 
     subdirs.sort();
 
-    return subdirs
-        .iter()
+    return subdirs.iter()
         .find_map(|subdir| find_jdk_home(subdir, depth + 1));
 }
 
@@ -283,7 +280,9 @@ fn find_jdk_package(
         .map_err(|error| format!("foojay API responded with HTTP {status}: {error}"))?;
 
     let Some(package) = response.get("result").and_then(|result| result.get(0)) else {
-        let message = response.get("message").and_then(Json::as_str).unwrap_or("");
+        let message = response.get("message")
+            .and_then(Json::as_str)
+            .unwrap_or("");
         return Err(format!(
             "no JDK '{distribution}' {java_version} found for {}/{}: {message}",
             platform.os, platform.arch
@@ -295,8 +294,7 @@ fn find_jdk_package(
     let package_info_response: Json = serde_json::from_str(&body)
         .map_err(|error| format!("foojay API responded with HTTP {status}: {error}"))?;
 
-    let package_info = package_info_response
-        .get("result")
+    let package_info = package_info_response.get("result")
         .and_then(|result| result.get(0))
         .ok_or("foojay response without package info")?;
 
@@ -332,13 +330,11 @@ fn foojay_string(
     let mut current = response;
 
     for key in json_path {
-        current = current
-            .get(key)
+        current = current.get(key)
             .ok_or_else(|| format!("foojay response has no '{}'", json_path.join(".")))?;
     }
 
-    return current
-        .as_str()
+    return current.as_str()
         .map(str::to_string)
         .ok_or_else(|| format!("foojay response: '{}' is not a string", json_path.join(".")));
 }

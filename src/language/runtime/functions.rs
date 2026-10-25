@@ -113,8 +113,7 @@ pub fn bind(
     let mut rest_named = false;
     let mut named_out_of_place = false;
 
-    let positional_count = arguments
-        .iter()
+    let positional_count = arguments.iter()
         .filter(|arg| matches!(arg, CallArgument::Positional(..)))
         .count();
 
@@ -202,9 +201,7 @@ pub fn bind(
 
                 // the variadic parameter takes a list when passed by name
                 named_out_of_place = true;
-                let Some(variadic) = parameters
-                    .variadic
-                    .as_ref()
+                let Some(variadic) = parameters.variadic.as_ref()
                     .filter(|variadic| variadic.name == name)
                 else {
                     let renamed = Some(snake_case(&name)).filter(|renamed| {
@@ -340,9 +337,7 @@ impl FunctionParameters {
 
     fn assert_new_name(&self, name: &str) {
         let taken = self.fixed.iter().any(|param| param.name == name)
-            || self
-                .variadic
-                .as_ref()
+            || self.variadic.as_ref()
                 .is_some_and(|variadic| variadic.name == name);
 
         assert!(!taken, "parameter '{name}' is declared twice");
@@ -355,10 +350,7 @@ impl FunctionSignature {
             |param: &FunctionParameter| matches!(param.default, ParameterDefault::Required);
 
         let same_params = self.parameters.fixed.len() == other.parameters.fixed.len()
-            && self
-                .parameters
-                .fixed
-                .iter()
+            && self.parameters.fixed.iter()
                 .zip(&other.parameters.fixed)
                 .all(|(left, right)| {
                     left.param_type == right.param_type && required(left) == required(right)
@@ -393,12 +385,10 @@ impl Arguments {
 
     /// "name=value" entries, like manifest_placeholders: split at the first '=', the name trimmed
     pub fn assignments(&self, name: &str) -> Result<Vec<(String, String)>, String> {
-        return self
-            .get::<Vec<String>>(name)?
+        return self.get::<Vec<String>>(name)?
             .iter()
             .map(|entry| {
-                entry
-                    .split_once('=')
+                entry.split_once('=')
                     .map(|(key, value)| (key.trim().to_string(), value.to_string()))
                     .ok_or_else(|| format!("{name} entry '{entry}' must look like 'name=value'"))
             })
@@ -407,8 +397,7 @@ impl Arguments {
 
     /// The modules among all arguments, also inside lists, once they are built
     pub fn modules(&self) -> Vec<Arc<BuiltModule>> {
-        return self
-            .pending_modules()
+        return self.pending_modules()
             .iter()
             .filter_map(|module| module.wait().ok())
             .collect();
@@ -426,9 +415,7 @@ impl Arguments {
 
         let mut modules = vec![];
 
-        for value in self
-            .values
-            .iter()
+        for value in self.values.iter()
             .filter_map(|(_, value)| value.as_ref())
             .chain(&self.rest)
         {
@@ -440,9 +427,7 @@ impl Arguments {
 
     /// Arguments of the variadic parameter
     pub fn rest<T: FromValue>(&self) -> Result<Vec<T>, String> {
-        return self
-            .rest
-            .iter()
+        return self.rest.iter()
             .map(|value| T::from_value(value).ok_or_else(|| self.conversion_error::<T>("...")))
             .collect();
     }
@@ -502,7 +487,9 @@ impl<T: FromValue> FromValue for Vec<T> {
         let Value::List(items) = value else {
             return None;
         };
-        return items.iter().map(T::from_value).collect();
+        return items.iter()
+            .map(T::from_value)
+            .collect();
     }
 }
 
@@ -535,7 +522,9 @@ impl fmt::Display for FunctionParameter {
 
 impl fmt::Display for FunctionParameters {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut parts: Vec<String> = self.fixed.iter().map(|param| param.to_string()).collect();
+        let mut parts: Vec<String> = self.fixed.iter()
+            .map(|param| param.to_string())
+            .collect();
 
         if let Some(variadic) = &self.variadic {
             parts.push(format!("{}: {}...", variadic.name, variadic.param_type));

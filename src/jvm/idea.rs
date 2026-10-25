@@ -72,7 +72,9 @@ pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -
         test_dirs.extend(args.get::<Vec<String>>("android_test_source_dirs")?);
     }
 
-    let test_dirs: Vec<PathBuf> = test_dirs.iter().map(|dir| inputs.directory.join(dir)).collect();
+    let test_dirs: Vec<PathBuf> = test_dirs.iter()
+        .map(|dir| inputs.directory.join(dir))
+        .collect();
 
     let folders = [
         (&inputs.source_dirs, r#"isTestSource="false""#),
@@ -165,14 +167,15 @@ pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -
 /// IntelliJ's Kotlin plugin takes the compiler plugins from the facet, like Compose
 fn kotlin_facet(project_dir: &Path, module: &IdeaModule, jvm_target: &str) -> String {
     // 2.4 of 2.4.21
-    let version: Vec<&str> = module.inputs.kotlin_version.splitn(3, '.').take(2).collect();
+    let version: Vec<&str> = module.inputs.kotlin_version.splitn(3, '.')
+        .take(2)
+        .collect();
     let version = version.join(".");
     let mut plugins = String::new();
 
     if !module.resolved.plugins.is_empty() {
         let args = |values: Vec<String>| -> String {
-            return values
-                .iter()
+            return values.iter()
                 .map(|value| format!("                <arg>{}</arg>\n", escape(value)))
                 .collect();
         };
@@ -220,9 +223,14 @@ pub fn write_project(project_dir: &Path, built: Option<&[Arc<BuiltModule>]>) -> 
     let modules_dir = project_dir.join(".idea/modules");
 
     if let Some(built) = built {
-        let mut names: Vec<String> = built.iter().map(|module| module.name.clone()).collect();
+        let mut names: Vec<String> = built.iter()
+            .map(|module| module.name.clone())
+            .collect();
         let project = absolute(project_dir);
-        let root = project.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let root = project.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         if !built.iter().any(|module| absolute(&module.directory) == project) && !names.contains(&root) {
             write_if_changed(&module_file(project_dir, &root), ROOT_MODULE)?;
@@ -306,9 +314,7 @@ fn test_libraries(
 /// IntelliJ keeps its JDKs by name, outside the project. A JDK build-script installed is
 /// named like IntelliJ names it, temurin-21, any other jdk-21.
 fn jdk_name(jdk: &Jdk) -> String {
-    let installed = jdk
-        .home
-        .strip_prefix(system::data_dir("jdks"))
+    let installed = jdk.home.strip_prefix(system::data_dir("jdks"))
         .ok()
         .and_then(|rest| rest.components().next())
         .map(|dir| dir.as_os_str().to_string_lossy().to_string());
@@ -414,7 +420,10 @@ mod tests {
 
         write_project(&project, Some(&[app])).unwrap();
 
-        let root = project.file_name().unwrap().to_string_lossy().to_string();
+        let root = project.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert!(!modules_dir.join("gone.iml").exists());
         assert!(modules_dir.join("app.iml").is_file());
         // the script lives outside the modules

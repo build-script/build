@@ -277,8 +277,7 @@ impl TestRun {
             runner,
             program: command.get_program().to_os_string(),
             arguments: command.get_args().map(OsStr::to_os_string).collect(),
-            environment: command
-                .get_envs()
+            environment: command.get_envs()
                 .map(|(key, value)| (key.to_os_string(), value.map(OsStr::to_os_string)))
                 .collect(),
             directory: command.get_current_dir().map(Path::to_path_buf),
@@ -337,8 +336,7 @@ impl TestCounts {
         let mut counts: Option<TestCounts> = None;
 
         for report in system::files_with_extension(&[directory.to_path_buf()], "xml") {
-            if !report
-                .file_name()
+            if !report.file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("TEST-"))
             {
                 continue;
@@ -358,8 +356,7 @@ impl TestCounts {
             let total = counts.get_or_insert_with(TestCounts::default);
             for suite in suites {
                 let count = |name: &str| {
-                    suite
-                        .attribute(name)
+                    suite.attribute(name)
                         .and_then(|value| value.parse::<u32>().ok())
                         .unwrap_or(0)
                 };
@@ -467,7 +464,9 @@ impl fmt::Display for Value {
                 Err(_) => return write!(f, "<failed {}>", module.function),
             },
             Value::List(items) => {
-                let items: Vec<String> = items.iter().map(|item| item.to_string()).collect();
+                let items: Vec<String> = items.iter()
+                    .map(|item| item.to_string())
+                    .collect();
                 return write!(f, "[{}]", items.join(", "));
             }
             Value::Unit => return write!(f, "()"),
@@ -489,8 +488,7 @@ impl fmt::Display for Type {
             Type::List(element) => return write!(f, "list<{element}>"),
             Type::Function(signature) => return write!(f, "{signature}"),
             Type::Union(types) => {
-                let names: Vec<String> = types
-                    .iter()
+                let names: Vec<String> = types.iter()
                     .map(|member_type| member_type.to_string())
                     .collect();
                 return write!(f, "{}", names.join(" | "));
@@ -573,7 +571,9 @@ mod tests {
 
         let test_run = |script: &str| {
             let mut command = Command::new("sh");
-            command.arg("-c").arg(script).current_dir(&dir);
+            command.arg("-c")
+                .arg(script)
+                .current_dir(&dir);
 
             return TestRun::new(
                 "sh".to_string(),

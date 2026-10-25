@@ -63,7 +63,9 @@ impl DependencyResolver {
             };
 
             // mvn install writes a local SNAPSHOT anew under the same name
-            let modified = pom.metadata().and_then(|metadata| metadata.modified()).ok();
+            let modified = pom.metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok();
 
             poms.push((pom, modified));
         }
@@ -112,8 +114,7 @@ impl DependencyResolver {
             };
 
             let text = |value: &Option<String>| {
-                value
-                    .as_deref()
+                value.as_deref()
                     .map(|value| interpolate(value, &model.properties, 0))
             };
 
@@ -122,9 +123,7 @@ impl DependencyResolver {
                 description: text(&model.project_info.description),
                 url: text(&model.project_info.url),
                 developers: model.project_info.developers.clone(),
-                licenses: model
-                    .licenses
-                    .iter()
+                licenses: model.licenses.iter()
                     .map(|license| LibraryLicense {
                         name: interpolate(&license.name, &model.properties, 0),
                         url: interpolate(&license.url, &model.properties, 0),
@@ -158,14 +157,12 @@ impl DependencyResolver {
             managed.extend(managed_versions(&bom));
         }
 
-        let roots = roots
-            .iter()
+        let roots = roots.iter()
             .map(|root| {
                 if !root.version.is_empty() {
                     return Ok(root.clone());
                 }
-                managed
-                    .iter()
+                managed.iter()
                     .find(|entry| entry.group == root.group && entry.artifact == root.artifact)
                     .map(|entry| MavenCoordinate {
                         version: entry.version.clone(),
@@ -198,7 +195,9 @@ impl DependencyResolver {
         let mut redirected: HashMap<MavenModuleKey, MavenModuleKey> = HashMap::new();
 
         let mut queue: VecDeque<(MavenCoordinate, Vec<PomExclusion>)> =
-            roots.iter().map(|root| (root.clone(), vec![])).collect();
+            roots.iter()
+                .map(|root| (root.clone(), vec![]))
+                .collect();
 
         // false if a higher version of the module is already selected
         let select = |selected: &mut HashMap<MavenModuleKey, String>,
@@ -265,8 +264,7 @@ impl DependencyResolver {
         &mut self,
         coordinate: &MavenCoordinate,
     ) -> Result<Vec<MavenCoordinate>, String> {
-        if let Some(variant) = self
-            .runtime_variant(coordinate)?
+        if let Some(variant) = self.runtime_variant(coordinate)?
             .filter(|variant| variant.available_at.is_none())
         {
             return Ok(variant.constraints.clone());
@@ -274,8 +272,7 @@ impl DependencyResolver {
 
         let key = coordinate.pom_key();
 
-        let published_by_gradle = self
-            .inherited_pom(&key, 0)?
+        let published_by_gradle = self.inherited_pom(&key, 0)?
             .is_some_and(|model| model.gradle_metadata);
 
         match self.effective_pom(&key, 0)?.filter(|_| published_by_gradle) {
@@ -294,7 +291,9 @@ impl DependencyResolver {
         let mut ordered = vec![];
 
         let mut queue: VecDeque<(MavenCoordinate, Vec<PomExclusion>)> =
-            roots.iter().map(|root| (root.clone(), vec![])).collect();
+            roots.iter()
+                .map(|root| (root.clone(), vec![]))
+                .collect();
 
         while let Some((mut requested, exclusions)) = queue.pop_front() {
             if let Some(version) = selected.get(&requested.module_key()) {
@@ -332,8 +331,7 @@ impl DependencyResolver {
 
         // a redirect may point to another redirect, but not endlessly
         for _ in 0..4 {
-            match self
-                .runtime_variant(&current)?
+            match self.runtime_variant(&current)?
                 .and_then(|variant| variant.available_at.clone())
             {
                 Some(target) if target != current => current = target,
@@ -360,8 +358,7 @@ impl DependencyResolver {
         }
 
         // asked for only when announced: every other one is a request per repository that ends in 404
-        let announced = self
-            .inherited_pom(&key, 0)?
+        let announced = self.inherited_pom(&key, 0)?
             .is_some_and(|model| model.gradle_metadata);
 
         let file = if announced {
@@ -404,8 +401,7 @@ impl DependencyResolver {
         };
 
         let field = |name: &str| {
-            component
-                .get(name)
+            component.get(name)
                 .and_then(Json::as_str)
                 .map(str::to_string)
         };
@@ -435,8 +431,7 @@ impl DependencyResolver {
         };
 
         let points_back = json_array(root_metadata.get("variants")).iter().any(|variant| {
-            let at_this_module = variant
-                .get("available-at")
+            let at_this_module = variant.get("available-at")
                 .and_then(|available| available.get("module"))
                 .and_then(Json::as_str)
                 == Some(coordinate.artifact.as_str());
@@ -465,8 +460,7 @@ impl DependencyResolver {
         }
 
         let variant = match self.module_metadata(coordinate)? {
-            Some(metadata) => self
-                .select_runtime_variant(coordinate, &metadata)?
+            Some(metadata) => self.select_runtime_variant(coordinate, &metadata)?
                 .map(Rc::new),
             None => None,
         };
@@ -482,8 +476,7 @@ impl DependencyResolver {
         metadata: &Json,
     ) -> Result<Option<GradleVariant>, String> {
         let attribute = |variant: &Json, name: &str| {
-            variant
-                .get("attributes")
+            variant.get("attributes")
                 .and_then(|attributes| attributes.get(name))
                 .and_then(Json::as_str)
                 .map(str::to_string)
@@ -508,7 +501,9 @@ impl DependencyResolver {
                 attribute(variant, "org.gradle.jvm.environment").as_deref(),
             )?;
 
-            let name = variant.get("name").and_then(Json::as_str).unwrap_or("");
+            let name = variant.get("name")
+                .and_then(Json::as_str)
+                .unwrap_or("");
             let debug = attribute(variant, "com.android.build.api.attributes.BuildTypeAttr")
                 .as_deref()
                 == Some("debug")
@@ -518,8 +513,7 @@ impl DependencyResolver {
         };
 
         let variants = json_array(metadata.get("variants"));
-        let Some(best) = variants
-            .iter()
+        let Some(best) = variants.iter()
             .filter_map(|variant| rank(variant).map(|rank| (rank, variant)))
             .min_by_key(|(rank, _)| *rank)
             .map(|(_, variant)| variant)
@@ -529,8 +523,7 @@ impl DependencyResolver {
 
         if let Some(available) = best.get("available-at") {
             let field = |name: &str| {
-                available
-                    .get(name)
+                available.get(name)
                     .and_then(Json::as_str)
                     .map(str::to_string)
             };
@@ -561,11 +554,9 @@ impl DependencyResolver {
         // requires, else strictly, else prefers
         let version_of = |entry: &Json| -> Option<String> {
             let version = entry.get("version")?;
-            ["requires", "strictly", "prefers"]
-                .iter()
+            ["requires", "strictly", "prefers"].iter()
                 .find_map(|constraint_type| {
-                    version
-                        .get(constraint_type)
+                    version.get(constraint_type)
                         .and_then(Json::as_str)
                         .map(str::to_string)
                 })
@@ -610,13 +601,11 @@ impl DependencyResolver {
             let exclusions = json_array(dependency.get("excludes"))
                 .iter()
                 .map(|exclude| PomExclusion {
-                    group: exclude
-                        .get("group")
+                    group: exclude.get("group")
                         .and_then(Json::as_str)
                         .unwrap_or("*")
                         .to_string(),
-                    artifact: exclude
-                        .get("module")
+                    artifact: exclude.get("module")
                         .and_then(Json::as_str)
                         .unwrap_or("*")
                         .to_string(),
@@ -672,15 +661,13 @@ impl DependencyResolver {
     ) -> Result<Vec<(MavenCoordinate, Vec<PomExclusion>)>, String> {
         // Gradle module metadata knows the dependencies of the selected variant,
         // the POM only those of all platforms together
-        if let Some(variant) = self
-            .runtime_variant(coordinate)?
+        if let Some(variant) = self.runtime_variant(coordinate)?
             .filter(|variant| variant.available_at.is_none())
         {
             let mut result = vec![];
 
             for (dependency, own_exclusions) in &variant.dependencies {
-                if exclusions
-                    .iter()
+                if exclusions.iter()
                     .any(|exclusion| exclusion.matches(&dependency.group, &dependency.artifact))
                 {
                     continue;
@@ -706,8 +693,7 @@ impl DependencyResolver {
                 continue;
             }
 
-            if exclusions
-                .iter()
+            if exclusions.iter()
                 .any(|exclusion| exclusion.matches(&dependency.group, &dependency.artifact))
             {
                 continue;
@@ -721,9 +707,7 @@ impl DependencyResolver {
             let version = concrete_version(version)
                 .map_err(|error| format!("{coordinate}: {name}: {error}"))?;
 
-            let classifier = dependency
-                .classifier
-                .clone()
+            let classifier = dependency.classifier.clone()
                 .or_else(|| (dependency.artifact_type == "test-jar").then(|| "tests".to_string()));
 
             let mut nested = exclusions.to_vec();
@@ -745,15 +729,13 @@ impl DependencyResolver {
 
     /// The jar, or the aar of an Android library; for variants the files they name
     fn artifact_files(&mut self, coordinate: &MavenCoordinate) -> Result<Vec<PathBuf>, String> {
-        if let Some(variant) = self
-            .runtime_variant(coordinate)?
+        if let Some(variant) = self.runtime_variant(coordinate)?
             .filter(|variant| variant.available_at.is_none())
         {
             let mut files = vec![];
 
             for url in &variant.files {
-                let path = coordinate
-                    .variant_file_path(url)
+                let path = coordinate.variant_file_path(url)
                     .ok_or_else(|| format!("{coordinate}: invalid file url {url}"))?;
 
                 let file = self.find_in_repositories(&path)?.ok_or_else(|| {
@@ -791,9 +773,7 @@ impl DependencyResolver {
             }
         }
 
-        let repositories: Vec<String> = self
-            .repositories
-            .iter()
+        let repositories: Vec<String> = self.repositories.iter()
             .map(|repository| repository.to_string())
             .collect();
 
@@ -850,9 +830,7 @@ impl DependencyResolver {
         // own entries take precedence over imported BOMs
         managed.extend(imported);
 
-        let dependencies = model
-            .dependencies
-            .iter()
+        let dependencies = model.dependencies.iter()
             .map(|dependency| {
                 let mut dependency = dependency.interpolated(&model.properties);
 
@@ -962,9 +940,7 @@ impl DependencyResolver {
         }
 
         model.properties.extend(
-            project
-                .properties
-                .iter()
+            project.properties.iter()
                 .map(|(name, value)| (name.clone(), value.trim().to_string())),
         );
 
@@ -982,9 +958,7 @@ impl DependencyResolver {
             }
         }
 
-        model.packaging = project
-            .packaging
-            .clone()
+        model.packaging = project.packaging.clone()
             .unwrap_or_else(|| "jar".to_string());
         model.gradle_metadata = content.contains("published-with-gradle-metadata");
         merge_dependencies(&mut model.dependencies, project.dependencies());
@@ -1060,8 +1034,7 @@ impl DependencyResolver {
             self.snapshot_metadata.insert(key.clone(), metadata.map(Rc::new));
         }
 
-        let build = self.snapshot_metadata[&key]
-            .as_ref()
+        let build = self.snapshot_metadata[&key].as_ref()
             .and_then(|metadata| metadata.snapshot_build(snapshot));
 
         return Ok(build.map(|build| snapshot.path_of_build(&build)));
@@ -1082,9 +1055,7 @@ struct GradleVariant {
 /// The versions a BOM manages, like Gradle uses them for a platform: entries
 /// with a concrete version, without scope and classifier
 fn managed_versions(bom: &EffectivePom) -> Vec<MavenCoordinate> {
-    return bom
-        .managed
-        .iter()
+    return bom.managed.iter()
         .filter(|entry| entry.scope.is_none() && entry.classifier.is_none())
         .filter_map(|entry| {
             let version = concrete_version(entry.version.as_deref()?).ok()?;
@@ -1099,8 +1070,7 @@ fn managed_versions(bom: &EffectivePom) -> Vec<MavenCoordinate> {
 
 /// The elements of a JSON array, none for anything else
 fn json_array(value: Option<&Json>) -> &[Json] {
-    return value
-        .and_then(Json::as_array)
+    return value.and_then(Json::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
 }
@@ -1116,8 +1086,7 @@ mod tests {
     fn write(repository: &Path, coordinate: &str, pom_body: &str) {
         let parts: Vec<&str> = coordinate.split(':').collect();
         let (group, artifact, version) = (parts[0], parts[1], parts[2]);
-        let directory = repository
-            .join(group.replace('.', "/"))
+        let directory = repository.join(group.replace('.', "/"))
             .join(artifact)
             .join(version);
 
@@ -1218,15 +1187,13 @@ mod tests {
             maven::TargetPlatform::Jvm,
         );
 
-        let files = resolver
-            .resolve_with_platforms(
-                &[maven::MavenCoordinate::parse("com.example:app:1.0").unwrap()],
-                &[],
-            )
+        let files = resolver.resolve_with_platforms(
+            &[maven::MavenCoordinate::parse("com.example:app:1.0").unwrap()],
+            &[],
+        )
             .unwrap();
 
-        let mut names: Vec<String> = files
-            .iter()
+        let mut names: Vec<String> = files.iter()
             .map(|file| file.file_name().unwrap().to_string_lossy().to_string())
             .collect();
 
@@ -1288,11 +1255,10 @@ mod tests {
             maven::TargetPlatform::Jvm,
         );
 
-        let libraries = resolver
-            .license_entries(
-                &[maven::MavenCoordinate::parse("com.example:zeta:1.0").unwrap()],
-                &[],
-            )
+        let libraries = resolver.license_entries(
+            &[maven::MavenCoordinate::parse("com.example:zeta:1.0").unwrap()],
+            &[],
+        )
             .unwrap();
 
         assert_eq!(
@@ -1445,8 +1411,7 @@ mod tests {
             maven::MavenCoordinate::parse("com.example:androidx:1.0").unwrap(),
         ];
 
-        let mut names: Vec<String> = resolver
-            .resolve_with_platforms(&roots, &[])
+        let mut names: Vec<String> = resolver.resolve_with_platforms(&roots, &[])
             .unwrap()
             .iter()
             .map(|file| file.file_name().unwrap().to_string_lossy().to_string())
@@ -1520,8 +1485,7 @@ mod tests {
                 other => panic!("{other:?}"),
             };
 
-        let mut names: Vec<String> = resolver
-            .resolve_with_platforms(&[ui.clone()], &[platform])
+        let mut names: Vec<String> = resolver.resolve_with_platforms(&[ui.clone()], &[platform])
             .unwrap()
             .iter()
             .map(|file| file.file_name().unwrap().to_string_lossy().to_string())
@@ -1554,8 +1518,7 @@ mod tests {
 
         let files = resolver.resolve_with_platforms(&[compiler], &[]).unwrap();
 
-        let names: Vec<String> = files
-            .iter()
+        let names: Vec<String> = files.iter()
             .map(|file| file.file_name().unwrap().to_string_lossy().to_string())
             .collect();
 
@@ -1586,8 +1549,7 @@ mod tests {
         ];
 
         let files = resolver.resolve_with_platforms(&roots, &[]).unwrap();
-        let stdlibs: Vec<_> = files
-            .iter()
+        let stdlibs: Vec<_> = files.iter()
             .filter(|file| {
                 file.file_name()
                     .unwrap()

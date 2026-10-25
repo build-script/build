@@ -214,15 +214,13 @@ fn build_android(context: &BuildScriptContext, args: &Arguments) -> Result<Value
         Signature::Unsigned => format!("{}-release-unsigned", inputs.name),
     };
 
-    let apk = build_dir
-        .join("outputs/apk")
+    let apk = build_dir.join("outputs/apk")
         .join(build_type.name())
         .join(format!("{output_name}.apk"));
 
     let app_bundle: bool = args.get("app_bundle")?;
     let bundle = (build_type == BuildType::Release && app_bundle).then(|| {
-        build_dir
-            .join("outputs/bundle/release")
+        build_dir.join("outputs/bundle/release")
             .join(format!("{output_name}.aab"))
     });
 
@@ -326,9 +324,7 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
     let source_manifest = Some(inputs.directory.join("src/main/AndroidManifest.xml"))
         .filter(|manifest| manifest.is_file());
 
-    let jar = inputs
-        .directory
-        .join("build/libs")
+    let jar = inputs.directory.join("build/libs")
         .join(format!("{}.jar", inputs.name));
 
     let android = AndroidResources {
@@ -479,8 +475,7 @@ impl ApkSettings {
     fn of_app(args: &Arguments, module_dir: &Path) -> Result<Self, String> {
         let namespace: String = args.get("namespace")?;
 
-        let application_id = args
-            .get::<Option<String>>("application_id")?
+        let application_id = args.get::<Option<String>>("application_id")?
             .unwrap_or(namespace);
 
         let version_code: i64 = args.get("version_code")?;
@@ -821,8 +816,7 @@ fn instrumented_tests(
 ) -> Result<ModuleTests, String> {
     let mut inputs = read_android_inputs(context, args)?;
 
-    let test_source_dirs: Vec<PathBuf> = args
-        .get::<Vec<String>>("android_test_source_dirs")?
+    let test_source_dirs: Vec<PathBuf> = args.get::<Vec<String>>("android_test_source_dirs")?
         .iter()
         .map(|dir| inputs.directory.join(dir))
         .collect();
@@ -838,9 +832,7 @@ fn instrumented_tests(
     let mut test_dependencies =
         Dependencies::read(args, "android_test_dependencies", &inputs.kotlin_version)?;
 
-    let names_runner = test_dependencies
-        .libraries
-        .iter()
+    let names_runner = test_dependencies.libraries.iter()
         .any(|library| library.group == "androidx.test" && library.artifact == "runner");
 
     if runner == DEFAULT_TEST_RUNNER && !names_runner {

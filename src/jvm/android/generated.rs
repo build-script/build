@@ -45,9 +45,7 @@ impl SymbolTable {
     /// The symbols of `all` (the library linked with its dependencies) that the library
     /// declares: those of `own`, with the styleable indices only `all` knows
     pub fn write_own(all: &SymbolTable, own: &SymbolTable, file: &Path) -> Result<(), String> {
-        let styleables: Vec<String> = own
-            .symbols
-            .iter()
+        let styleables: Vec<String> = own.symbols.iter()
             .filter(|symbol| symbol.java_type == "int[]")
             .map(|symbol| format!("{}_", symbol.name))
             .collect();
@@ -55,14 +53,11 @@ impl SymbolTable {
         let declared = |symbol: &Symbol| {
             own.get(&symbol.resource_type, &symbol.name).is_some()
                 || symbol.resource_type == "styleable"
-                    && styleables
-                        .iter()
+                    && styleables.iter()
                         .any(|prefix| symbol.name.starts_with(prefix))
         };
 
-        let lines: Vec<String> = all
-            .symbols
-            .iter()
+        let lines: Vec<String> = all.symbols.iter()
             .filter(|symbol| declared(symbol))
             .map(|symbol| {
                 format!(
@@ -76,9 +71,7 @@ impl SymbolTable {
     }
 
     fn get(&self, resource_type: &str, name: &str) -> Option<&Symbol> {
-        return self
-            .index
-            .get(&(resource_type.to_string(), name.to_string()))
+        return self.index.get(&(resource_type.to_string(), name.to_string()))
             .map(|index| &self.symbols[*index]);
     }
 }
@@ -113,8 +106,7 @@ pub fn write_r_class(
             _ => format!("        {modifiers} int {} = {};", symbol.name, value),
         };
 
-        match classes
-            .iter_mut()
+        match classes.iter_mut()
             .find(|(resource_type, _)| *resource_type == symbol.resource_type)
         {
             Some((_, fields)) => fields.push(field),
@@ -148,8 +140,7 @@ pub fn layouts_by_name(res_dirs: &[PathBuf]) -> Result<BTreeMap<String, Vec<XmlE
             continue;
         };
 
-        let mut directories: Vec<PathBuf> = entries
-            .flatten()
+        let mut directories: Vec<PathBuf> = entries.flatten()
             .map(|entry| entry.path())
             .filter(|path| {
                 path.file_name()
@@ -162,8 +153,7 @@ pub fn layouts_by_name(res_dirs: &[PathBuf]) -> Result<BTreeMap<String, Vec<XmlE
 
         for directory in directories {
             for file in system::files_with_extension(&[directory], "xml") {
-                let name = file
-                    .file_stem()
+                let name = file.file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
@@ -172,7 +162,9 @@ pub fn layouts_by_name(res_dirs: &[PathBuf]) -> Result<BTreeMap<String, Vec<XmlE
                 let layout =
                     xml::parse(&content).map_err(|error| format!("{}: {error}", file.display()))?;
 
-                layouts.entry(name).or_default().push(layout);
+                layouts.entry(name)
+                    .or_default()
+                    .push(layout);
             }
         }
     }
@@ -182,8 +174,7 @@ pub fn layouts_by_name(res_dirs: &[PathBuf]) -> Result<BTreeMap<String, Vec<XmlE
 
 /// activity_main -> ActivityMainBinding
 pub fn binding_class(layout: &str) -> String {
-    let mut name: String = layout
-        .split('_')
+    let mut name: String = layout.split('_')
         .map(|part| {
             let mut chars = part.chars();
             match chars.next() {
@@ -217,8 +208,7 @@ pub fn view_binding_source(
     let is_merge = root.name == "merge";
 
     let root_type = if is_merge
-        || variants
-            .iter()
+        || variants.iter()
             .any(|variant| view_class(variant) != view_class(root))
     {
         "android.view.View".to_string()
@@ -238,8 +228,7 @@ pub fn view_binding_source(
             return Some((None, root));
         }
         return libraries.iter().find_map(|(namespace, layouts)| {
-            layouts
-                .get(name)
+            layouts.get(name)
                 .and_then(|variants| variants.first())
                 .map(|root| (Some(namespace.as_str()), root))
         });
@@ -292,8 +281,7 @@ pub fn view_binding_source(
         ));
     }
 
-    let parameters: String = views
-        .iter()
+    let parameters: String = views.iter()
         .map(|view| format!(", {} {}", view.java_type, field_name(&view.id)))
         .collect();
 
@@ -321,8 +309,7 @@ pub fn view_binding_source(
 
     // an <include android:id> replaces the id of the included root, so the
     // root is never looked up by id
-    let root_id = root
-        .attribute("android:id")
+    let root_id = root.attribute("android:id")
         .and_then(|id| id.strip_prefix("@+id/").or_else(|| id.strip_prefix("@id/")));
 
     out.push_str(&format!("  public static {class} bind(android.view.View root__) {{\n    android.view.View found__;\n"));
@@ -359,8 +346,7 @@ pub fn view_binding_source(
         }
     }
 
-    let arguments: String = views
-        .iter()
+    let arguments: String = views.iter()
         .map(|view| format!(", {}", field_name(&view.id)))
         .collect();
 
@@ -380,13 +366,11 @@ pub fn build_config_java_fields(fields: &[String]) -> Result<String, String> {
         let invalid =
             || format!("build_config_fields entry '{field}' must look like 'Type NAME value'");
 
-        let (java_type, rest) = field
-            .trim()
+        let (java_type, rest) = field.trim()
             .split_once(char::is_whitespace)
             .ok_or_else(invalid)?;
 
-        let (name, value) = rest
-            .trim_start()
+        let (name, value) = rest.trim_start()
             .split_once(char::is_whitespace)
             .ok_or_else(invalid)?;
 
@@ -440,8 +424,7 @@ fn field_name(id: &str) -> String {
 fn view_class(element: &XmlElement) -> String {
     match element.name.as_str() {
         "view" => {
-            return element
-                .attribute("class")
+            return element.attribute("class")
                 .unwrap_or("android.view.View")
                 .to_string();
         }
@@ -455,8 +438,7 @@ fn view_class(element: &XmlElement) -> String {
 }
 
 fn collect_bound_views(element: &XmlElement, views: &mut Vec<ViewBindingField>) {
-    let id = element
-        .attribute("android:id")
+    let id = element.attribute("android:id")
         .and_then(|id| id.strip_prefix("@+id/").or_else(|| id.strip_prefix("@id/")));
 
     let skipped = matches!(
@@ -465,13 +447,11 @@ fn collect_bound_views(element: &XmlElement, views: &mut Vec<ViewBindingField>) 
     );
 
     if let (Some(id), false) = (id, skipped) {
-        let include = (element.name == "include")
-            .then(|| {
-                element
-                    .attribute("layout")
-                    .and_then(|layout| layout.strip_prefix("@layout/"))
-                    .map(str::to_string)
-            })
+        let include = (element.name == "include").then(|| {
+            element.attribute("layout")
+                .and_then(|layout| layout.strip_prefix("@layout/"))
+                .map(str::to_string)
+        })
             .flatten();
 
         let java_type = match &include {

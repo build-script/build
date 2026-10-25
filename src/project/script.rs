@@ -55,8 +55,7 @@ pub fn with_module(
             }
 
             let is_app = identifier(target) == Some("build_android")
-                || args
-                    .iter()
+                || args.iter()
                     .any(|arg| argument_name(arg) == Some("main_class"));
 
             if is_app && first_app.is_none() {
@@ -90,12 +89,9 @@ pub fn with_module(
         Some((value, start)) if module_position.is_none_or(|position| start < position) => {
             match list_arguments(source, value) {
                 Some((after_paren, arguments)) => {
-                    let missing: Vec<&str> = template
-                        .repositories
-                        .iter()
+                    let missing: Vec<&str> = template.repositories.iter()
                         .filter(|repository| {
-                            !arguments
-                                .iter()
+                            !arguments.iter()
                                 .any(|argument| {
                                     calls_function(argument, repository.trim_end_matches("()"))
                                 })
@@ -129,8 +125,7 @@ pub fn with_module(
         }
     }
 
-    let needs_use = !uses
-        .iter()
+    let needs_use = !uses.iter()
         .any(|(platform, _)| *platform == template.platform);
 
     let has_statements = !script.statements.is_empty();
@@ -198,16 +193,12 @@ fn build_call(
 ) -> String {
     let mut lines = vec![format!("{variable} = {}(", template.function)];
     lines.extend(
-        template
-            .positional
-            .iter()
+        template.positional.iter()
             .map(|argument| format!("    {argument},")),
     );
     lines.push(format!("    {repositories},"));
     lines.extend(
-        template
-            .named
-            .iter()
+        template.named.iter()
             .map(|(name, value)| format!("    {name} = {value},")),
     );
     if let Some(directory) = &module.directory {
@@ -291,8 +282,7 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
             continue;
         };
 
-        let arguments: Vec<(String, &Expression)> = args
-            .iter()
+        let arguments: Vec<(String, &Expression)> = args.iter()
             .enumerate()
             .filter_map(|(index, argument)| match &argument.variant {
                 ExpressionType::Assignment { target, value } => {
@@ -323,9 +313,7 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
 
 impl ModuleCall<'_> {
     pub fn argument(&self, parameter: &str) -> Option<&Expression> {
-        return self
-            .arguments
-            .iter()
+        return self.arguments.iter()
             .find(|(name, _)| name == parameter)
             .map(|(_, argument)| *argument);
     }
@@ -436,9 +424,7 @@ fn last_assignment<'a>(
     variable: &str,
     before: usize,
 ) -> Option<&'a Expression> {
-    return script
-        .statements
-        .iter()
+    return script.statements.iter()
         .take_while(|statement| statement.span.start < before)
         .filter_map(|statement| match &statement.variant {
             StatementType::Expression(Expression {
@@ -467,8 +453,7 @@ fn appended_argument(
     };
 
     let after_last = &source[last.span.end..close];
-    let comma = after_last
-        .find(|char: char| !char.is_whitespace())
+    let comma = after_last.find(|char: char| !char.is_whitespace())
         .filter(|index| after_last[*index..].starts_with(','))
         .map(|index| last.span.end + index + 1);
 
@@ -482,15 +467,13 @@ fn appended_argument(
     }
 
     let line = start_of_line(source, last.span.start);
-    let indent: String = source[line..]
-        .chars()
+    let indent: String = source[line..].chars()
         .take_while(|char| *char == ' ' || *char == '\t')
         .collect();
 
     // after a comment that ends the line of the last argument
     let line_end = |from: usize| {
-        source[from..close]
-            .find('\n')
+        source[from..close].find('\n')
             .map_or(from, |newline| from + newline)
     };
 
@@ -556,8 +539,7 @@ fn argument_name(argument: &Expression) -> Option<&str> {
 }
 
 fn start_of_line(source: &str, offset: usize) -> usize {
-    return source[..offset]
-        .rfind('\n')
+    return source[..offset].rfind('\n')
         .map(|newline| newline + 1)
         .unwrap_or(0);
 }
@@ -702,7 +684,9 @@ mod tests {
     ) -> Result<DependencyEdit, String> {
         let script = Parser::new(source).parse_script().unwrap();
         let calls = module_calls(&script);
-        let call = calls.iter().find(|call| call.name == module).unwrap();
+        let call = calls.iter()
+            .find(|call| call.name == module)
+            .unwrap();
         return with_dependency(source, &script, call, parameter, notation);
     }
 
@@ -712,8 +696,7 @@ mod tests {
         let script = Parser::new(source).parse_script().unwrap();
         let calls = module_calls(&script);
 
-        let names: Vec<(&str, &str, &str)> = calls
-            .iter()
+        let names: Vec<(&str, &str, &str)> = calls.iter()
             .map(|call| (call.name.as_str(), call.function, call.platform))
             .collect();
         assert_eq!(

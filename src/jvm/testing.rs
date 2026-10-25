@@ -78,12 +78,11 @@ pub fn unit_test_parameters(
     parameters: FunctionParameters,
     sources: Sources,
 ) -> FunctionParameters {
-    let mut parameters = parameters
-        .with_default(
-            "test_dependencies",
-            dependencies_type(),
-            Value::string_list(&[]),
-        )
+    let mut parameters = parameters.with_default(
+        "test_dependencies",
+        dependencies_type(),
+        Value::string_list(&[]),
+    )
         .with_default(
             "test_source_dirs",
             Type::list(Type::String),
@@ -124,8 +123,7 @@ impl UnitTests<'_> {
     fn compile(&self) -> Result<ModuleTests, String> {
         let (inputs, args) = (self.inputs, self.args);
 
-        let test_source_dirs: Vec<PathBuf> = args
-            .get::<Vec<String>>("test_source_dirs")?
+        let test_source_dirs: Vec<PathBuf> = args.get::<Vec<String>>("test_source_dirs")?
             .iter()
             .map(|dir| inputs.directory.join(dir))
             .collect();
@@ -182,18 +180,18 @@ impl UnitTests<'_> {
         let mut modules = BuiltModule::transitive(&inputs.dependencies.modules);
         modules.extend(BuiltModule::transitive(&test_dependencies.modules));
         classpath.extend(
-            modules
-                .iter()
+            modules.iter()
                 .filter_map(|module| module.jvm().classes.clone()),
         );
         classpath.extend(test_libraries.files);
-        let mut compile_classpath: Vec<PathBuf> = self.android_jar.iter().cloned().collect();
+        let mut compile_classpath: Vec<PathBuf> = self.android_jar.iter()
+            .cloned()
+            .collect();
         compile_classpath.extend(classpath.iter().cloned());
 
         let build_dir = inputs.directory.join("build");
 
-        let test_classes = build_dir
-            .join("classes")
+        let test_classes = build_dir.join("classes")
             .join(classes_kind(inputs.sources))
             .join("test");
 
@@ -214,8 +212,7 @@ impl UnitTests<'_> {
 
         let mut runtime_classpath = vec![test_classes.clone()];
         runtime_classpath.extend(
-            [test_resources_dir]
-                .into_iter()
+            [test_resources_dir].into_iter()
                 .chain(generated_resources)
                 .filter(|dir| dir.is_dir()),
         );
@@ -238,8 +235,7 @@ impl UnitTests<'_> {
                     .jdk
                     .java_command(&runtime_classpath, CONSOLE_LAUNCHER_MAIN_CLASS)?;
 
-                command
-                    .args(console_launcher_options(&version))
+                command.args(console_launcher_options(&version))
                     .arg(format!("--scan-classpath={}", test_classes.display()))
                     .arg(format!("--reports-dir={}", reports_dir.display()));
                 (command, format!("JUnit Platform {version}"))
@@ -308,8 +304,7 @@ pub fn resolve_test_libraries(
 
     let coordinates = resolver.resolve_graph(&roots, &platforms)?;
 
-    let console_launcher_version = coordinates
-        .iter()
+    let console_launcher_version = coordinates.iter()
         .find(|coordinate| {
             coordinate.group == "org.junit.platform"
                 && coordinate.artifact == "junit-platform-console"
@@ -332,21 +327,22 @@ fn junit_platform_libraries(
     kotlin_version: &str,
 ) -> Vec<MavenCoordinate> {
     let binding = kotlin_test_binding(resolved, kotlin_version);
-    let used: Vec<&MavenCoordinate> = resolved.iter().chain(&binding).collect();
+    let used: Vec<&MavenCoordinate> = resolved.iter()
+        .chain(&binding)
+        .collect();
 
     let find = |group: &str, artifact_prefix: &str| {
-        used.iter().copied().find(|coordinate| {
-            coordinate.group == group && coordinate.artifact.starts_with(artifact_prefix)
-        })
+        used.iter()
+            .copied()
+            .find(|coordinate| {
+                coordinate.group == group && coordinate.artifact.starts_with(artifact_prefix)
+            })
     };
 
     // each engine with the framework that needs it
-    let engines: Vec<(&Engine, &MavenCoordinate)> = ENGINES
-        .iter()
+    let engines: Vec<(&Engine, &MavenCoordinate)> = ENGINES.iter()
         .filter_map(|engine| {
-            engine
-                .frameworks
-                .iter()
+            engine.frameworks.iter()
                 .find_map(|(group, artifact)| find(group, artifact))
                 .map(|framework| (engine, framework))
         })
@@ -356,8 +352,7 @@ fn junit_platform_libraries(
     let jupiter_version =
         find("org.junit.jupiter", "junit-jupiter").map(|coordinate| coordinate.version.clone());
 
-    let platform_version = engines
-        .iter()
+    let platform_version = engines.iter()
         .find_map(|(engine, _)| engine.platform)
         .map(str::to_string)
         .or_else(|| jupiter_version.as_deref().map(platform_version_of_junit))
@@ -381,8 +376,7 @@ fn junit_platform_libraries(
     for (engine, framework) in engines {
         let (group, artifact) = engine.engine;
 
-        if resolved
-            .iter()
+        if resolved.iter()
             .any(|coordinate| coordinate.group == group && coordinate.artifact == artifact)
         {
             continue;
@@ -407,8 +401,7 @@ fn kotlin_test_binding(
     kotlin_version: &str,
 ) -> Option<MavenCoordinate> {
     let has = |group: &str, artifact: &str| {
-        resolved
-            .iter()
+        resolved.iter()
             .any(|coordinate| coordinate.group == group && coordinate.artifact == artifact)
     };
 
@@ -484,8 +477,7 @@ fn platform_version_of_junit(junit_version: &str) -> String {
 
 /// As far as the version knows them
 fn console_launcher_options(console_launcher_version: &str) -> Vec<&'static str> {
-    let mut parts = console_launcher_version
-        .split('.')
+    let mut parts = console_launcher_version.split('.')
         .map(|part| part.parse::<u32>().unwrap_or(0));
 
     let version = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
@@ -510,8 +502,7 @@ mod tests {
     use super::*;
 
     fn coordinates(notations: &[&str]) -> Vec<MavenCoordinate> {
-        return notations
-            .iter()
+        return notations.iter()
             .map(|notation| MavenCoordinate::parse(notation).unwrap())
             .collect();
     }

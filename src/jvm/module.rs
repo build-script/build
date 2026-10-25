@@ -162,11 +162,9 @@ pub fn dependencies_type() -> Type {
 
 /// src/<source set>/<kind> for every source set and kind, like "src/main/kotlin"
 pub fn source_set_dirs(source_sets: &[&str], kinds: &[&str]) -> Value {
-    let dirs: Vec<String> = source_sets
-        .iter()
+    let dirs: Vec<String> = source_sets.iter()
         .flat_map(|source_set| {
-            kinds
-                .iter()
+            kinds.iter()
                 .map(move |kind| format!("src/{source_set}/{kind}"))
         })
         .collect();
@@ -207,8 +205,7 @@ pub fn module_parameters(
             .with_default("kotlin_version", Type::String, DEFAULT_KOTLIN_VERSION);
     }
 
-    return parameters
-        .with_default("jdk", Type::String, jdk::DEFAULT_JAVA_VERSION)
+    return parameters.with_default("jdk", Type::String, jdk::DEFAULT_JAVA_VERSION)
         .with_default("directory", Type::String, ".")
         .with_default(
             "source_dirs",
@@ -283,8 +280,7 @@ pub fn compile_java(
     java_classpath.extend(classpath.iter().cloned());
 
     let mut command = Command::new(jdk.tool_path("javac"));
-    command
-        .arg("-d")
+    command.arg("-d")
         .arg(output)
         .args([
             "--release",
@@ -300,8 +296,7 @@ pub fn compile_java(
     match processing {
         Some(processing) if !processing.processor_path.is_empty() => {
             system::recreate_dir(processing.generated_dir)?;
-            command
-                .arg("-processorpath")
+            command.arg("-processorpath")
                 .arg(join_classpath(processing.processor_path)?)
                 .arg("-s")
                 .arg(processing.generated_dir);
@@ -333,7 +328,9 @@ pub fn create_jar(
     };
 
     for directory in directories {
-        command.arg("-C").arg(directory).arg(".");
+        command.arg("-C")
+            .arg(directory)
+            .arg(".");
     }
 
     return system::run_command(&mut command, &format!("creating {}", jar_file.display()));
@@ -355,8 +352,7 @@ impl ModuleBuildInputs {
         };
 
         let plugins = match kotlin {
-            true => args
-                .get::<Vec<String>>("plugins")?
+            true => args.get::<Vec<String>>("plugins")?
                 .iter()
                 .map(|plugin| KotlinCompilerPlugin::find(plugin, &kotlin_version))
                 .collect::<Result<Vec<_>, _>>()?,
@@ -375,8 +371,7 @@ impl ModuleBuildInputs {
         let directory = module_directory(context, args)?;
 
         // generated sources are absolute paths, joining keeps them as they are
-        let source_dirs = args
-            .get::<Vec<String>>("source_dirs")?
+        let source_dirs = args.get::<Vec<String>>("source_dirs")?
             .iter()
             .chain(&args.get::<Vec<String>>("generated_sources")?)
             .map(|source_dir| directory.join(source_dir))
@@ -457,8 +452,7 @@ impl ModuleBuildInputs {
 
         for plugin in &self.plugins {
             // the plugin and what it needs besides the compiler, which is there already
-            let own_modules: Vec<MavenCoordinate> = tools
-                .resolve_graph(&[plugin.coordinate.clone()], &[])?
+            let own_modules: Vec<MavenCoordinate> = tools.resolve_graph(&[plugin.coordinate.clone()], &[])?
                 .into_iter()
                 .filter(|module| {
                     !compiler_modules.iter().any(|known| {
@@ -563,10 +557,7 @@ impl ModuleBuildInputs {
         fingerprint.add_files(&self.source_dirs)?;
         fingerprint.add_files(extra_inputs)?;
 
-        let snapshots: Vec<MavenCoordinate> = self
-            .dependencies
-            .libraries
-            .iter()
+        let snapshots: Vec<MavenCoordinate> = self.dependencies.libraries.iter()
             .chain(&self.compile_only.libraries)
             .chain(&self.annotation_processors.libraries)
             .filter(|coordinate| coordinate.is_snapshot())
@@ -660,8 +651,7 @@ impl Dependencies {
                     }
                 },
                 Value::Module(module) => {
-                    let module = module
-                        .wait()
+                    let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
                     dependencies.modules.push(module);
                 }
@@ -707,8 +697,7 @@ impl Dependencies {
 
         let mut path = resolver.resolve_with_platforms(&roots, &platforms)?;
         path.extend(
-            modules
-                .iter()
+            modules.iter()
                 .filter_map(|module| module.jvm().classes.clone()),
         );
 
@@ -737,12 +726,10 @@ impl KotlinCompilerPlugin {
             });
         }
 
-        let Some((name, artifact, runtime, options)) = KOTLIN_COMPILER_PLUGINS
-            .iter()
+        let Some((name, artifact, runtime, options)) = KOTLIN_COMPILER_PLUGINS.iter()
             .find(|(known, ..)| *known == name_or_coordinate)
         else {
-            let known: Vec<&str> = KOTLIN_COMPILER_PLUGINS
-                .iter()
+            let known: Vec<&str> = KOTLIN_COMPILER_PLUGINS.iter()
                 .map(|(known, ..)| *known)
                 .collect();
             return Err(format!(
@@ -860,8 +847,7 @@ impl Compilation<'_> {
                 command.arg(format!("-Xfriend-paths={}", friend.display()));
             }
 
-            command
-                .args(&self.inputs.kotlin_args)
+            command.args(&self.inputs.kotlin_args)
                 .args(&kotlin_sources)
                 .args(&java_sources);
             system::run_command(&mut command, "compilation")?;
@@ -873,8 +859,7 @@ impl Compilation<'_> {
                 &format!("Compiling {} Java {files}", java_sources.len()),
             );
 
-            let generated_dir = build_dir
-                .join("generated/sources/annotationProcessor/java")
+            let generated_dir = build_dir.join("generated/sources/annotationProcessor/java")
                 .join(self.variant);
 
             let processing = AnnotationProcessing {

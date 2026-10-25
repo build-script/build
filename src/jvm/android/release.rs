@@ -79,8 +79,7 @@ impl ReleaseKey {
         };
 
         // the key often has the password of the keystore
-        let key_password_env = args
-            .get::<Option<String>>("key_password_env")?
+        let key_password_env = args.get::<Option<String>>("key_password_env")?
             .unwrap_or_else(|| keystore_password_env.clone());
 
         for name in [&keystore_password_env, &key_password_env] {
@@ -140,8 +139,7 @@ pub fn proguard_rule_files(
 
     for jar in unique(&build.jars) {
         for entry in rule_entries_in_jar(&jar)? {
-            let file = work_dir
-                .join("libraries")
+            let file = work_dir.join("libraries")
                 .join(format!("{}-{}", rules.len(), entry.replace('/', "-")));
 
             let content = system::read_zip_entry(&jar, &entry)?;
@@ -162,28 +160,24 @@ fn rule_entries_in_jar(jar: &Path) -> Result<Vec<String>, String> {
     let entries = system::zip_entries(jar)?;
     let files = entries.iter().filter(|entry| !entry.ends_with('/'));
 
-    let has_r8_rules = entries
-        .iter()
+    let has_r8_rules = entries.iter()
         .any(|entry| entry.starts_with("META-INF/com.android.tools/"));
 
     if !has_r8_rules {
-        return Ok(files
-            .filter(|entry| entry.starts_with("META-INF/proguard/"))
+        return Ok(files.filter(|entry| entry.starts_with("META-INF/proguard/"))
             .cloned()
             .collect());
     }
 
     // r8-from-<version> and r8-upto-<version> name the R8 versions the rules are for;
     // the R8 of the build tools is newer than every from and than no upto
-    return Ok(files
-        .filter(|entry| {
-            let directory = entry
-                .strip_prefix("META-INF/com.android.tools/")
-                .and_then(|rest| rest.split('/').next())
-                .unwrap_or("");
+    return Ok(files.filter(|entry| {
+        let directory = entry.strip_prefix("META-INF/com.android.tools/")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("");
 
-            directory == "r8" || (directory.starts_with("r8-from-") && !directory.contains("upto"))
-        })
+        directory == "r8" || (directory.starts_with("r8-from-") && !directory.contains("upto"))
+    })
         .cloned()
         .collect());
 }
@@ -194,11 +188,16 @@ fn keep_rules_for_services(java_resources: &Path) -> Result<String, String> {
     let mut rules = String::new();
 
     for file in system::files_below(&[java_resources.join("META-INF/services")]) {
-        let service = file.file_name().unwrap_or_default().to_string_lossy();
+        let service = file.file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         rules.push_str(&format!("-keepnames class {service}\n"));
 
         for line in system::read_file(&file)?.lines() {
-            let provider = line.split('#').next().unwrap_or("").trim();
+            let provider = line.split('#')
+                .next()
+                .unwrap_or("")
+                .trim();
 
             if !provider.is_empty() {
                 rules.push_str(&format!("-keep class {provider} {{ <init>(); }}\n"));
@@ -228,8 +227,7 @@ pub fn shrink_with_r8(
         .jdk
         .java_command(&[build.sdk.d8.clone()], "com.android.tools.r8.R8")?;
 
-    command
-        .arg("--release")
+    command.arg("--release")
         // the Java resources are packaged apart, as they are
         .arg("--no-data-resources")
         .arg("--min-api")
@@ -255,8 +253,7 @@ pub fn shrink_with_r8(
 
     if let Some(desugared) = desugared {
         let keep_rules = build.build_dir.join("intermediates/desugar/keep-rules.pro");
-        command
-            .arg("--desugared-lib")
+        command.arg("--desugared-lib")
             .arg(&desugared.config)
             .arg("--desugared-lib-pg-conf-output")
             .arg(&keep_rules);
@@ -339,8 +336,7 @@ pub fn build_app_bundle(
     let unsigned = work_dir.join("unsigned.aab");
 
     let mut build_bundle = build.inputs.jdk.java_command(&bundletool, BUNDLETOOL_MAIN_CLASS)?;
-    build_bundle
-        .arg("build-bundle")
+    build_bundle.arg("build-bundle")
         .arg(format!("--modules={}", module_zip.display()))
         .arg(format!("--output={}", unsigned.display()))
         .arg("--overwrite");

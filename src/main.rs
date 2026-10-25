@@ -164,8 +164,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
 
             let parameter = match flags.as_slice() {
                 [] => project::DEPENDENCIES,
-                [flag] => project::DEPENDENCY_KINDS
-                    .iter()
+                [flag] => project::DEPENDENCY_KINDS.iter()
                     .find(|(known, _)| known == flag)
                     .map(|(_, parameter)| *parameter)
                     .ok_or_else(usage)?,
@@ -229,13 +228,11 @@ fn take_option(args: &[String], name: &str) -> Result<(Option<String>, Vec<Strin
         return Ok((None, args.to_vec()));
     };
 
-    let value = args
-        .get(index + 1)
+    let value = args.get(index + 1)
         .filter(|value| !value.starts_with('-'))
         .ok_or_else(|| format!("{name} needs a value"))?;
 
-    let rest = args
-        .iter()
+    let rest = args.iter()
         .enumerate()
         .filter(|(position, _)| *position != index && *position != index + 1)
         .map(|(_, arg)| arg.clone())
@@ -405,14 +402,15 @@ struct BuildOptions {
 
 /// `--jobs <n>`, `--refresh` and `--release`, before the arguments of a program after `--`
 fn take_build_options(args: &[String]) -> Result<(BuildOptions, Vec<String>), String> {
-    let program_args = args.iter().position(|arg| arg == "--").unwrap_or(args.len());
+    let program_args = args.iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
     let (jobs, own) = take_option(&args[..program_args], "--jobs")?;
 
     let refresh = own.iter().any(|arg| arg == "--refresh");
     let release = own.iter().any(|arg| arg == "--release");
 
-    let mut own: Vec<String> = own
-        .into_iter()
+    let mut own: Vec<String> = own.into_iter()
         .filter(|arg| arg != "--refresh" && arg != "--release")
         .collect();
     own.extend(args[program_args..].iter().cloned());
@@ -486,7 +484,9 @@ fn run_script(
     let built = runtime.finish();
 
     // a failed build keeps the module files of every module
-    let worked = built.as_deref().ok().filter(|_| evaluated.is_ok());
+    let worked = built.as_deref()
+        .ok()
+        .filter(|_| evaluated.is_ok());
 
     if idea && let Err(error) = jvm::idea::write_project(&project_dir, worked) {
         eprintln!("could not write the IntelliJ project: {error}");
@@ -603,8 +603,7 @@ fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -
 /// Runs the tests of every selected module once all are built, in build order.
 /// Exit code 1 if the tests of one failed.
 fn run_tests(built: &[Arc<BuiltModule>], name: Option<&str>) -> i32 {
-    let selected: Vec<_> = built
-        .iter()
+    let selected: Vec<_> = built.iter()
         .filter(|module| name.is_none_or(|name| module.name == name))
         .collect();
 
@@ -628,9 +627,7 @@ fn run_tests(built: &[Arc<BuiltModule>], name: Option<&str>) -> i32 {
             continue;
         }
 
-        let ran: Vec<(String, TestOutcome)> = module
-            .tests
-            .iter()
+        let ran: Vec<(String, TestOutcome)> = module.tests.iter()
             .map(|suite| {
                 (
                     suite_label(&module.name, suite.source_set),
@@ -640,8 +637,7 @@ fn run_tests(built: &[Arc<BuiltModule>], name: Option<&str>) -> i32 {
             .collect();
 
         // source sets without tests only show when none has any
-        if ran
-            .iter()
+        if ran.iter()
             .all(|(_, outcome)| *outcome == TestOutcome::NoTests)
         {
             outcomes.push((module.name.clone(), Some(TestOutcome::NoTests)));
@@ -655,8 +651,7 @@ fn run_tests(built: &[Arc<BuiltModule>], name: Option<&str>) -> i32 {
     }
 
     println!("{}", test_summary(&outcomes));
-    let failed = outcomes
-        .iter()
+    let failed = outcomes.iter()
         .any(|(_, outcome)| matches!(outcome, Some(TestOutcome::Failed { .. })));
 
     return if failed { 1 } else { 0 };
@@ -671,8 +666,7 @@ fn suite_label(module: &str, source_set: &str) -> String {
 }
 
 fn no_module_named(built: &[Arc<BuiltModule>], name: &str) -> String {
-    let built: Vec<&str> = built
-        .iter()
+    let built: Vec<&str> = built.iter()
         .map(|module| module.name.as_str())
         .collect();
 
@@ -688,8 +682,7 @@ fn no_module_named(built: &[Arc<BuiltModule>], name: &str) -> String {
 
 /// A line per module, then how many modules ended how
 fn test_summary(outcomes: &[(String, Option<TestOutcome>)]) -> String {
-    let width = outcomes
-        .iter()
+    let width = outcomes.iter()
         .map(|(name, _)| name.len())
         .max()
         .unwrap_or(0);
@@ -736,8 +729,7 @@ fn test_summary(outcomes: &[(String, Option<TestOutcome>)]) -> String {
         lines.push(format!("  {name:width$}  {description}"));
     }
 
-    let totals: Vec<String> = totals
-        .iter()
+    let totals: Vec<String> = totals.iter()
         .filter(|(_, count)| *count > 0)
         .map(|(what, count)| format!("{count} {what}"))
         .collect();
@@ -766,7 +758,9 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Command, String> {
-        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        let args: Vec<String> = args.iter()
+            .map(|arg| arg.to_string())
+            .collect();
         return parse_args(&args);
     }
 

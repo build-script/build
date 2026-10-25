@@ -90,9 +90,7 @@ fn build_module(
         android_jar: None,
     };
 
-    let tests = context
-        .tests
-        .includes(&inputs.name)
+    let tests = context.tests.includes(&inputs.name)
         .then(|| unit_tests.prepare())
         .into_iter()
         .collect();
@@ -121,8 +119,7 @@ fn build_jar(
     let build_dir = inputs.directory.join("build");
     let resources_dir = build_dir.join("resources/main");
 
-    let classes_dir = build_dir
-        .join("classes")
+    let classes_dir = build_dir.join("classes")
         .join(classes_kind(inputs.sources))
         .join("main");
 
@@ -154,9 +151,7 @@ fn build_jar(
     let (kotlin_sources, java_sources) = kotlin_and_java_sources(&inputs.source_dirs);
 
     if kotlin_sources.is_empty() && java_sources.is_empty() {
-        let dirs: Vec<String> = inputs
-            .source_dirs
-            .iter()
+        let dirs: Vec<String> = inputs.source_dirs.iter()
             .map(|dir| dir.display().to_string())
             .collect();
 
@@ -183,9 +178,7 @@ fn build_jar(
     system::log(&inputs.name, &format!("JDK {}", inputs.jdk.home.display()));
     let resolved = inputs.resolve(TargetPlatform::Jvm)?;
 
-    if let Some(aar) = resolved
-        .libraries
-        .iter()
+    if let Some(aar) = resolved.libraries.iter()
         .find(|file| file.extension().is_some_and(|extension| extension == "aar"))
     {
         return Err(format!(
@@ -209,9 +202,7 @@ fn build_jar(
 
     let mut classpath = resolved.libraries.clone();
     classpath.extend(
-        resolved
-            .modules
-            .iter()
+        resolved.modules.iter()
             .filter_map(|module| module.jvm().classes.clone()),
     );
     let mut compile_classpath = classpath.clone();
@@ -257,9 +248,7 @@ fn build_jar(
         // the module first, then the modules and libraries it needs at runtime
         let mut jars = vec![jar.clone()];
         jars.extend(
-            resolved
-                .modules
-                .iter()
+            resolved.modules.iter()
                 .filter_map(|module| module.jvm().classes.clone()),
         );
         jars.extend(resolved.libraries.iter().cloned());
@@ -326,8 +315,7 @@ fn copy_to_lib_dir(jars: &[PathBuf], lib_dir: &Path) -> Result<Vec<String>, Stri
 
     let mut taken: HashSet<String> = HashSet::new();
     for jar in jars {
-        let mut name = jar
-            .file_name()
+        let mut name = jar.file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
@@ -358,7 +346,9 @@ fn jar_manifest(main_class: Option<&str>, libraries: &[String], multi_release: b
     }
 
     if !libraries.is_empty() {
-        let class_path: Vec<String> = libraries.iter().map(|name| format!("lib/{name}")).collect();
+        let class_path: Vec<String> = libraries.iter()
+            .map(|name| format!("lib/{name}"))
+            .collect();
         manifest += &manifest_line("Class-Path", &class_path.join(" "));
     }
 

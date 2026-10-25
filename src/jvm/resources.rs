@@ -33,28 +33,24 @@ pub struct JavaResources {
 impl JavaResources {
     /// resource_dirs, resource_files, resource_texts and resource_tokens, paths relative to `directory`
     pub fn read(args: &Arguments, directory: &Path) -> Result<Self, String> {
-        let dirs = args
-            .get::<Vec<String>>("resource_dirs")?
+        let dirs = args.get::<Vec<String>>("resource_dirs")?
             .iter()
             .map(|dir| directory.join(dir))
             .collect();
 
-        let files = args
-            .assignments("resource_files")?
+        let files = args.assignments("resource_files")?
             .into_iter()
             .map(|(target, source)| Ok((resource_path(&target)?, directory.join(source.trim()))))
             .collect::<Result<Vec<_>, String>>()?;
 
-        let texts = args
-            .assignments("resource_texts")?
+        let texts = args.assignments("resource_texts")?
             .into_iter()
             .map(|(target, content)| Ok((resource_path(&target)?, content)))
             .collect::<Result<Vec<_>, String>>()?;
 
         let tokens = args.assignments("resource_tokens")?;
 
-        if let Some((name, _)) = tokens
-            .iter()
+        if let Some((name, _)) = tokens.iter()
             .find(|(name, _)| name.is_empty() || name.contains('@'))
         {
             return Err(format!("resource_tokens: '{name}' is not a token name"));
@@ -193,8 +189,7 @@ fn resource_files_below(dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let mut files = vec![];
 
     for file in system::files_below(&[dir.to_path_buf()]) {
-        let relative = file
-            .strip_prefix(dir)
+        let relative = file.strip_prefix(dir)
             .map_err(|error| error.to_string())?
             .to_path_buf();
 
@@ -218,8 +213,7 @@ fn resource_path(target: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(target.trim().trim_end_matches('/'));
 
     let inside = !path.as_os_str().is_empty()
-        && path
-            .components()
+        && path.components()
             .all(|component| matches!(component, Component::Normal(_)));
 
     if !inside {

@@ -139,16 +139,11 @@ pub fn read_android_inputs(
     let mut inputs = ModuleBuildInputs::read(context, args, Sources::KotlinAndJava)?;
     let build_type = BuildType::of(context);
 
-    inputs.source_dirs = inputs
-        .source_dirs
-        .iter()
+    inputs.source_dirs = inputs.source_dirs.iter()
         .map(|dir| dir_of_build_type(&inputs.directory, dir, build_type))
         .collect();
 
-    inputs.resources.dirs = inputs
-        .resources
-        .dirs
-        .iter()
+    inputs.resources.dirs = inputs.resources.dirs.iter()
         .map(|dir| dir_of_build_type(&inputs.directory, dir, build_type))
         .collect();
 
@@ -171,8 +166,7 @@ pub fn existing_dirs(
     build_type: BuildType,
 ) -> Result<Vec<PathBuf>, String> {
     let dirs: Vec<String> = args.get(name)?;
-    return Ok(dirs
-        .iter()
+    return Ok(dirs.iter()
         .map(|dir| dir_of_build_type(&inputs.directory, dir, build_type))
         .filter(|dir| system::contains_files(dir))
         .collect());
@@ -213,8 +207,7 @@ pub fn android_input_paths(
     args: &Arguments,
     build_type: BuildType,
 ) -> Result<Vec<PathBuf>, String> {
-    let mut paths: Vec<PathBuf> = ["res_dirs", "aidl_dirs", "asset_dirs"]
-        .iter()
+    let mut paths: Vec<PathBuf> = ["res_dirs", "aidl_dirs", "asset_dirs"].iter()
         .map(|name| args.get::<Vec<String>>(name))
         .collect::<Result<Vec<_>, _>>()?
         .iter()
@@ -260,13 +253,11 @@ impl AndroidBuild {
             Self::prepare_variant(inputs, args, BuildType::Debug, "debugAndroidTest", build_dir)?;
         let test_dir = build.inputs.directory.join("src/androidTest");
         build.res_dirs.extend(
-            [test_dir.join("res")]
-                .into_iter()
+            [test_dir.join("res")].into_iter()
                 .filter(|dir| system::contains_files(dir)),
         );
         build.asset_dirs.extend(
-            [test_dir.join("assets")]
-                .into_iter()
+            [test_dir.join("assets")].into_iter()
                 .filter(|dir| system::contains_files(dir)),
         );
 
@@ -287,8 +278,7 @@ impl AndroidBuild {
         // checked before the build starts
         build_config_java_fields(&build_config_fields)?;
 
-        let manifest_placeholders = args
-            .assignments("manifest_placeholders")?
+        let manifest_placeholders = args.assignments("manifest_placeholders")?
             .into_iter()
             .map(|(name, value)| (name, value.trim().to_string()))
             .collect();
@@ -326,8 +316,7 @@ impl AndroidBuild {
             build_dir,
             res_dirs: existing_dirs(&inputs, args, "res_dirs", build_type)?,
             asset_dirs: existing_dirs(&inputs, args, "asset_dirs", build_type)?,
-            aidl_dirs: args
-                .get::<Vec<String>>("aidl_dirs")?
+            aidl_dirs: args.get::<Vec<String>>("aidl_dirs")?
                 .iter()
                 .map(|dir| dir_of_build_type(&inputs.directory, dir, build_type))
                 .collect(),
@@ -342,8 +331,7 @@ impl AndroidBuild {
             compile_only: unpacked.compile_only,
             libraries: unpacked.libraries,
             native_library_dirs: native_library_dirs(&inputs, args, build_type)?,
-            cmake_lists: args
-                .get::<Option<String>>("cmake")?
+            cmake_lists: args.get::<Option<String>>("cmake")?
                 .map(|cmake| inputs.directory.join(cmake)),
             ndk_version: args.get("ndk_version")?,
             accept_license,
@@ -513,8 +501,7 @@ impl AndroidBuild {
 
         for library in &self.libraries {
             if let Some(symbols) = &library.symbols {
-                if !packages
-                    .iter()
+                if !packages.iter()
                     .any(|(package, _)| *package == library.namespace)
                 {
                     packages.push((&library.namespace, symbols));
@@ -552,9 +539,7 @@ impl AndroidBuild {
             build_config_java_fields(&declarations)?,
         );
 
-        let file = self
-            .build_dir
-            .join("intermediates/generated/buildconfig")
+        let file = self.build_dir.join("intermediates/generated/buildconfig")
             .join(self.namespace.replace('.', "/"))
             .join("BuildConfig.java");
 
@@ -569,8 +554,7 @@ impl AndroidBuild {
         let mut dirs = self.asset_dirs.clone();
         dirs.reverse();
         dirs.extend(
-            self.libraries
-                .iter()
+            self.libraries.iter()
                 .rev()
                 .flat_map(|library| library.asset_dirs.iter().cloned()),
         );
@@ -599,17 +583,14 @@ impl AndroidBuild {
     pub fn merge_native_libraries(&self, output: &Path) -> Result<(), String> {
         system::remove_dir(output)?;
 
-        let mut dirs: Vec<PathBuf> = self
-            .libraries
-            .iter()
+        let mut dirs: Vec<PathBuf> = self.libraries.iter()
             .flat_map(|library| library.native_library_dirs.iter().cloned())
             .collect();
 
         dirs.extend(self.native_library_dirs.iter().cloned());
         for dir in dirs {
             for library in system::files_with_extension(&[dir.clone()], "so") {
-                let relative = library
-                    .strip_prefix(&dir)
+                let relative = library.strip_prefix(&dir)
                     .map_err(|error| error.to_string())?;
 
                 system::copy_file(&library, &output.join("lib").join(relative))?;
@@ -691,8 +672,7 @@ impl AndroidBuild {
             &[],
         )?;
 
-        let configuration_jar = jars
-            .iter()
+        let configuration_jar = jars.iter()
             .find(|jar| {
                 jar.file_name().is_some_and(|name| {
                     name.to_string_lossy()
@@ -746,8 +726,7 @@ impl AndroidBuild {
                 .jdk
                 .java_command(&[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
 
-            command
-                .arg(self.dex_mode())
+            command.arg(self.dex_mode())
                 .arg("--min-api")
                 .arg(self.min_api().to_string())
                 .arg("--lib")
@@ -885,8 +864,7 @@ impl AndroidBuild {
             .jdk
             .java_command(&[self.sdk.d8.clone()], "com.android.tools.r8.D8")?;
 
-        command
-            .arg(self.dex_mode())
+        command.arg(self.dex_mode())
             .arg("--min-api")
             .arg(self.min_api().to_string())
             .arg("--lib")
@@ -909,8 +887,7 @@ impl AndroidBuild {
 
     /// d8 or R8, with the notes split_d8_noise hides only counted
     pub fn run_dex_tool(&self, command: &mut Command, tool: &str) -> Result<(), String> {
-        let result = command
-            .stdin(Stdio::null())
+        let result = command.stdin(Stdio::null())
             .output()
             .map_err(|error| format!("could not start {tool}: {error}"))?;
 
@@ -990,10 +967,7 @@ impl AndroidBuild {
         let mut zipalign = Command::new(&self.sdk.zipalign);
 
         // 16 KB pages like Android 15 devices may have, older zipaligns only know 4 KB
-        match self
-            .sdk
-            .build_tools
-            .split('.')
+        match self.sdk.build_tools.split('.')
             .next()
             .and_then(|major| major.parse::<u32>().ok())
         {
@@ -1001,13 +975,17 @@ impl AndroidBuild {
             _ => zipalign.arg("-p"),
         };
 
-        zipalign.args(["-f", "4"]).arg(&unaligned).arg(&aligned);
+        zipalign.args(["-f", "4"])
+            .arg(&unaligned)
+            .arg(&aligned);
         system::run_command(&mut zipalign, "zipalign")?;
 
         system::create_parent_dir(apk)?;
 
         let mut sign = Command::new(self.inputs.jdk.tool_path("java"));
-        sign.arg("-jar").arg(&self.sdk.apksigner).arg("sign");
+        sign.arg("-jar")
+            .arg(&self.sdk.apksigner)
+            .arg("sign");
 
         match signature {
             Signature::Unsigned => return system::copy_file(&aligned, apk),
@@ -1080,8 +1058,7 @@ impl AndroidBuild {
         system::create_parent_dir(symbols)?;
 
         let mut command = Command::new(&self.sdk.aapt2);
-        command
-            .arg("link")
+        command.arg("link")
             .arg("-I")
             .arg(&self.sdk.android_jar)
             .arg("--manifest")
@@ -1110,8 +1087,7 @@ impl AndroidBuild {
             &self.libraries[..]
         };
 
-        for compiled in libraries
-            .iter()
+        for compiled in libraries.iter()
             .flat_map(|library| &library.compiled)
             .chain(own)
         {
@@ -1171,9 +1147,7 @@ impl AndroidBuild {
             .rev()
         {
             if let Some(android) = module
-                .jvm()
-                .android
-                .as_ref()
+                .jvm().android.as_ref()
                 .filter(|android| android.view_binding)
             {
                 libraries.push((
@@ -1183,8 +1157,7 @@ impl AndroidBuild {
             }
         }
 
-        let directory = output
-            .join(self.namespace.replace('.', "/"))
+        let directory = output.join(self.namespace.replace('.', "/"))
             .join("databinding");
 
         for (layout, variants) in &layouts {
@@ -1233,9 +1206,7 @@ impl AndroidBuild {
 
     /// The ProGuard rules the aars and library modules bring for the apps using them
     pub fn library_proguard_rules(&self) -> Vec<PathBuf> {
-        return self
-            .libraries
-            .iter()
+        return self.libraries.iter()
             .flat_map(|library| library.proguard_rules.iter().cloned())
             .collect();
     }
@@ -1253,8 +1224,7 @@ impl AndroidBuild {
 /// Each path once, in the order they come
 pub fn unique<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
-    return paths
-        .into_iter()
+    return paths.into_iter()
         .filter(|path| seen.insert(*path))
         .cloned()
         .collect();
@@ -1264,8 +1234,7 @@ pub fn unique<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> 
 fn dex_files(directory: &Path) -> Vec<PathBuf> {
     let mut files = system::files_with_extension(&[directory.to_path_buf()], "dex");
     files.sort_by_key(|file| {
-        let stem = file
-            .file_stem()
+        let stem = file.file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
@@ -1385,8 +1354,7 @@ impl UnpackedLibraries {
         aar: &Path,
         sdk: &AndroidSdk,
     ) -> Result<AndroidResourceLibrary, String> {
-        let stem = aar
-            .file_stem()
+        let stem = aar.file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
@@ -1438,16 +1406,13 @@ impl UnpackedLibraries {
             compiled,
             manifest: Some(manifest),
             symbols: Some(target.join("R.txt")).filter(|symbols| symbols.is_file()),
-            asset_dirs: [target.join("assets")]
-                .into_iter()
+            asset_dirs: [target.join("assets")].into_iter()
                 .filter(|dir| system::contains_files(dir))
                 .collect(),
-            native_library_dirs: [target.join("jni")]
-                .into_iter()
+            native_library_dirs: [target.join("jni")].into_iter()
                 .filter(|dir| system::contains_files(dir))
                 .collect(),
-            proguard_rules: [target.join("proguard.txt")]
-                .into_iter()
+            proguard_rules: [target.join("proguard.txt")].into_iter()
                 .filter(|rules| rules.is_file())
                 .collect(),
         });
@@ -1490,17 +1455,13 @@ impl CMakeBuild<'_> {
             })?;
         }
 
-        let cmake = cmake_home
-            .join("bin")
+        let cmake = cmake_home.join("bin")
             .join(format!("cmake{}", std::env::consts::EXE_SUFFIX));
 
-        let ninja = cmake_home
-            .join("bin")
+        let ninja = cmake_home.join("bin")
             .join(format!("ninja{}", std::env::consts::EXE_SUFFIX));
 
-        let source_dir = self
-            .cmake_lists
-            .parent()
+        let source_dir = self.cmake_lists.parent()
             .ok_or_else(|| format!("{} has no directory", self.cmake_lists.display()))?;
 
         let libraries = self.work_dir.join("libs");
@@ -1513,8 +1474,7 @@ impl CMakeBuild<'_> {
             ));
             let build_dir = self.work_dir.join("build").join(abi);
             let mut configure = Command::new(&cmake);
-            configure
-                .arg("-S")
+            configure.arg("-S")
                 .arg(source_dir)
                 .arg("-B")
                 .arg(&build_dir)
@@ -1570,8 +1530,7 @@ fn compiled_resources(
     let earlier = |file: &PathBuf| {
         file.file_name()
             .and_then(|file_name| {
-                file_name
-                    .to_str()?
+                file_name.to_str()?
                     .strip_prefix(&format!("{name}-"))?
                     .strip_suffix(".zip")
                     .map(str::to_string)
@@ -1598,8 +1557,7 @@ fn compile_resources(aapt2: &Path, res_dir: &Path, output: &Path) -> Result<(), 
     system::create_parent_dir(output)?;
     let partial = system::partial_path(output);
     let mut command = Command::new(aapt2);
-    command
-        .arg("compile")
+    command.arg("compile")
         .arg("--dir")
         .arg(res_dir)
         .arg("-o")
@@ -1619,8 +1577,7 @@ fn source_set_dirs_with_files(
     name: &str,
     build_type: BuildType,
 ) -> Vec<PathBuf> {
-    return ["main", build_type.name()]
-        .iter()
+    return ["main", build_type.name()].iter()
         .map(|source_set| inputs.directory.join("src").join(source_set).join(name))
         .filter(|dir| system::contains_files(dir))
         .collect();
@@ -1642,7 +1599,9 @@ fn split_d8_noise(text: &str) -> (Vec<&str>, usize) {
             blocks.push(vec![]);
         }
 
-        blocks.last_mut().unwrap().push(line);
+        blocks.last_mut()
+            .unwrap()
+            .push(line);
     }
 
     let mut shown = vec![];
@@ -1650,8 +1609,7 @@ fn split_d8_noise(text: &str) -> (Vec<&str>, usize) {
 
     for block in blocks.into_iter().filter(|block| !block.is_empty()) {
         let noise = block[0].starts_with("Info")
-            || block
-                .iter()
+            || block.iter()
                 .any(|line| line.contains("otlin metadata") || line.contains("kotlin.Metadata"));
 
         if noise {
@@ -1674,8 +1632,7 @@ fn debug_keystore(jdk: &Jdk) -> Result<PathBuf, String> {
 
     system::create_parent_dir(&keystore)?;
     let mut command = Command::new(jdk.tool_path("keytool"));
-    command
-        .arg("-genkeypair")
+    command.arg("-genkeypair")
         .arg("-keystore")
         .arg(&keystore)
         .args([

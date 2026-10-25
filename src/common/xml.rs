@@ -14,9 +14,7 @@ pub struct XmlElement {
 
 impl XmlElement {
     pub fn attribute(&self, name: &str) -> Option<&str> {
-        return self
-            .attributes
-            .iter()
+        return self.attributes.iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str());
     }
@@ -42,8 +40,7 @@ pub fn parse(input: &str) -> Result<XmlElement, String> {
     };
 
     loop {
-        let event = reader
-            .read_event()
+        let event = reader.read_event()
             .map_err(|cause| error(&reader, &cause))?;
 
         match event {
@@ -63,8 +60,7 @@ pub fn parse(input: &str) -> Result<XmlElement, String> {
             Event::CData(data) => open_element(&mut stack).text.push_str(&data.xml10_content()),
             Event::GeneralRef(reference) => {
                 let name = reference.xml10_content();
-                let resolved = match reference
-                    .resolve_char_ref()
+                let resolved = match reference.resolve_char_ref()
                     .map_err(|cause| error(&reader, &cause))?
                 {
                     Some(char) => char.to_string(),
@@ -85,11 +81,8 @@ pub fn parse(input: &str) -> Result<XmlElement, String> {
         return Err(format!("<{}> is never closed", open_element(&mut stack).name));
     }
 
-    return stack
-        .pop()
-        .unwrap()
-        .children
-        .into_iter()
+    return stack.pop()
+        .unwrap().children.into_iter()
         .next()
         .ok_or_else(|| "empty document".to_string());
 }
@@ -97,8 +90,7 @@ pub fn parse(input: &str) -> Result<XmlElement, String> {
 /// Writes an element as XML document, without the attributes `skip` matches
 pub fn write(element: &XmlElement, skip: &dyn Fn(&str) -> bool) -> String {
     let mut writer = Writer::new_with_indent(Vec::new(), b' ', 4);
-    writer
-        .write_event(Event::Decl(BytesDecl::new("1.0", Some("utf-8"), None)))
+    writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("utf-8"), None)))
         .expect("writing to memory");
     write_element(&mut writer, element, skip);
     let mut out = String::from_utf8(writer.into_inner()).expect("the elements are UTF-8");
@@ -125,8 +117,7 @@ fn element_of_tag(start: &BytesStart) -> Result<XmlElement, quick_xml::Error> {
 
 /// The innermost element not closed yet
 fn open_element(stack: &mut [XmlElement]) -> &mut XmlElement {
-    return stack
-        .last_mut()
+    return stack.last_mut()
         .expect("the document element is always on the stack");
 }
 
@@ -140,19 +131,16 @@ fn write_element(writer: &mut Writer<Vec<u8>>, element: &XmlElement, skip: &dyn 
     let text = element.text.trim();
 
     if element.children.is_empty() && text.is_empty() {
-        writer
-            .write_event(Event::Empty(start))
+        writer.write_event(Event::Empty(start))
             .expect("writing to memory");
         return;
     }
 
-    writer
-        .write_event(Event::Start(start.borrow()))
+    writer.write_event(Event::Start(start.borrow()))
         .expect("writing to memory");
 
     if !text.is_empty() {
-        writer
-            .write_event(Event::Text(BytesText::new(text)))
+        writer.write_event(Event::Text(BytesText::new(text)))
             .expect("writing to memory");
     }
 
@@ -160,8 +148,7 @@ fn write_element(writer: &mut Writer<Vec<u8>>, element: &XmlElement, skip: &dyn 
         write_element(writer, child, skip);
     }
 
-    writer
-        .write_event(Event::End(start.to_end()))
+    writer.write_event(Event::End(start.to_end()))
         .expect("writing to memory");
 }
 

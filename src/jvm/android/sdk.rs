@@ -90,8 +90,7 @@ impl AndroidSdk {
     pub fn adb(sdk_root: &Path) -> Result<PathBuf, String> {
         let name = format!("adb{}", std::env::consts::EXE_SUFFIX);
 
-        let roots = ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
-            .iter()
+        let roots = ["ANDROID_HOME", "ANDROID_SDK_ROOT"].iter()
             .filter_map(|variable| std::env::var_os(variable).map(PathBuf::from))
             .chain([sdk_root.to_path_buf()]);
 
@@ -242,8 +241,7 @@ impl SdkCatalog {
         }
 
         let mut catalog = Self::parse(&body).map_err(|error| format!("{url}: {error}"))?;
-        catalog.base_url = url
-            .rsplit_once('/')
+        catalog.base_url = url.rsplit_once('/')
             .map(|(base, _)| base.to_string())
             .unwrap_or_default();
 
@@ -252,9 +250,7 @@ impl SdkCatalog {
 
     /// The stable channel wins over previews
     pub fn package(&self, path: &str) -> Option<&RemotePackage> {
-        let matching: Vec<&RemotePackage> = self
-            .packages
-            .iter()
+        let matching: Vec<&RemotePackage> = self.packages.iter()
             .filter(|remote| remote.path == path)
             .collect();
 
@@ -299,16 +295,12 @@ impl SdkCatalog {
             )
         })?;
 
-        let complete = archive
-            .complete
-            .as_ref()
+        let complete = archive.complete.as_ref()
             .ok_or_else(|| format!("{package} has no complete archive"))?;
 
         let url = &complete.url;
 
-        let checksum = complete
-            .checksum
-            .as_ref()
+        let checksum = complete.checksum.as_ref()
             .ok_or_else(|| format!("{package} has no checksum"))?;
 
         let bits = if checksum.kind.as_deref() == Some("sha-256") {
@@ -361,9 +353,7 @@ impl SdkCatalog {
         package: &str,
         consent: &mut dyn FnMut(&str, &str, &Path) -> Result<bool, String>,
     ) -> Result<(), String> {
-        let text = self
-            .licenses
-            .iter()
+        let text = self.licenses.iter()
             .find(|license| license.id == id)
             .map(|license| license.text.trim().to_string())
             .ok_or_else(|| format!("license {id} is missing in the SDK catalog"))?;
@@ -403,9 +393,7 @@ impl SdkCatalog {
 impl RemotePackage {
     /// Of the stable channel, not of previews
     pub fn is_stable(&self) -> bool {
-        return self
-            .channel
-            .as_ref()
+        return self.channel.as_ref()
             .is_some_and(|channel| channel.id == "channel-0");
     }
 
@@ -517,7 +505,10 @@ pub mod tests {
         );
 
         let catalog = catalog(&packages);
-        let archive = catalog.package("emulator").unwrap().archive().unwrap();
+        let archive = catalog.package("emulator")
+            .unwrap()
+            .archive()
+            .unwrap();
         assert_eq!(archive.complete.as_ref().unwrap().url, "stable.zip");
         assert_eq!(catalog.size("emulator"), Some(3));
         assert!(catalog.package("missing").is_none());
@@ -537,8 +528,7 @@ pub mod tests {
             Ok(false)
         };
 
-        let error = catalog
-            .check_license(&sdk, "test-license", "platforms;android-1", &mut decline)
+        let error = catalog.check_license(&sdk, "test-license", "platforms;android-1", &mut decline)
             .unwrap_err();
 
         assert!(error.contains("was not accepted"), "{error}");
@@ -548,22 +538,20 @@ pub mod tests {
             "Be nice."
         );
 
-        catalog
-            .check_license(
-                &sdk,
-                "test-license",
-                "platforms;android-1",
-                &mut |_, _, _| Ok(true),
-            )
+        catalog.check_license(
+            &sdk,
+            "test-license",
+            "platforms;android-1",
+            &mut |_, _, _| Ok(true),
+        )
             .unwrap();
         // accepted once, remembered like sdkmanager does: nobody is asked again
-        catalog
-            .check_license(
-                &sdk,
-                "test-license",
-                "platforms;android-1",
-                &mut |_, _, _| panic!("asked again"),
-            )
+        catalog.check_license(
+            &sdk,
+            "test-license",
+            "platforms;android-1",
+            &mut |_, _, _| panic!("asked again"),
+        )
             .unwrap();
 
         fs::remove_dir_all(&sdk).unwrap();

@@ -56,8 +56,7 @@ pub fn install_and_start(
     let device = target_device(&adb, sdk_root, min_sdk)?;
     println!("Installing {} on {device}", apk.display());
     let mut install = Command::new(&adb);
-    install
-        .args(["-s", &device, "install", "-r", "-t"])
+    install.args(["-s", &device, "install", "-r", "-t"])
         .arg(apk);
     system::run_command(&mut install, "adb install")?;
 
@@ -79,8 +78,7 @@ pub fn install_and_start(
 
 impl TestRunner for InstrumentedTests {
     fn run(&self, module: &str) -> TestOutcome {
-        return self
-            .install_and_instrument(module)
+        return self.install_and_instrument(module)
             .unwrap_or_else(|error| TestOutcome::Failed {
                 counts: None,
                 error,
@@ -98,8 +96,7 @@ impl InstrumentedTests {
             &format!("Installing {} on {device}", self.apk.display()),
         );
         let mut install = Command::new(&adb);
-        install
-            .args(["-s", &device, "install", "-r", "-t"])
+        install.args(["-s", &device, "install", "-r", "-t"])
             .arg(&self.apk);
         system::run_command_quietly(&mut install, "adb install")?;
 
@@ -162,8 +159,7 @@ fn instrument(adb: &Path, device: &str, component: &str) -> Result<Instrumentati
         }
     }
 
-    let status = child
-        .wait()
+    let status = child.wait()
         .map_err(|error| format!("adb failed: {error}"))?;
 
     if !status.success() && instrumentation.code.is_none() {
@@ -184,8 +180,7 @@ fn target_device(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result<String, St
         ));
     }
 
-    let devices: Vec<String> = attached
-        .into_iter()
+    let devices: Vec<String> = attached.into_iter()
         .filter(|(_, state)| state == "device")
         .map(|(serial, _)| serial)
         .collect();
@@ -240,8 +235,7 @@ fn start_or_set_up_emulator(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result
         }
     };
 
-    let emulator = sdk_root
-        .join("emulator")
+    let emulator = sdk_root.join("emulator")
         .join(format!("emulator{}", std::env::consts::EXE_SUFFIX));
 
     if !emulator.is_file() {
@@ -286,8 +280,7 @@ fn set_up_virtual_device(sdk_root: &Path, home: &Path, min_sdk: i64) -> Result<S
     }
 
     println!("\nSystem images for {abi} (the app needs API {min_sdk} or newer):");
-    let source_width = IMAGE_SOURCES
-        .iter()
+    let source_width = IMAGE_SOURCES.iter()
         .map(|(_, label)| label.len())
         .max()
         .unwrap_or(0);
@@ -310,8 +303,7 @@ fn set_up_virtual_device(sdk_root: &Path, home: &Path, min_sdk: i64) -> Result<S
         answer.parse().map_err(|_| "cancelled".to_string())?
     };
 
-    let (catalog_index, mut image) = images
-        .get(number.wrapping_sub(1))
+    let (catalog_index, mut image) = images.get(number.wrapping_sub(1))
         .ok_or_else(|| "cancelled".to_string())?
         .clone();
 
@@ -372,8 +364,7 @@ fn start_emulator(
         .map(|(serial, _)| serial)
         .collect();
 
-    let port = (5554..=5584)
-        .step_by(2)
+    let port = (5554..=5584).step_by(2)
         .find(|port| !used.contains(&format!("emulator-{port}")))
         .ok_or("all emulator ports are in use")?;
 
@@ -387,8 +378,7 @@ fn start_emulator(
     let log_err = log.try_clone().map_err(|error| error.to_string())?;
 
     let mut command = Command::new(emulator);
-    command
-        .arg("-avd")
+    command.arg("-avd")
         .arg(name)
         .arg("-port")
         .arg(port.to_string())
@@ -413,8 +403,7 @@ fn start_emulator(
         command.process_group(0);
     }
 
-    let mut child = command
-        .spawn()
+    let mut child = command.spawn()
         .map_err(|error| format!("could not start {}: {error}", emulator.display()))?;
 
     println!(
@@ -481,9 +470,7 @@ fn adb_devices(adb: &Path) -> Result<Vec<(String, String)>, String> {
 /// Stable images of a catalog for the ABI with an API level of at least
 /// `min_sdk`, newest first. Previews and 16 KB page size variants are left out.
 fn system_images(catalog: &SdkCatalog, abi: &str, min_sdk: i64) -> Vec<SystemImage> {
-    let mut images: Vec<SystemImage> = catalog
-        .packages
-        .iter()
+    let mut images: Vec<SystemImage> = catalog.packages.iter()
         .filter_map(|remote| {
             let parts: Vec<&str> = remote.path.split(';').collect();
 
@@ -499,10 +486,7 @@ fn system_images(catalog: &SdkCatalog, abi: &str, min_sdk: i64) -> Vec<SystemIma
             }
 
             // newer images write 37.0, older ones 36
-            let api: i64 = remote
-                .details
-                .api_level
-                .as_deref()?
+            let api: i64 = remote.details.api_level.as_deref()?
                 .trim()
                 .split('.')
                 .next()?
@@ -515,10 +499,7 @@ fn system_images(catalog: &SdkCatalog, abi: &str, min_sdk: i64) -> Vec<SystemIma
 
             let size = remote.archive()?.complete.as_ref()?.size;
 
-            let tag_display = remote
-                .details
-                .tags
-                .first()
+            let tag_display = remote.details.tags.first()
                 .and_then(|tag| tag.display.as_deref())
                 .map(str::trim);
 
@@ -527,8 +508,7 @@ fn system_images(catalog: &SdkCatalog, abi: &str, min_sdk: i64) -> Vec<SystemIma
                 api,
                 version: parts[1].trim_start_matches("android-").to_string(),
                 tag: parts[2].to_string(),
-                tag_display: tag_display
-                    .filter(|display| !display.is_empty())
+                tag_display: tag_display.filter(|display| !display.is_empty())
                     .unwrap_or(parts[2])
                     .to_string(),
                 abi: abi.to_string(),
@@ -538,9 +518,7 @@ fn system_images(catalog: &SdkCatalog, abi: &str, min_sdk: i64) -> Vec<SystemIma
         .collect();
 
     images.sort_by(|left, right| {
-        right
-            .api
-            .cmp(&left.api)
+        right.api.cmp(&left.api)
             .then(right.version.cmp(&left.version))
     });
 
@@ -553,16 +531,16 @@ fn list_virtual_devices(home: &Path) -> Vec<AndroidVirtualDevice> {
         return vec![];
     };
 
-    let mut avds: Vec<AndroidVirtualDevice> = entries
-        .flatten()
+    let mut avds: Vec<AndroidVirtualDevice> = entries.flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "ini"))
         .filter_map(|path| {
-            let name = path.file_stem()?.to_string_lossy().to_string();
+            let name = path.file_stem()?
+                .to_string_lossy()
+                .to_string();
 
             let config = fs::read_to_string(home.join(format!("{name}.avd/config.ini"))).ok()?;
-            let display = config
-                .lines()
+            let display = config.lines()
                 .find_map(|line| line.strip_prefix("avd.ini.displayname="))
                 .unwrap_or(&name)
                 .to_string();
@@ -678,8 +656,7 @@ impl Instrumentation {
         } else if let Some(code) = line.strip_prefix("INSTRUMENTATION_STATUS_CODE: ") {
             let status = std::mem::take(&mut self.status);
             let value = |key: &str| {
-                status
-                    .iter()
+                status.iter()
                     .find(|(name, _)| name == key)
                     .map(|(_, value)| value.clone())
                     .unwrap_or_default()
@@ -705,7 +682,9 @@ impl Instrumentation {
             self.result.push(value_of(pair));
             self.reading_result = true;
         } else if let Some(code) = line.strip_prefix("INSTRUMENTATION_CODE: ") {
-            self.code = code.trim().parse().ok();
+            self.code = code.trim()
+                .parse()
+                .ok();
         } else if let Some(message) = line.strip_prefix("INSTRUMENTATION_FAILED: ") {
             self.failed = Some(message.to_string());
         } else {
@@ -738,9 +717,7 @@ impl Instrumentation {
             return Some("the instrumentation ended without a result".to_string());
         }
 
-        let failed = self
-            .tests
-            .iter()
+        let failed = self.tests.iter()
             .filter(|test| matches!(test.outcome, InstrumentedOutcome::Failed(_)))
             .count();
 
@@ -754,8 +731,7 @@ impl Instrumentation {
     /// One <testsuite> like the JUnit Platform writes them
     fn junit_report(&self, name: &str) -> XmlElement {
         let count = |wanted: fn(&InstrumentedOutcome) -> bool| {
-            self.tests
-                .iter()
+            self.tests.iter()
                 .filter(|test| wanted(&test.outcome))
                 .count()
                 .to_string()
@@ -905,11 +881,9 @@ INSTRUMENTATION_CODE: -1";
 
         let mut instrumentation = Instrumentation::default();
 
-        let finished: Vec<String> = output
-            .lines()
+        let finished: Vec<String> = output.lines()
             .filter_map(|line| {
-                instrumentation
-                    .read_line(line)
+                instrumentation.read_line(line)
                     .map(InstrumentedTest::describe)
             })
             .collect();
@@ -1031,8 +1005,7 @@ INSTRUMENTATION_CODE: -1";
 
         let images = system_images(&catalog(&packages), "arm64-v8a", 24);
 
-        let found: Vec<(&str, i64, &str)> = images
-            .iter()
+        let found: Vec<(&str, i64, &str)> = images.iter()
             .map(|image| (image.path.as_str(), image.api, image.tag_display.as_str()))
             .collect();
 

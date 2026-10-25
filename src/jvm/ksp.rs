@@ -109,8 +109,7 @@ impl SymbolProcessors {
 
         let tool_modules = resolver.resolve_graph(&[ksp], &[])?;
 
-        let analyzer_kotlin_version = tool_modules
-            .iter()
+        let analyzer_kotlin_version = tool_modules.iter()
             .find(|module| {
                 module.group == "org.jetbrains.kotlin" && module.artifact == "kotlin-stdlib"
             })
@@ -205,8 +204,7 @@ impl SymbolProcessing<'_> {
             format!("KSP's {SOURCE_TO_OUTPUTS_FILE_NAME} is not valid JSON: {error}")
         })?;
 
-        let removed = source_to_outputs
-            .get(REMOVED_OUTPUTS_KEY)
+        let removed = source_to_outputs.get(REMOVED_OUTPUTS_KEY)
             .and_then(Json::as_array)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
@@ -235,17 +233,13 @@ impl SymbolProcessing<'_> {
         language_version: &str,
         changes: Option<&SourceChanges>,
     ) -> Result<(), String> {
-        let source_roots: Vec<PathBuf> = self
-            .source_dirs
-            .iter()
+        let source_roots: Vec<PathBuf> = self.source_dirs.iter()
             .filter(|dir| dir.is_dir())
             .cloned()
             .collect();
 
         // KSP takes friends apart from the other libraries
-        let libraries: Vec<PathBuf> = self
-            .libraries
-            .iter()
+        let libraries: Vec<PathBuf> = self.libraries.iter()
             .filter(|library| !self.friends.contains(library))
             .cloned()
             .collect();
@@ -345,12 +339,10 @@ impl SymbolProcessing<'_> {
             } else {
                 // jars of modules built before change in place, Maven jars do not
                 let metadata = fs::metadata(library).ok();
-                metadata
-                    .as_ref()
+                metadata.as_ref()
                     .map(|metadata| metadata.len())
                     .hash(&mut hasher);
-                metadata
-                    .and_then(|metadata| metadata.modified().ok())
+                metadata.and_then(|metadata| metadata.modified().ok())
                     .hash(&mut hasher);
             }
         }
@@ -381,16 +373,12 @@ impl SourceChanges {
 impl SymbolProcessingSnapshot {
     /// Sources that are new or changed, and sources that are gone
     fn changes_since(&self, previous: &SymbolProcessingSnapshot) -> SourceChanges {
-        let modified = self
-            .sources
-            .iter()
+        let modified = self.sources.iter()
             .filter(|(path, hash)| previous.sources.get(*path) != Some(*hash))
             .map(|(path, _)| path.clone())
             .collect();
 
-        let removed = previous
-            .sources
-            .keys()
+        let removed = previous.sources.keys()
             .filter(|path| !self.sources.contains_key(*path))
             .cloned()
             .collect();
@@ -402,7 +390,9 @@ impl SymbolProcessingSnapshot {
     fn read(file: &Path) -> Option<SymbolProcessingSnapshot> {
         let content = fs::read_to_string(file).ok()?;
         let mut lines = content.lines();
-        let configuration = lines.next()?.parse().ok()?;
+        let configuration = lines.next()?
+            .parse()
+            .ok()?;
         let mut sources = BTreeMap::new();
 
         for line in lines {
@@ -432,8 +422,7 @@ fn source_hashes(source_dirs: &[PathBuf]) -> Result<BTreeMap<PathBuf, u64>, Stri
     let mut sources = BTreeMap::new();
 
     for file in system::files_below(source_dirs) {
-        if !file
-            .extension()
+        if !file.extension()
             .is_some_and(|extension| extension == "kt" || extension == "java")
         {
             continue;
@@ -512,8 +501,7 @@ mod tests {
     fn snapshots_tell_which_sources_changed() {
         let snapshot = |sources: &[(&str, u64)]| SymbolProcessingSnapshot {
             configuration: 7,
-            sources: sources
-                .iter()
+            sources: sources.iter()
                 .map(|(path, hash)| (PathBuf::from(path), *hash))
                 .collect(),
         };

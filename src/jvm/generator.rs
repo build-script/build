@@ -49,22 +49,19 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
     let directory = module_directory(context, args)?;
     let output = directory.join("build/generated/sources").join(&name);
 
-    let inputs: Vec<PathBuf> = args
-        .get::<Vec<String>>("inputs")?
+    let inputs: Vec<PathBuf> = args.get::<Vec<String>>("inputs")?
         .iter()
         .map(|input| directory.join(input))
         .collect();
 
     // build logic of the project, like buildSrc in Gradle: next to the build script
-    let tool_sources: Vec<PathBuf> = args
-        .get::<Vec<String>>("tool_sources")?
+    let tool_sources: Vec<PathBuf> = args.get::<Vec<String>>("tool_sources")?
         .iter()
         .map(|source| context.project_dir.join(source))
         .collect();
 
     let mut fingerprint = InputFingerprint::new(
-        directory
-            .join("build/fingerprints")
+        directory.join("build/fingerprints")
             .join(format!("generator-{name}")),
     );
 
@@ -85,8 +82,7 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
         &context.project_dir,
     )?;
 
-    let tool = args
-        .get::<Vec<String>>("tool")?
+    let tool = args.get::<Vec<String>>("tool")?
         .iter()
         .map(|notation| MavenCoordinate::parse(notation))
         .collect::<Result<Vec<_>, _>>()?;
@@ -117,12 +113,11 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
     system::recreate_dir(&output)?;
     let output_arg = output.display().to_string();
     let mut command = jdk.java_command(&classpath, &main_class)?;
-    command
-        .args(
-            args.get::<Vec<String>>("args")?
-                .iter()
-                .map(|arg| arg.replace(OUTPUT_PLACEHOLDER, &output_arg)),
-        )
+    command.args(
+        args.get::<Vec<String>>("args")?
+            .iter()
+            .map(|arg| arg.replace(OUTPUT_PLACEHOLDER, &output_arg)),
+    )
         // paths in the arguments are relative to the directory
         .current_dir(&directory);
     system::run_command(&mut command, &main_class)?;

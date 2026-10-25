@@ -108,8 +108,7 @@ const COMPOSE_LIBRARIES: &[&str] = &[
 /// Like the Java naming conventions: reversed, other characters than letters and digits
 /// become underscores, keywords and labels starting with a digit get one: mvmo.dev -> dev.mvmo
 pub fn package_of_domain(domain: &str) -> String {
-    let segments: Vec<String> = domain
-        .split('.')
+    let segments: Vec<String> = domain.split('.')
         .rev()
         .map(|label| {
             let segment = package_segment(label);
@@ -125,8 +124,7 @@ pub fn package_of_domain(domain: &str) -> String {
 
 /// my-App -> my_app, a keyword gets an underscore
 pub fn package_segment(name: &str) -> String {
-    let segment: String = name
-        .to_ascii_lowercase()
+    let segment: String = name.to_ascii_lowercase()
         .chars()
         .map(|char| {
             if char.is_ascii_alphanumeric() {
@@ -147,12 +145,10 @@ pub fn package_segment(name: &str) -> String {
 /// Java identifiers separated by dots, none of them a keyword
 pub fn checked_package(package: &str) -> Result<String, String> {
     let valid = package.split('.').all(|segment| {
-        segment
-            .chars()
+        segment.chars()
             .next()
             .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-            && segment
-                .chars()
+            && segment.chars()
                 .all(|char| char.is_ascii_alphanumeric() || char == '_')
             && !KEYWORDS.contains(&segment)
     });
@@ -293,9 +289,7 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
 /// list(...) of the modules it depends on and of `libraries`, which are written
 /// as in the script, one a line when there are libraries
 fn dependency_list(module: &NewModule, libraries: &[&str]) -> String {
-    let entries: Vec<&str> = module
-        .dependencies
-        .iter()
+    let entries: Vec<&str> = module.dependencies.iter()
         .map(|(variable, _)| variable.as_str())
         .chain(libraries.iter().copied())
         .collect();
@@ -304,8 +298,7 @@ fn dependency_list(module: &NewModule, libraries: &[&str]) -> String {
         return format!("list({})", entries.join(", "));
     }
 
-    let lines: String = entries
-        .iter()
+    let lines: String = entries.iter()
         .map(|entry| format!("        {entry},\n"))
         .collect();
 

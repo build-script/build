@@ -50,8 +50,7 @@ pub fn checked_library(notation: &str, target: &InstallTarget) -> Result<MavenCo
     };
 
     if !target.android {
-        if let Some(aar) = files
-            .iter()
+        if let Some(aar) = files.iter()
             .find(|file| file.extension().is_some_and(|extension| extension == "aar"))
         {
             return Err(format!(
@@ -66,8 +65,7 @@ pub fn checked_library(notation: &str, target: &InstallTarget) -> Result<MavenCo
         return Ok(library);
     };
 
-    for jar in files
-        .iter()
+    for jar in files.iter()
         .filter(|file| file.extension().is_some_and(|extension| extension == "jar"))
     {
         if let Some(needed) = class_java_version(jar)?.filter(|needed| *needed > jdk) {
@@ -86,7 +84,9 @@ pub fn checked_library(notation: &str, target: &InstallTarget) -> Result<MavenCo
 /// The feature version of a jdk argument: 21 of "21" and "21.0.2", 8 of "1.8"
 fn java_version(jdk: &str) -> Option<u32> {
     let version = jdk.strip_prefix("1.").unwrap_or(jdk);
-    let digits: String = version.chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = version.chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     return digits.parse().ok();
 }
 
@@ -98,8 +98,7 @@ fn class_java_version(jar: &Path) -> Result<Option<u32>, String> {
         return Ok(None);
     };
 
-    let classes = entries
-        .iter()
+    let classes = entries.iter()
         .filter(|entry| entry.ends_with(".class") && !entry.starts_with("META-INF/"))
         .filter(|entry| !entry.ends_with("module-info.class"))
         // unzip reads them as patterns

@@ -79,8 +79,7 @@ pub fn merge_jars(
         };
 
         for file in system::files_below(&[extracted.clone()]) {
-            let relative = file
-                .strip_prefix(&extracted)
+            let relative = file.strip_prefix(&extracted)
                 .map_err(|error| error.to_string())?;
 
             let target = output.join(relative);
@@ -138,8 +137,7 @@ fn extract_contents(jar: &Path, contents: JarContents, target: &Path) -> Result<
     };
 
     let mut unzip = Command::new("unzip");
-    unzip
-        .stdin(Stdio::null())
+    unzip.stdin(Stdio::null())
         .args(["-q", "-o"])
         .arg(jar)
         .args([
@@ -155,8 +153,7 @@ fn extract_contents(jar: &Path, contents: JarContents, target: &Path) -> Result<
         .arg(target);
 
     // exit code 1 = only warnings (an exclude pattern did not match), 11 = nothing left to extract
-    let result = unzip
-        .output()
+    let result = unzip.output()
         .map_err(|error| format!("could not start unzip: {error}"))?;
 
     if !matches!(result.status.code(), Some(0 | 1 | 11)) {
@@ -226,7 +223,9 @@ pub fn relocate_service_files(
     let services = contents.join("META-INF/services");
 
     for file in system::files_below(&[services.clone()]) {
-        let name = file.file_name().unwrap_or_default().to_string_lossy();
+        let name = file.file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
 
         let lines: Vec<String> = system::read_file(&file)?
             .lines()

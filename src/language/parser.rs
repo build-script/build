@@ -62,8 +62,7 @@ impl fmt::Display for ParseErrorType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ParseErrorType::UnexpectedToken { expected, got } => {
-                let expected: Vec<&str> = expected
-                    .iter()
+                let expected: Vec<&str> = expected.iter()
                     .map(|name| name.trim_start_matches("TokenType::"))
                     .collect();
 

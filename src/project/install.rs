@@ -44,8 +44,7 @@ pub fn install(
     }
 
     // relative paths in the script are resolved against the script's directory
-    let project_dir = script_file
-        .parent()
+    let project_dir = script_file.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
@@ -90,8 +89,7 @@ pub fn install(
 
     system::write_file(script_file, &edit.script)?;
 
-    let sharing: Vec<&str> = calls
-        .iter()
+    let sharing: Vec<&str> = calls.iter()
         .filter(|other| other.name != call.name)
         .filter(|other| {
             edit.variable.is_some() && other.variable(parameter) == edit.variable.as_deref()
@@ -118,16 +116,14 @@ fn chosen_module<'a, 'b>(
     module: Option<&str>,
     script_file: &Path,
 ) -> Result<&'b ModuleCall<'a>, String> {
-    let names = calls
-        .iter()
+    let names = calls.iter()
         .map(|call| call.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
 
     match (module, calls) {
         (Some(module), _) => {
-            return calls
-                .iter()
+            return calls.iter()
                 .find(|call| call.name == module)
                 .ok_or_else(|| {
                     format!(
@@ -155,10 +151,7 @@ fn argument_value<T: FromValue>(
     project_dir: &Path,
 ) -> Result<T, String> {
     let default = || {
-        call.signature
-            .parameters
-            .fixed
-            .iter()
+        call.signature.parameters.fixed.iter()
             .find(|param| param.name == parameter)
             .and_then(|param| match &param.default {
                 ParameterDefault::Value(value) => Some(value.clone()),

@@ -28,7 +28,9 @@ impl InputFingerprint {
             .and_then(|executable| fs::metadata(executable).ok())
         {
             metadata.len().hash(&mut hasher);
-            metadata.modified().ok().hash(&mut hasher);
+            metadata.modified()
+                .ok()
+                .hash(&mut hasher);
         }
 
         return InputFingerprint { hasher, file };

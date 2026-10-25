@@ -261,9 +261,8 @@ impl Runtime {
                 if let Ok(int) = name.parse::<i64>() {
                     return Ok(Value::Int(int));
                 }
-                return self
-                    .scope
-                    .lock().unwrap()
+                return self.scope.lock()
+                    .unwrap()
                     .get(name)
                     .ok_or_else(|| {
                         let name = name.clone();
@@ -417,14 +416,16 @@ impl Runtime {
         match (operator, &value) {
             (UnaryOperator::Not, Value::Bool(bool)) => return Ok(Value::Bool(!bool)),
             (UnaryOperator::Neg, Value::Int(int)) => {
-                return int.checked_neg().map(Value::Int).ok_or_else(|| {
-                    RuntimeError::new(
-                        RuntimeErrorType::InvalidArithmetic {
-                            operator: format!("{operator:?}"),
-                        },
-                        span,
-                    )
-                });
+                return int.checked_neg()
+                    .map(Value::Int)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            RuntimeErrorType::InvalidArithmetic {
+                                operator: format!("{operator:?}"),
+                            },
+                            span,
+                        )
+                    });
             }
             _ => {
                 let variant = RuntimeErrorType::InvalidUnaryOperand {
@@ -571,9 +572,7 @@ impl Runtime {
         for param in params {
             let param_name = &param.name.name;
 
-            if declared
-                .fixed
-                .iter()
+            if declared.fixed.iter()
                 .any(|known| known.name == *param_name)
             {
                 return Err(RuntimeError::new(
@@ -647,8 +646,7 @@ impl Runtime {
             }
             TypeExpressionType::Union(members) => {
                 return Ok(Type::Union(
-                    members
-                        .iter()
+                    members.iter()
                         .map(Self::resolve_type)
                         .collect::<Result<_, _>>()?,
                 ));
@@ -727,8 +725,7 @@ impl Runtime {
         let jobs = self.jobs.clone();
 
         std::thread::spawn(move || {
-            let dependencies_built = args
-                .pending_modules()
+            let dependencies_built = args.pending_modules()
                 .iter()
                 .all(|dependency| dependency.wait().is_ok());
 
@@ -826,7 +823,10 @@ impl Scope {
         if let Some(value) = self.variables.get(name) {
             return Some(value.clone());
         }
-        return self.parent.as_ref()?.lock().unwrap().get(name);
+        return self.parent.as_ref()?
+            .lock()
+            .unwrap()
+            .get(name);
     }
 }
 
@@ -1000,9 +1000,8 @@ mod tests {
     }
 
     fn variable(runtime: &Runtime, name: &str) -> Value {
-        return runtime
-            .scope
-            .lock().unwrap()
+        return runtime.scope.lock()
+            .unwrap()
             .get(name)
             .unwrap_or_else(|| panic!("{name} is not defined"));
     }
@@ -1574,7 +1573,9 @@ mod tests {
             MOST.fetch_max(running, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(200));
             RUNNING.fetch_sub(1, Ordering::SeqCst);
-            FINISHED.lock().unwrap().push(name.clone());
+            FINISHED.lock()
+                .unwrap()
+                .push(name.clone());
 
             return Ok(Value::from(Arc::new(BuiltModule {
                 artifact: PathBuf::from(format!("{name}.jar")),
@@ -1608,7 +1609,9 @@ mod tests {
             .parse_script()
             .unwrap();
         runtime.run(&script).unwrap();
-        let errors = runtime.finish().err().unwrap();
+        let errors = runtime.finish()
+            .err()
+            .unwrap();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].to_string(), "slow: broken on purpose");
     }
@@ -1637,7 +1640,9 @@ mod tests {
         let runtime = run_in(runtime, "core = library(\"core\")\nlibrary(\"app\")").unwrap();
 
         let built = runtime.finish().unwrap();
-        let names: Vec<&str> = built.iter().map(|module| module.name.as_str()).collect();
+        let names: Vec<&str> = built.iter()
+            .map(|module| module.name.as_str())
+            .collect();
 
         assert_eq!(names, ["core", "app"]);
 

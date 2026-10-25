@@ -196,8 +196,7 @@ impl<'src> TokenStream<'src> {
             return Token::new(variant, Span::new(start_pos, current_pos));
         };
 
-        let mut word_length = trimmed
-            .find(|char: char| char.is_whitespace() || char == '"' || CONTROL_CHARS.contains(&char))
+        let mut word_length = trimmed.find(|char: char| char.is_whitespace() || char == '"' || CONTROL_CHARS.contains(&char))
             .unwrap_or(trimmed.len());
 
         // a character that only starts a symbol, like a single &: a token of its own, the parser names it
@@ -240,8 +239,7 @@ impl<'src> TokenStream<'src> {
             if trimmed.starts_with("//") {
                 current_pos += trimmed.find('\n').unwrap_or(trimmed.len());
             } else if trimmed.starts_with("/*") {
-                current_pos += trimmed
-                    .find("*/")
+                current_pos += trimmed.find("*/")
                     .map(|end| end + 2)
                     .unwrap_or(trimmed.len());
             } else {

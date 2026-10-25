@@ -130,8 +130,7 @@ pub fn license_report(libraries: &[LicenseReportEntry]) -> Json {
 /// Entries of the child replace matching entries of the parent
 pub fn merge_dependencies(target: &mut Vec<PomDependency>, entries: Vec<PomDependency>) {
     for entry in entries {
-        match target
-            .iter_mut()
+        match target.iter_mut()
             .find(|existing| existing.same_module(&entry))
         {
             Some(existing) => *existing = entry,
@@ -178,40 +177,27 @@ impl PomFile {
 
     /// `<dependencies>` of the project
     pub fn dependencies(&self) -> Vec<PomDependency> {
-        return self
-            .dependencies
-            .dependency
-            .iter()
+        return self.dependencies.dependency.iter()
             .filter_map(PomDependency::from_entry)
             .collect();
     }
 
     /// `<dependencies>` of `<dependencyManagement>`
     pub fn managed(&self) -> Vec<PomDependency> {
-        return self
-            .dependency_management
-            .dependencies
-            .dependency
-            .iter()
+        return self.dependency_management.dependencies.dependency.iter()
             .filter_map(PomDependency::from_entry)
             .collect();
     }
 
     /// Their names, their ids where they have none
     pub fn developers(&self) -> Vec<String> {
-        return self
-            .developers
-            .developer
-            .iter()
+        return self.developers.developer.iter()
             .filter_map(|developer| developer.name.clone().or_else(|| developer.id.clone()))
             .collect();
     }
 
     pub fn licenses(&self) -> Vec<LibraryLicense> {
-        return self
-            .licenses
-            .license
-            .iter()
+        return self.licenses.license.iter()
             .map(|license| LibraryLicense {
                 name: license.name.clone().unwrap_or_default(),
                 url: license.url.clone().unwrap_or_default(),
@@ -244,18 +230,11 @@ impl PomDependency {
 
     /// Entries without group or artifact are left out
     fn from_entry(entry: &PomDependencyEntry) -> Option<Self> {
-        let exclusions = entry
-            .exclusions
-            .exclusion
-            .iter()
+        let exclusions = entry.exclusions.exclusion.iter()
             .map(|exclusion| PomExclusion {
-                group: exclusion
-                    .group_id
-                    .clone()
+                group: exclusion.group_id.clone()
                     .unwrap_or_else(|| "*".to_string()),
-                artifact: exclusion
-                    .artifact_id
-                    .clone()
+                artifact: exclusion.artifact_id.clone()
                     .unwrap_or_else(|| "*".to_string()),
             })
             .collect();
@@ -265,9 +244,7 @@ impl PomDependency {
             artifact: entry.artifact_id.clone()?,
             version: entry.version.clone(),
             classifier: entry.classifier.clone(),
-            artifact_type: entry
-                .artifact_type
-                .clone()
+            artifact_type: entry.artifact_type.clone()
                 .unwrap_or_else(|| "jar".to_string()),
             scope: entry.scope.clone(),
             optional: entry.optional.as_deref() == Some("true"),
@@ -363,7 +340,6 @@ struct PomLicense {
 /// Trimmed, None for an empty element
 fn trimmed_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
     let text = Option::<String>::deserialize(deserializer)?;
-    return Ok(text
-        .map(|text| text.trim().to_string())
+    return Ok(text.map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty()));
 }

@@ -139,8 +139,7 @@ pub fn repositories(specs: &[String], project_dir: &Path) -> Result<Vec<MavenRep
     if specs.is_empty() {
         return Err("specify at least one repository, e.g. maven_central()".to_string());
     }
-    return specs
-        .iter()
+    return specs.iter()
         .map(|spec| MavenRepository::parse(spec, project_dir))
         .collect();
 }
@@ -160,14 +159,15 @@ pub fn newest_version(
     }
 
     let newest = |stable: bool| {
-        versions
-            .iter()
+        versions.iter()
             .filter(|version| !stable || is_final(version))
             .max_by(|left, right| compare_versions(left, right))
             .cloned()
     };
 
-    let names: Vec<String> = repositories.iter().map(ToString::to_string).collect();
+    let names: Vec<String> = repositories.iter()
+        .map(ToString::to_string)
+        .collect();
 
     return newest(true).or_else(|| newest(false)).ok_or_else(|| {
         format!(
@@ -203,8 +203,7 @@ impl DependencyNotation {
     pub fn parse(notation: &str) -> Result<Self, String> {
         let notation = notation.trim();
 
-        if let Some(bom) = notation
-            .strip_prefix("platform(")
+        if let Some(bom) = notation.strip_prefix("platform(")
             .and_then(|rest| rest.strip_suffix(')'))
         {
             let bom = MavenCoordinate::parse(bom)?;
@@ -235,7 +234,9 @@ impl MavenCoordinate {
     /// group:artifact:version[:classifier], or group:artifact when a platform
     /// provides the version (the version stays empty then)
     pub fn parse(notation: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = notation.trim().split(':').collect();
+        let parts: Vec<&str> = notation.trim()
+            .split(':')
+            .collect();
 
         if !(2..=4).contains(&parts.len()) || parts.iter().any(|part| part.is_empty()) {
             return Err(format!(
@@ -246,8 +247,7 @@ impl MavenCoordinate {
         return Ok(MavenCoordinate {
             group: parts[0].to_string(),
             artifact: parts[1].to_string(),
-            version: parts
-                .get(2)
+            version: parts.get(2)
                 .map(|version| version.to_string())
                 .unwrap_or_default(),
             classifier: parts.get(3).map(|classifier| classifier.to_string()),
@@ -302,9 +302,7 @@ impl MavenCoordinate {
     }
 
     fn artifact_path(&self, extension: &str) -> String {
-        let classifier = self
-            .classifier
-            .as_ref()
+        let classifier = self.classifier.as_ref()
             .map(|classifier| format!("-{classifier}"))
             .unwrap_or_default();
         return format!(
@@ -402,8 +400,7 @@ impl RepositoryCredentials {
 
         for (parameter, name) in names {
             let mut chars = name.chars();
-            let valid = chars
-                .next()
+            let valid = chars.next()
                 .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
                 && chars.all(|char| char.is_ascii_alphanumeric() || char == '_');
 
@@ -422,7 +419,9 @@ impl RepositoryCredentials {
 
     /// `USERNAME_ENV, PASSWORD_ENV)`, what follows `credentials(`
     fn parse(names: &str) -> Result<Self, String> {
-        let names = names.trim_end().strip_suffix(')').unwrap_or(names);
+        let names = names.trim_end()
+            .strip_suffix(')')
+            .unwrap_or(names);
 
         let Some((username_env, password_env)) = names.split_once(',') else {
             return Err("credentials(...) takes the names of two environment variables".to_string());
@@ -510,7 +509,10 @@ fn concrete_version(version: &str) -> Result<String, String> {
         return Ok(version.to_string());
     };
 
-    let lower = range.split([',', ']', ')']).next().unwrap_or("").trim();
+    let lower = range.split([',', ']', ')'])
+        .next()
+        .unwrap_or("")
+        .trim();
 
     if lower.is_empty() {
         return Err(format!("version range '{version}' is not supported"));
@@ -668,7 +670,9 @@ mod tests {
             project,
         )
         .unwrap();
-        let error = missing.credentials().err().unwrap();
+        let error = missing.credentials()
+            .err()
+            .unwrap();
         assert!(error.ends_with("but BUILD_SCRIPT_TEST_UNSET_USER is not set"), "{error}");
     }
 }

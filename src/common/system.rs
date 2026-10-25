@@ -207,12 +207,14 @@ pub fn contains_files(directory: &Path) -> bool {
 /// With the output in the terminal, but no stdin: a tool must not swallow what
 /// the user types for a prompt. `what` names it in errors.
 pub fn run_command(command: &mut Command, what: &str) -> Result<(), String> {
-    let status = command.stdin(Stdio::null()).status().map_err(|error| {
-        format!(
-            "could not start {}: {error}",
-            command.get_program().to_string_lossy()
-        )
-    })?;
+    let status = command.stdin(Stdio::null())
+        .status()
+        .map_err(|error| {
+            format!(
+                "could not start {}: {error}",
+                command.get_program().to_string_lossy()
+            )
+        })?;
 
     if !status.success() {
         return Err(format!("{what} failed ({status})"));
@@ -223,12 +225,14 @@ pub fn run_command(command: &mut Command, what: &str) -> Result<(), String> {
 
 /// Like run_command, but what the tool prints only shows when it fails
 pub fn run_command_quietly(command: &mut Command, what: &str) -> Result<(), String> {
-    let output = command.stdin(Stdio::null()).output().map_err(|error| {
-        format!(
-            "could not start {}: {error}",
-            command.get_program().to_string_lossy()
-        )
-    })?;
+    let output = command.stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            format!(
+                "could not start {}: {error}",
+                command.get_program().to_string_lossy()
+            )
+        })?;
 
     if !output.status.success() {
         let text = format!(
@@ -264,16 +268,15 @@ pub fn download(
     // renamed once complete, nothing half downloaded stays behind
     let partial = partial_path(target);
     let mut command = Command::new("curl");
-    command
-        .args([
-            "--show-error",
-            "--location",
-            "--retry",
-            "2",
-            "--write-out",
-            "%{http_code}",
-            "--output",
-        ])
+    command.args([
+        "--show-error",
+        "--location",
+        "--retry",
+        "2",
+        "--write-out",
+        "%{http_code}",
+        "--output",
+    ])
         .arg(&partial)
         .arg(url)
         .stdout(Stdio::piped());
@@ -290,14 +293,12 @@ pub fn download(
         None => command.stdin(Stdio::null()),
     };
 
-    let mut child = command
-        .spawn()
+    let mut child = command.spawn()
         .map_err(|error| format!("could not start curl: {error}"))?;
 
     if let (Some(credentials), Some(mut stdin)) = (credentials, child.stdin.take()) {
         let quoted = |value: &str| {
-            value
-                .replace('\\', "\\\\")
+            value.replace('\\', "\\\\")
                 .replace('"', "\\\"")
                 .replace('\n', "\\n")
                 .replace('\r', "\\r")
@@ -309,13 +310,11 @@ pub fn download(
             quoted(&credentials.password)
         );
 
-        stdin
-            .write_all(config.as_bytes())
+        stdin.write_all(config.as_bytes())
             .map_err(|error| format!("could not pass the credentials to curl: {error}"))?;
     }
 
-    let output = child
-        .wait_with_output()
+    let output = child.wait_with_output()
         .map_err(|error| format!("curl failed: {error}"))?;
 
     let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -420,8 +419,7 @@ pub fn http_get(url: &str) -> Result<(u16, String), String> {
 
     let (body, status) = stdout.rsplit_once('\n').unwrap_or(("", &stdout));
 
-    let status = status
-        .trim()
+    let status = status.trim()
         .parse()
         .map_err(|_| format!("invalid HTTP status from {url}: '{status}'"))?;
 
@@ -460,21 +458,22 @@ pub fn sha(file: &Path, bits: u32) -> Result<String, String> {
 pub fn extract(archive: &Path, target: &Path) -> Result<(), String> {
     create_dir(target)?;
 
-    let zip_like = archive
-        .extension()
+    let zip_like = archive.extension()
         .is_some_and(|extension| extension == "zip" || extension == "aar" || extension == "jar");
 
     let mut command = if zip_like {
         let mut command = Command::new("unzip");
-        command
-            .args(["-q", "-o"])
+        command.args(["-q", "-o"])
             .arg(archive)
             .arg("-d")
             .arg(target);
         command
     } else {
         let mut command = Command::new("tar");
-        command.arg("-xf").arg(archive).arg("-C").arg(target);
+        command.arg("-xf")
+            .arg(archive)
+            .arg("-C")
+            .arg(target);
         command
     };
 
@@ -495,7 +494,9 @@ pub fn kept_in_cache(
 
     let mut hasher = DefaultHasher::new();
     (file, metadata.len(), metadata.modified().ok()).hash(&mut hasher);
-    let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+    let stem = file.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
     let target = cache_dir(name).join(format!("{stem}-{:016x}", hasher.finish()));
 
     if target.is_dir() {
@@ -539,8 +540,7 @@ pub fn partial_path(path: &Path) -> PathBuf {
 /// One installation at a time: modules building at the same time may need the same JDK or SDK package
 pub fn installing<T>(install: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     static INSTALLING: Mutex<()> = Mutex::new(());
-    let _installing = INSTALLING
-        .lock()
+    let _installing = INSTALLING.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     return install();
@@ -613,9 +613,7 @@ impl BuildHomeEnvironment {
     /// $BUILD_SCRIPT_HOME keeps everything in one directory, the caches in caches/
     /// like ~/.gradle. Without it the XDG variables decide, ~/.build-script for those not set.
     fn base_directory(&self, kind: BaseDirectory) -> PathBuf {
-        let build_script_home = self
-            .build_script_home
-            .as_deref()
+        let build_script_home = self.build_script_home.as_deref()
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
 
@@ -627,8 +625,7 @@ impl BuildHomeEnvironment {
             };
 
             // the specification asks to ignore relative paths
-            if let Some(xdg_base_dir) = xdg_base_dir
-                .map(PathBuf::from)
+            if let Some(xdg_base_dir) = xdg_base_dir.map(PathBuf::from)
                 .filter(|path| path.is_absolute())
             {
                 return xdg_base_dir.join(BUILD_SCRIPT_DIR_NAME);

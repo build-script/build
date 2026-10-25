@@ -60,8 +60,7 @@ const REMEMBER_DOMAIN: &str = "remember_domain";
 const DEFAULT_DOMAIN: &str = "example.com";
 
 pub fn project_kinds() -> Vec<&'static str> {
-    return templates::PROJECT_KINDS
-        .iter()
+    return templates::PROJECT_KINDS.iter()
         .map(|(kind, _)| *kind)
         .collect();
 }
@@ -74,8 +73,7 @@ pub fn new_project(
     package: Option<&str>,
     domain: impl FnOnce() -> Result<String, String>,
 ) -> Result<(), String> {
-    let Some((_, modules)) = templates::PROJECT_KINDS
-        .iter()
+    let Some((_, modules)) = templates::PROJECT_KINDS.iter()
         .find(|(known, _)| *known == kind)
     else {
         return Err(format!(
@@ -126,9 +124,7 @@ pub fn new_project(
         script = script::with_module(&script, &variable, &module, &template)?;
         let module_dir = PathBuf::from(module.directory.as_deref().unwrap_or(""));
         files.extend(
-            template
-                .files
-                .into_iter()
+            template.files.into_iter()
                 .map(|(file, content)| (module_dir.join(file), content)),
         );
         if !template.is_app {
@@ -161,8 +157,7 @@ pub fn add_module(
 ) -> Result<(), String> {
     let name = checked_name(name)?;
 
-    let project_dir = script_file
-        .parent()
+    let project_dir = script_file.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
@@ -242,8 +237,7 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
         return Err(format!("{} does not exist", script_file.display()));
     }
 
-    let project_dir = script_file
-        .parent()
+    let project_dir = script_file.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut removed = vec![];
@@ -350,7 +344,9 @@ pub fn checked_setting(name: &str, value: &str) -> Result<String, String> {
             ));
         }
         _ => {
-            let known: Vec<&str> = SETTINGS.iter().map(|(name, _)| *name).collect();
+            let known: Vec<&str> = SETTINGS.iter()
+                .map(|(name, _)| *name)
+                .collect();
             return Err(format!(
                 "unknown setting '{name}' (known: {})",
                 known.join(", ")
@@ -367,8 +363,7 @@ fn checked_domain(domain: &str) -> Result<String, String> {
         !label.is_empty()
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label
-                .chars()
+            && label.chars()
                 .all(|char| char.is_ascii_alphanumeric() || char == '-')
     });
 
@@ -383,12 +378,10 @@ fn checked_domain(domain: &str) -> Result<String, String> {
 
 /// Letters, digits, - and _, starting with a letter
 fn checked_name(name: &str) -> Result<String, String> {
-    let valid = name
-        .chars()
+    let valid = name.chars()
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic())
-        && name
-            .chars()
+        && name.chars()
             .all(|char| char.is_ascii_alphanumeric() || char == '-' || char == '_');
 
     if !valid {
@@ -402,8 +395,7 @@ fn checked_name(name: &str) -> Result<String, String> {
 
 /// The variable of a module in the script: my-lib -> my_lib, builtins are not shadowed
 fn variable_name(name: &str) -> String {
-    let variable: String = name
-        .chars()
+    let variable: String = name.chars()
         .map(|char| {
             if char.is_ascii_alphanumeric() {
                 char

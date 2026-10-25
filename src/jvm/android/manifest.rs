@@ -19,14 +19,11 @@ pub fn launcher_activity(manifest: &XmlElement, namespace: &str) -> Option<Strin
     let application = manifest.child("application")?;
 
     let has = |filter: &XmlElement, tag: &str, name: &str| {
-        filter
-            .children(tag)
+        filter.children(tag)
             .any(|entry| entry.attribute("android:name") == Some(name))
     };
 
-    let activity = application
-        .children
-        .iter()
+    let activity = application.children.iter()
         .filter(|child| child.name == "activity" || child.name == "activity-alias")
         .find(|activity| {
             activity.children("intent-filter").any(|filter| {
@@ -97,9 +94,7 @@ pub fn merge_manifest(app: &mut XmlElement, library: &XmlElement) {
                     });
                 }
 
-                let application = app
-                    .children
-                    .iter_mut()
+                let application = app.children.iter_mut()
                     .find(|child| child.name == "application")
                     .unwrap();
 
@@ -113,9 +108,7 @@ pub fn merge_manifest(app: &mut XmlElement, library: &XmlElement) {
 /// Android only accepts an <activity-alias> after its target activity, the
 /// Gradle plugin's manifest merger orders them like that too
 pub fn move_aliases_last(manifest: &mut XmlElement) {
-    let Some(application) = manifest
-        .children
-        .iter_mut()
+    let Some(application) = manifest.children.iter_mut()
         .find(|child| child.name == "application")
     else {
         return;
@@ -183,9 +176,7 @@ fn same_content(left: &XmlElement, right: &XmlElement) -> bool {
         && left.attributes == right.attributes
         && left.text.trim() == right.text.trim()
         && left.children.len() == right.children.len()
-        && left
-            .children
-            .iter()
+        && left.children.iter()
             .zip(&right.children)
             .all(|(left, right)| same_content(left, right));
 }
@@ -270,11 +261,8 @@ mod tests {
         .unwrap();
 
         move_aliases_last(&mut aliased);
-        let order: Vec<&str> = aliased
-            .child("application")
-            .unwrap()
-            .children
-            .iter()
+        let order: Vec<&str> = aliased.child("application")
+            .unwrap().children.iter()
             .map(|child| child.name.as_str())
             .collect();
 
@@ -282,9 +270,7 @@ mod tests {
 
         let application = app.child("application").unwrap();
 
-        let names: Vec<&str> = application
-            .children
-            .iter()
+        let names: Vec<&str> = application.children.iter()
             .filter_map(|child| child.attribute("android:name"))
             .collect();
 
@@ -302,10 +288,10 @@ mod tests {
             Some("lib.Factory")
         );
 
-        let provider = application.children("provider").next().unwrap();
-        let initializers: Vec<&str> = provider
-            .children
-            .iter()
+        let provider = application.children("provider")
+            .next()
+            .unwrap();
+        let initializers: Vec<&str> = provider.children.iter()
             .filter_map(|child| child.attribute("android:name"))
             .collect();
 

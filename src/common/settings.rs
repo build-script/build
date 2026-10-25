@@ -50,9 +50,7 @@ impl Settings {
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
-        return self
-            .entries
-            .iter()
+        return self.entries.iter()
             .find(|(known, _)| known == name)
             .map(|(_, value)| value.as_str());
     }
@@ -84,9 +82,7 @@ impl Settings {
     }
 
     fn save(&self) -> Result<(), String> {
-        let lines: Vec<String> = self
-            .entries
-            .iter()
+        let lines: Vec<String> = self.entries.iter()
             .map(|(name, value)| format!("{name} = {value}\n"))
             .collect();
 
