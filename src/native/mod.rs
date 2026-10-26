@@ -1,7 +1,8 @@
-// C++: build_cpp compiles a module into a static library or a program with the compiler of the system,
-// its libraries are modules of the script. Every source compiles on its own, only when it changed.
+// C++: build_cpp compiles a module into a static library or a program, its libraries come from vcpkg,
+// its compiler is the system's. Every source compiles on its own, only when it changed.
 mod compile;
 mod toolchain;
+mod vcpkg;
 
 use std::collections::HashSet;
 use std::fs;
@@ -38,9 +39,10 @@ pub struct NativeOutput {
     pub program: Option<PathBuf>,
 }
 
-/// A dependency list: modules of the script
+/// A dependency list: vcpkg ports and modules of the script
 #[derive(Default)]
 struct Dependencies {
+    ports: Vec<String>,
     modules: Vec<Arc<BuiltModule>>,
 }
 
@@ -51,11 +53,12 @@ fn cpp_builtins() -> Vec<(&'static str, Value)> {
 fn signature() -> FunctionSignature {
     let strings = || Type::list(Type::String);
     let none = || Value::string_list(&[]);
+    let dependencies = || Type::list(Type::Union(vec![Type::String, Type::Module]));
 
     return FunctionParameters::new()
         .required("name", Type::String)
-        // modules of the script
-        .required("dependencies", Type::list(Type::Module))
+        // vcpkg ports, like "fmt", and modules of the script
+        .required("dependencies", dependencies())
         // a program `run` starts, else a static library
         .with_default("program", Type::Bool, false)
         .with_default("c_standard", Type::String, "c17")
@@ -104,7 +107,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
     public_flags.extend(args.get::<Vec<String>>("public_defines")?.iter().map(|define| format!("-D{define}")));
 
     let dependencies = Dependencies::read(args, "dependencies")?;
-    let (compile_flags, mut link_flags) = dependencies.flags();
+    let installed = vcpkg::install(&name, &dependencies.ports, &build_dir)?;
+    let (compile_flags, mut link_flags) = dependencies.flags(installed.as_ref(), release);
     link_flags.extend(args.get::<Vec<String>>("link_flags")?);
 
     let mut flags = public_flags.clone();
@@ -234,6 +238,7 @@ impl Dependencies {
 
         for value in args.get::<Vec<Value>>(name)? {
             match value {
+                Value::String(port) => dependencies.ports.push(port),
                 Value::Module(module) => {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
@@ -252,10 +257,12 @@ impl Dependencies {
         return Ok(dependencies);
     }
 
-    /// -I and -D of the modules, and what to link
-    fn flags(&self) -> (Vec<String>, Vec<String>) {
-        let mut compile_flags = vec![];
-        let mut link_flags = vec![];
+    /// -I and -D, and what to link: of the modules, then of the ports
+    fn flags(&self, installed: Option<&vcpkg::Installed>, release: bool) -> (Vec<String>, Vec<String>) {
+        let (mut compile_flags, mut link_flags) = match installed {
+            Some(installed) => installed.flags(&self.ports, release),
+            None => (vec![], vec![]),
+        };
 
         for module in &self.modules {
             if let ModuleOutput::Native(output) = &module.output {
@@ -268,7 +275,7 @@ impl Dependencies {
     }
 }
 
-/// The flags, those that stand alone like -I and -D once: modules depending on the same one repeat them
+/// The flags, those that stand alone like -I and -D once: the 80 packages of abseil repeat them
 fn without_repeated_flags(mut flags: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
 
