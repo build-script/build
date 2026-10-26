@@ -653,6 +653,11 @@ impl Dependencies {
                 Value::Module(module) => {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
+
+                    if let ModuleOutput::Native(_) = &module.output {
+                        return Err(format!("{} is a C or C++ module, JVM modules depend on JVM modules", module.name));
+                    }
+
                     dependencies.modules.push(module);
                 }
                 other => {

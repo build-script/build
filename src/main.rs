@@ -1,6 +1,7 @@
 mod common;
 mod jvm;
 mod language;
+mod native;
 mod project;
 
 use std::path::{Path, PathBuf};

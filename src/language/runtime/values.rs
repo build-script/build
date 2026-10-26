@@ -10,6 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::common::up_to_date::InputFingerprint;
 use crate::common::{system, xml};
 use crate::jvm::{self, JvmOutput};
+use crate::native::NativeOutput;
 use crate::language::lexer::Span;
 
 use super::functions::{BuiltinFunction, FunctionSignature, UserFunction};
@@ -146,12 +147,26 @@ pub struct TestCounts {
 #[derive(Debug)]
 pub enum ModuleOutput {
     Jvm(JvmOutput),
+    Native(NativeOutput),
 }
 
 /// Starts what a module built and returns the exit code for the process
 pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
     match &module.output {
         ModuleOutput::Jvm(output) => return jvm::launch(module, output, args),
+        ModuleOutput::Native(output) => {
+            let program = output.program.as_ref()
+                .ok_or(format!("{} is a library, only programs can be run", module.name))?;
+
+            // like jars, in the module's directory
+            let status = Command::new(program)
+                .args(args)
+                .current_dir(&module.directory)
+                .status()
+                .map_err(|error| format!("could not start {}: {error}", program.display()))?;
+
+            return Ok(status.code().unwrap_or(1));
+        }
     }
 }
 
@@ -406,6 +421,7 @@ impl BuiltModule {
     pub fn can_launch(&self) -> bool {
         match &self.output {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),
+            ModuleOutput::Native(output) => return output.program.is_some(),
         }
     }
 }

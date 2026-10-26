@@ -1,0 +1,34 @@
+// One module per test framework, all run with `build-script test`
+use kotlin
+
+repositories = list(maven_central())
+
+/* JUnit 4 runs on the JUnit Platform's vintage engine, the test is Java */
+build_kotlin("junit4", list(), repositories, directory = "junit4", test_dependencies = list("junit:junit:4.13.2"))
+
+// JUnit 5 without its engine, build-script adds it
+build_kotlin("junit5", list(), repositories, directory = "junit5", test_dependencies = list("org.junit.jupiter:junit-jupiter-api:5.14.4"))
+
+// kotlin("test") without a version, bound to JUnit 5 like by the Kotlin Gradle plugin
+build_kotlin("kotlin-test", list(), repositories, directory = "kotlin-test", test_dependencies = list("org.jetbrains.kotlin:kotlin-test"))
+
+// Kotest is an engine of its own
+build_kotlin(
+    "kotest",
+    list(),
+    repositories,
+    directory = "kotest",
+    test_dependencies = list("io.kotest:kotest-runner-junit5-jvm:6.2.6", "io.kotest:kotest-assertions-core-jvm:6.2.6"),
+)
+
+// TestNG runs on the testng-engine
+build_kotlin("testng", list(), repositories, directory = "testng", test_dependencies = list("org.testng:testng:7.12.0"))
+
+// Spek 2 with kotlin.test assertions, its engine comes apart from the DSL
+build_kotlin(
+    "spek2",
+    list(),
+    repositories,
+    directory = "spek2",
+    test_dependencies = list("org.spekframework.spek2:spek-dsl-jvm:2.0.19", "org.jetbrains.kotlin:kotlin-test"),
+)
