@@ -1,5 +1,5 @@
 // C++: build_cpp compiles a module into a static library or a program, its libraries come from vcpkg,
-// its compiler is the system's. Every source compiles on its own, only when it changed.
+// its compiler is the system's or zig. Every source compiles on its own, only when it changed.
 mod compile;
 mod toolchain;
 mod vcpkg;
@@ -61,6 +61,8 @@ fn signature() -> FunctionSignature {
         .required("dependencies", dependencies())
         // a program `run` starts, else a static library
         .with_default("program", Type::Bool, false)
+        // "system": cc and c++ of the system, "zig": downloaded once
+        .with_default("toolchain", Type::String, "system")
         .with_default("c_standard", Type::String, "c17")
         .with_default("cpp_standard", Type::String, "c++20")
         // "NAME" or "NAME=value"
@@ -86,7 +88,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = directory.join("build");
     let program: bool = args.get("program")?;
-    let toolchain = Toolchain::system();
+    let toolchain = Toolchain::named(&args.get::<String>("toolchain")?)?;
     let release = context.release;
 
     let module_paths = |parameter: &str| -> Result<Vec<PathBuf>, String> {
@@ -107,7 +109,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
     public_flags.extend(args.get::<Vec<String>>("public_defines")?.iter().map(|define| format!("-D{define}")));
 
     let dependencies = Dependencies::read(args, "dependencies")?;
-    let installed = vcpkg::install(&name, &dependencies.ports, &build_dir)?;
+    let installed = vcpkg::install(&name, &dependencies.ports, &toolchain, &build_dir)?;
     let (compile_flags, mut link_flags) = dependencies.flags(installed.as_ref(), release);
     link_flags.extend(args.get::<Vec<String>>("link_flags")?);
 

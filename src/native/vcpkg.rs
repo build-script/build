@@ -8,6 +8,8 @@ use std::process::Command;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
 
+use super::toolchain::Toolchain;
+
 const VCPKG_RELEASE: &str = "2026.10.16";
 
 /// vcpkg checks its .pc files with pkg-config and fixes the RPATHs of Linux programs with patchelf,
@@ -22,7 +24,12 @@ pub struct Installed {
 }
 
 /// Installs the ports, only when they changed. None without ports.
-pub fn install(module: &str, ports: &[String], build_dir: &Path) -> Result<Option<Installed>, String> {
+pub fn install(
+    module: &str,
+    ports: &[String],
+    toolchain: &Toolchain,
+    build_dir: &Path,
+) -> Result<Option<Installed>, String> {
     if ports.is_empty() {
         return Ok(None);
     }
@@ -35,10 +42,16 @@ pub fn install(module: &str, ports: &[String], build_dir: &Path) -> Result<Optio
         (HostOperatingSystem::Windows, _) => return Err("C and C++ are not set up for Windows".into()),
     };
 
-    let manifest_dir = build_dir.join("vcpkg").join(host);
+    // ports built by zig link with code zig compiled, also on Linux, where the system has libstdc++
+    let triplet = match toolchain.zig {
+        true => format!("{host}-zig"),
+        false => host.to_string(),
+    };
+
+    let manifest_dir = build_dir.join("vcpkg").join(&triplet);
     let installed = Installed {
         root: manifest_dir.join("installed"),
-        triplet: host.to_string(),
+        triplet,
     };
 
     let dependencies: Vec<serde_json::Value> = ports.iter()
@@ -80,6 +93,15 @@ pub fn install(module: &str, ports: &[String], build_dir: &Path) -> Result<Optio
         .env("VCPKG_DISABLE_METRICS", "1")
         .env("PKG_CONFIG", tools.join("pkg-config"))
         .env("PATH", format!("{}:{path}", tools.display()));
+
+    if toolchain.zig {
+        let triplets = zig_triplets(&tools, &toolchain.c_compiler[0], host)?;
+        command.arg(format!("--overlay-triplets={}", triplets.display()));
+
+        for (name, value) in &toolchain.environment {
+            command.env(name, value);
+        }
+    }
 
     system::log(module, &format!("Installing {} with vcpkg", ports.join(", ")));
     system::run_command_quietly(&mut command, "vcpkg install")?;
@@ -130,6 +152,58 @@ fn install_vcpkg() -> Result<PathBuf, String> {
 
         return Ok(root.clone());
     });
+}
+
+/// Triplets whose ports zig builds: a CMake toolchain file with zig cc, zig c++, zig ar and zig ranlib
+fn zig_triplets(tools: &Path, zig: &str, host: &str) -> Result<PathBuf, String> {
+    let zig_dir = tools.join("zig");
+
+    // CMake takes a compiler as one program
+    for tool in ["cc", "c++", "ar", "ranlib"] {
+        executable(&zig_dir.join(tool), &format!("#!/bin/sh\nexec {zig} {tool} \"$@\"\n"))?;
+    }
+
+    let toolchain_file = zig_dir.join("toolchain.cmake");
+    let tool = |name: &str| zig_dir.join(name).display().to_string();
+    system::write_file(
+        &toolchain_file,
+        &format!(
+            r#"set(CMAKE_C_COMPILER "{}")
+set(CMAKE_CXX_COMPILER "{}")
+set(CMAKE_AR "{}")
+set(CMAKE_RANLIB "{}")
+"#,
+            tool("cc"),
+            tool("c++"),
+            tool("ar"),
+            tool("ranlib")
+        ),
+    )?;
+
+    // arm64-osx: arm64 on Darwin
+    let (architecture, system_name) = match host.split_once('-') {
+        Some((architecture, "osx")) => (architecture, "Darwin"),
+        Some((architecture, _)) => (architecture, "Linux"),
+        None => return Err(format!("unknown host triplet {host}")),
+    };
+
+    let triplets = zig_dir.join("triplets");
+    system::write_file(
+        &triplets.join(format!("{host}-zig.cmake")),
+        &format!(
+            r#"set(VCPKG_TARGET_ARCHITECTURE {architecture})
+set(VCPKG_OSX_ARCHITECTURES {architecture})
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CMAKE_SYSTEM_NAME {system_name})
+set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "{}")
+set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
+"#,
+            toolchain_file.display()
+        ),
+    )?;
+
+    return Ok(triplets);
 }
 
 fn executable(file: &Path, script: &str) -> Result<(), String> {
