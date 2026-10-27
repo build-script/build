@@ -9,12 +9,27 @@ use crate::common::system;
 
 use super::toolchain::Toolchain;
 
-/// Of the sources, the rest are headers: .c files compile as C
-pub const EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx"];
+/// What a module is written in: build_c takes .c files, build_cpp also .cc, .cpp and .cxx
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+pub enum Language {
+    C,
+    Cpp,
+}
+
+impl Language {
+    /// Of its sources, the rest are headers
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Language::C => return &["c"],
+            Language::Cpp => return &["c", "cc", "cpp", "cxx"],
+        }
+    }
+}
 
 /// The sources of a module or of its tests and how they are compiled
 pub struct Compilation<'a> {
     pub module_name: &'a str,
+    pub language: Language,
     pub toolchain: &'a Toolchain,
     /// relative to it the objects keep the paths of their sources
     pub module_dir: &'a Path,
@@ -70,7 +85,7 @@ impl Compilation<'_> {
 
                 match path.is_dir() {
                     true if !hidden && path != self.module_dir.join("build") => pending.push(path),
-                    false if EXTENSIONS.contains(&extension.as_ref()) => sources.push(path),
+                    false if self.language.extensions().contains(&extension.as_ref()) => sources.push(path),
                     _ => {}
                 }
             }
@@ -129,7 +144,8 @@ impl Compilation<'_> {
         }
 
         let files = if self.tests { "test file(s)" } else { "file(s)" };
-        system::log(self.module_name, &format!("Compiling {} C/C++ {files}", outdated.len()));
+        let language = if self.language == Language::C { "C" } else { "C/C++" };
+        system::log(self.module_name, &format!("Compiling {} {language} {files}", outdated.len()));
 
         let queue = Mutex::new(outdated);
         let errors = Mutex::new(vec![]);
@@ -285,10 +301,11 @@ pub fn archive(toolchain: &Toolchain, objects: &[PathBuf], library: &Path) -> Re
     return system::run_command(&mut command, "archiving");
 }
 
-/// A program of the objects and libraries, with the C++ compiler: it brings the C++ standard library. A
-/// library several modules need is linked once, after everything that needs it.
+/// A program of the objects and libraries, with the C++ compiler when C++ is among them: it brings the
+/// C++ standard library. A library several modules need is linked once, after everything that needs it.
 pub fn link(
     toolchain: &Toolchain,
+    cpp: bool,
     objects: &[PathBuf],
     link_flags: &[String],
     program: &Path,
@@ -303,7 +320,8 @@ pub fn link(
         .collect();
     flags.reverse();
 
-    let mut command = toolchain.command(&toolchain.cpp_compiler);
+    let linker = if cpp { &toolchain.cpp_compiler } else { &toolchain.c_compiler };
+    let mut command = toolchain.command(linker);
     command.args(objects)
         .args(flags)
         .arg("-o")

@@ -1,5 +1,6 @@
-// C++: build_cpp compiles a module into a static library or a program, its libraries come from vcpkg,
-// its compiler is the system's or zig. Every source compiles on its own, only when it changed.
+// C and C++: build_c and build_cpp compile a module into a static library or a program, its libraries
+// come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only when it
+// changed.
 mod compile;
 mod toolchain;
 mod vcpkg;
@@ -17,14 +18,20 @@ use crate::language::runtime::{
     ModuleTests, Platform, TestCounts, TestOutcome, TestRun, TestRunner, TestSuite, Type, Value, builtin,
 };
 
-use compile::Compilation;
+use compile::{Compilation, Language};
 use toolchain::Toolchain;
 
-/// `use cpp`
-pub const PLATFORMS: &[Platform] = &[Platform {
-    name: "cpp",
-    functions: cpp_builtins,
-}];
+/// `use c` and `use cpp`
+pub const PLATFORMS: &[Platform] = &[
+    Platform {
+        name: "c",
+        functions: c_builtins,
+    },
+    Platform {
+        name: "cpp",
+        functions: cpp_builtins,
+    },
+];
 
 /// The sources and tests of a module that names no other
 const DEFAULT_SOURCES: &str = "src/**";
@@ -49,6 +56,8 @@ pub struct NativeOutput {
     pub link_flags: Vec<String>,
     /// None for libraries
     pub program: Option<PathBuf>,
+    /// C++ is in it: what links it links with the C++ compiler
+    pub cpp: bool,
 }
 
 /// How the tests of a module are linked and run
@@ -69,16 +78,23 @@ struct Dependencies {
     modules: Vec<Arc<BuiltModule>>,
 }
 
-fn cpp_builtins() -> Vec<(&'static str, Value)> {
-    return vec![("build_cpp", builtin("build_cpp", signature(), build_module))];
+fn c_builtins() -> Vec<(&'static str, Value)> {
+    let build_c = builtin("build_c", signature(Language::C), |context, args| build_module(context, args, Language::C));
+    return vec![("build_c", build_c)];
 }
 
-fn signature() -> FunctionSignature {
+fn cpp_builtins() -> Vec<(&'static str, Value)> {
+    let build_cpp = builtin("build_cpp", signature(Language::Cpp), |context, args| build_module(context, args, Language::Cpp));
+    return vec![("build_cpp", build_cpp)];
+}
+
+/// Those of build_c and build_cpp, which has a cpp_standard
+fn signature(language: Language) -> FunctionSignature {
     let strings = || Type::list(Type::String);
     let none = || Value::string_list(&[]);
     let dependencies = || Type::list(Type::Union(vec![Type::String, Type::Module]));
 
-    return FunctionParameters::new()
+    let mut parameters = FunctionParameters::new()
         .required("name", Type::String)
         // vcpkg ports, like "fmt", and modules of the script
         .required("dependencies", dependencies())
@@ -87,7 +103,6 @@ fn signature() -> FunctionSignature {
         // "system": cc and c++ of the system, "zig": downloaded once
         .with_default("toolchain", Type::String, "system")
         .with_default("c_standard", Type::String, "c17")
-        .with_default("cpp_standard", Type::String, "c++20")
         // "NAME" or "NAME=value"
         .with_default("defines", strings(), none())
         // also for the modules depending on it, like SPDLOG_COMPILED_LIB
@@ -108,12 +123,17 @@ fn signature() -> FunctionSignature {
         // test sources that are a program each, with the other test sources: "test/*-test.cc"
         .with_default("test_programs", strings(), none())
         // like "--order", "decl" for Catch2
-        .with_default("test_arguments", strings(), none())
-        .returns(Type::Module);
+        .with_default("test_arguments", strings(), none());
+
+    if language == Language::Cpp {
+        parameters = parameters.with_default("cpp_standard", Type::String, "c++20");
+    }
+
+    return parameters.returns(Type::Module);
 }
 
 /// build/lib/lib<name>.a, with program = true build/bin/<name>
-fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = directory.join("build");
@@ -165,9 +185,13 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
         .join(&name)
         .join(if release { "release" } else { "debug" });
     let c_standard: String = args.get("c_standard")?;
-    let cpp_standard: String = args.get("cpp_standard")?;
+    let cpp_standard: String = match language {
+        Language::C => String::new(),
+        Language::Cpp => args.get("cpp_standard")?,
+    };
     let compilation = Compilation {
         module_name: &name,
+        language,
         toolchain: &toolchain,
         module_dir: &directory,
         source_patterns: &source_patterns,
@@ -203,7 +227,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
         ..compilation
     };
 
-    let extensions = compile::EXTENSIONS.join(", .");
+    let extensions = language.extensions().join(", .");
 
     // the defaults may match nothing: a library of only headers, a module without tests
     let checked = [("sources", &compilation, DEFAULT_SOURCES), ("test_sources", &test_compilation, DEFAULT_TEST_SOURCES)];
@@ -224,6 +248,15 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
     if program && header_only {
         return Err(format!("{name} has no .{extensions} files, a program needs a main()"));
     }
+
+    // C modules link with the C compiler, unless C++ is among what they link
+    let links_cpp = |modules: &[Arc<BuiltModule>]| {
+        return BuiltModule::transitive(modules)
+            .iter()
+            .any(|module| matches!(&module.output, ModuleOutput::Native(output) if output.cpp));
+    };
+    let cpp = language == Language::Cpp || links_cpp(&dependencies.modules);
+    let test_cpp = cpp || links_cpp(&test_dependencies.modules);
 
     let artifact = match (program, header_only) {
         (true, _) => build_dir.join("bin").join(&name),
@@ -256,7 +289,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
         system::log(&name, "Up to date");
     } else {
         match (program, header_only) {
-            (true, _) => compile::link(&toolchain, &objects, &link_flags, &artifact)?,
+            (true, _) => compile::link(&toolchain, cpp, &objects, &link_flags, &artifact)?,
             (false, true) => {}
             (false, false) => compile::archive(&toolchain, &objects, &artifact)?,
         }
@@ -301,7 +334,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
             arguments: args.get("test_arguments")?,
         };
 
-        let outcome = unit_tests(&test_compilation, &compilation, library, link_flags, &setup)
+        let outcome = unit_tests(&test_compilation, &compilation, library, test_cpp, link_flags, &setup)
             .unwrap_or_else(|error| ModuleTests::Known(TestOutcome::Failed { counts: None, error }));
 
         tests.push(TestSuite {
@@ -324,6 +357,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments) -> Result<Value,
             compile_flags: [public_flags, compile_flags].concat(),
             link_flags,
             program: program.then_some(artifact.clone()),
+            cpp,
         }),
         tests,
     })));
@@ -378,6 +412,7 @@ fn unit_tests(
     tests: &Compilation,
     module: &Compilation,
     library: Option<&Path>,
+    cpp: bool,
     link_flags: Vec<String>,
     setup: &TestSetup,
 ) -> Result<ModuleTests, String> {
@@ -430,7 +465,7 @@ fn unit_tests(
             link_flags.splice(0..0, setup.main_flags.iter().cloned());
         }
 
-        let run = test_program(tests, module, &program, &objects, &link_flags, setup)?;
+        let run = test_program(tests, module, &program, cpp, &objects, &link_flags, setup)?;
         runs.push((program, run));
     }
 
@@ -446,6 +481,7 @@ fn test_program(
     tests: &Compilation,
     module: &Compilation,
     program: &str,
+    cpp: bool,
     objects: &[PathBuf],
     link_flags: &[String],
     setup: &TestSetup,
@@ -463,7 +499,7 @@ fn test_program(
         return Ok(ModuleTests::Known(TestOutcome::UpToDate));
     }
 
-    compile::link(tests.toolchain, objects, link_flags, &executable)?;
+    compile::link(tests.toolchain, cpp, objects, link_flags, &executable)?;
 
     let reports_dir = build_dir.join("test-results").join(program);
     let mut command = Command::new(&executable);
