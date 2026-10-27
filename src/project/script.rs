@@ -765,6 +765,19 @@ mod tests {
     }
 
     #[test]
+    fn vcpkg_ports_replace_no_other_port() {
+        let source = "use cpp\napp = build_cpp(\"app\", list(\"fmt\"), program = true)\n";
+
+        let edit = installed(source, "app", "dependencies", "spdlog").unwrap();
+        assert_eq!(edit.script, "use cpp\napp = build_cpp(\"app\", list(\"fmt\", \"spdlog\"), program = true)\n");
+        assert_eq!(installed(source, "app", "dependencies", "fmt").unwrap().change, DependencyChange::Present);
+
+        // other features are another version of the port
+        let edit = installed(source, "app", "dependencies", "fmt[core]").unwrap();
+        assert_eq!(edit.change, DependencyChange::Replaced("fmt".to_string()));
+    }
+
+    #[test]
     fn other_versions_are_replaced_and_lists_install_cannot_change_are_refused() {
         let source = "use kotlin\napp = build_kotlin(\"app\", list(\"a:b:1\", \"g:x:1\"), list(maven_central()))\n";
 

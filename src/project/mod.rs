@@ -608,4 +608,34 @@ mod tests {
         assert!(!root.join("hello-app/src/main/res").exists());
         fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn c_and_cpp_projects_need_no_domain_and_no_repositories() {
+        let root = std::env::temp_dir().join(format!("build-script-native-project-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let not_asked = || Err("not asked".to_string());
+
+        new_project("cpp", &root.join("hello"), None, not_asked).unwrap();
+        let script_file = root.join("hello/project.build");
+        add_module("cpp-library", "my-lib", &script_file, None, not_asked).unwrap();
+
+        // the library goes before the program, which is an app with program = true
+        let script = system::read_file(&script_file).unwrap();
+        assert_eq!(
+            script,
+            "use cpp\n\nmy_lib = build_cpp(\n    \"my-lib\",\n    list(),\n    directory = \"my-lib\",\n)\n\nhello = build_cpp(\n    \"hello\",\n    list(),\n    program = true,\n)\n"
+        );
+
+        let header = system::read_file(&root.join("hello/my-lib/include/my-lib/greeting.hpp")).unwrap();
+        assert!(header.contains("namespace my_lib {"), "{header}");
+        assert!(root.join("hello/src/main.cpp").is_file());
+        assert_eq!(system::read_file(&root.join("hello/.gitignore")).unwrap(), "build/\n.cache/\n");
+
+        // a C library brings use c and build_c
+        add_module("c-library", "codec", &script_file, None, not_asked).unwrap();
+        let script = system::read_file(&script_file).unwrap();
+        assert!(script.starts_with("use cpp\nuse c\n"), "{script}");
+        assert!(script.contains("codec = build_c(\n    \"codec\",\n"), "{script}");
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
