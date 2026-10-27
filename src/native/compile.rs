@@ -12,7 +12,7 @@ use super::toolchain::Toolchain;
 /// Of the sources, the rest are headers: .c files compile as C
 pub const EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx"];
 
-/// The sources of a module and how they are compiled
+/// The sources of a module or of its tests and how they are compiled
 pub struct Compilation<'a> {
     pub module_name: &'a str,
     pub toolchain: &'a Toolchain,
@@ -26,6 +26,8 @@ pub struct Compilation<'a> {
     pub c_standard: &'a str,
     pub cpp_standard: &'a str,
     pub objects_dir: PathBuf,
+    /// for the log
+    pub tests: bool,
 }
 
 impl Compilation<'_> {
@@ -126,7 +128,8 @@ impl Compilation<'_> {
             return Ok((objects, false));
         }
 
-        system::log(self.module_name, &format!("Compiling {} C/C++ file(s)", outdated.len()));
+        let files = if self.tests { "test file(s)" } else { "file(s)" };
+        system::log(self.module_name, &format!("Compiling {} C/C++ {files}", outdated.len()));
 
         let queue = Mutex::new(outdated);
         let errors = Mutex::new(vec![]);
