@@ -2,6 +2,7 @@
 // come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only when it
 // changed.
 mod compile;
+pub mod templates;
 mod toolchain;
 mod vcpkg;
 
@@ -20,6 +21,8 @@ use crate::language::runtime::{
 
 use compile::{Compilation, Language};
 use toolchain::Toolchain;
+
+pub use vcpkg::checked_port;
 
 /// `use c` and `use cpp`
 pub const PLATFORMS: &[Platform] = &[

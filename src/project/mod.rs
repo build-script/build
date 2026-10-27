@@ -10,8 +10,8 @@ use std::{fs, io};
 use crate::common::settings::Settings;
 use crate::common::system;
 use crate::jvm::templates;
-pub use crate::jvm::templates::MODULE_KINDS;
 use crate::language::runtime;
+use crate::native;
 
 pub use install::{DEPENDENCIES, DEPENDENCY_KINDS, install};
 
@@ -59,10 +59,22 @@ const REMEMBER_DOMAIN: &str = "remember_domain";
 /// when there is no one to ask, like in the examples of the Java naming conventions
 const DEFAULT_DOMAIN: &str = "example.com";
 
+/// The modules each kind of project starts with, of the JVM and of C and C++
+const PROJECT_KINDS: [&[(&str, &[(&str, Option<&str>)])]; 2] = [templates::PROJECT_KINDS, native::templates::PROJECT_KINDS];
+
 pub fn project_kinds() -> Vec<&'static str> {
-    return templates::PROJECT_KINDS.iter()
+    return PROJECT_KINDS.iter()
+        .flat_map(|kinds| kinds.iter())
         .map(|(kind, _)| *kind)
         .collect();
+}
+
+pub fn module_kinds() -> Vec<&'static str> {
+    return [templates::MODULE_KINDS, native::templates::MODULE_KINDS].concat();
+}
+
+fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate> {
+    return templates::module_template(kind, module).or_else(|| native::templates::module_template(kind, module));
 }
 
 /// A new directory with a project.build and the modules of the kind, like cargo new.
@@ -73,7 +85,8 @@ pub fn new_project(
     package: Option<&str>,
     domain: impl FnOnce() -> Result<String, String>,
 ) -> Result<(), String> {
-    let Some((_, modules)) = templates::PROJECT_KINDS.iter()
+    let Some((_, modules)) = PROJECT_KINDS.iter()
+        .flat_map(|kinds| kinds.iter())
         .find(|(known, _)| *known == kind)
     else {
         return Err(format!(
@@ -90,9 +103,13 @@ pub fn new_project(
 
     let name = checked_name(&path.file_name().unwrap_or_default().to_string_lossy())?;
 
-    let base_package = match package {
-        Some(package) => templates::checked_package(package)?,
-        None => format!(
+    // C and C++ have no packages, clangd keeps its index in .cache/
+    let native = native::templates::PROJECT_KINDS.iter().any(|(known, _)| *known == kind);
+
+    let base_package = match (package, native) {
+        (_, true) => String::new(),
+        (Some(package), false) => templates::checked_package(package)?,
+        (None, false) => format!(
             "{}.{}",
             templates::package_of_domain(&domain()?),
             templates::package_segment(&name)
@@ -100,7 +117,8 @@ pub fn new_project(
     };
 
     let mut script = String::new();
-    let mut files = vec![(PathBuf::from(".gitignore"), "build/\n".to_string())];
+    let ignored = if native { "build/\n.cache/\n" } else { "build/\n" };
+    let mut files = vec![(PathBuf::from(".gitignore"), ignored.to_string())];
 
     // every module may use the libraries before it
     let mut libraries: Vec<(String, String)> = vec![];
@@ -117,8 +135,7 @@ pub fn new_project(
             dependencies: libraries.clone(),
         };
 
-        let template = templates::module_template(module_kind, &module)
-            .expect("project kinds consist of module kinds");
+        let template = module_template(module_kind, &module).expect("project kinds consist of module kinds");
 
         let variable = variable_name(&module.name);
         script = script::with_module(&script, &variable, &module, &template)?;
@@ -138,10 +155,8 @@ pub fn new_project(
         system::write_file(&path.join(file), content)?;
     }
 
-    println!(
-        "Created {kind} project {name} in {} with the package {base_package}",
-        path.display()
-    );
+    let package = if native { String::new() } else { format!(" with the package {base_package}") };
+    println!("Created {kind} project {name} in {}{package}", path.display());
 
     return Ok(());
 }
@@ -167,12 +182,14 @@ pub fn add_module(
         return Err(format!("{} already exists", module_dir.display()));
     }
 
-    if !MODULE_KINDS.contains(&kind) {
+    if !module_kinds().contains(&kind) {
         return Err(format!(
             "unknown module kind '{kind}' (known: {})",
-            MODULE_KINDS.join(", ")
+            module_kinds().join(", ")
         ));
     }
+
+    let native = native::templates::MODULE_KINDS.contains(&kind);
 
     let source = system::read_file(script_file)?;
 
@@ -184,9 +201,10 @@ pub fn add_module(
         })
         .unwrap_or_else(|| "project".to_string());
 
-    let package = match package {
-        Some(package) => templates::checked_package(package)?,
-        None => {
+    let package = match (package, native) {
+        (_, true) => String::new(),
+        (Some(package), false) => templates::checked_package(package)?,
+        (None, false) => {
             let prefix = templates::package_of_domain(&domain()?);
             format!(
                 "{prefix}.{}.{}",
@@ -203,7 +221,7 @@ pub fn add_module(
         dependencies: vec![],
     };
 
-    let template = templates::module_template(kind, &module).expect("module kinds have templates");
+    let template = module_template(kind, &module).expect("module kinds have templates");
 
     let variable = variable_name(&name);
     let script = script::with_module(&source, &variable, &module, &template)
@@ -215,12 +233,8 @@ pub fn add_module(
 
     system::write_file(script_file, &script)?;
 
-    println!(
-        "Added {kind} module {name} in {} to {} with the package {}",
-        module_dir.display(),
-        script_file.display(),
-        module.package
-    );
+    let package = if native { String::new() } else { format!(" with the package {}", module.package) };
+    println!("Added {kind} module {name} in {} to {}{package}", module_dir.display(), script_file.display());
     if !template.is_app {
         println!(
             "Other modules use it with {variable} in their dependencies, like list({variable})"

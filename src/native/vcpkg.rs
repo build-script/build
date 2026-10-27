@@ -122,6 +122,34 @@ pub fn port_and_features(port: &str) -> (&str, Vec<&str>) {
     return (name, features.collect());
 }
 
+/// The port, once vcpkg has it and its features. Without a version: the release of vcpkg pins those.
+pub fn checked_port(port: &str) -> Result<String, String> {
+    if let Some((name, _)) = port.split_once([':', '@']) {
+        return Err(format!("vcpkg {VCPKG_RELEASE} pins every port to one version: install {name}"));
+    }
+
+    let (name, features) = port_and_features(port);
+    let manifest = install_vcpkg()?
+        .join("ports")
+        .join(name)
+        .join("vcpkg.json");
+
+    let Ok(manifest) = fs::read_to_string(&manifest) else {
+        return Err(format!("vcpkg {VCPKG_RELEASE} has no port {name}, see https://vcpkg.io/en/packages"));
+    };
+
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).map_err(|error| format!("the port {name}: {error}"))?;
+    let known: Vec<&str> = manifest["features"].as_object()
+        .map(|features| features.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    if let Some(unknown) = features.iter().find(|feature| !known.contains(feature)) {
+        return Err(format!("the port {name} has no feature {unknown}, it has: {}", known.join(", ")));
+    }
+
+    return Ok(port.to_string());
+}
+
 /// vcpkg at its release into <build home>/vcpkg/<release>, its tool bootstrapped once
 fn install_vcpkg() -> Result<PathBuf, String> {
     let root = system::data_dir("vcpkg").join(VCPKG_RELEASE);
@@ -350,7 +378,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ports_take_features() {
+    fn ports_take_features_but_no_versions() {
+        let error = checked_port("fmt:10.2.1").unwrap_err();
+        assert!(error.contains("install fmt"), "{error}");
+
         assert_eq!(port_and_features("llvm[clang, lld]"), ("llvm", vec!["clang", "lld"]));
         assert_eq!(port_and_features("fmt"), ("fmt", vec![]));
     }

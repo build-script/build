@@ -258,15 +258,16 @@ fn help() -> String {
   add     adds a module in a directory next to the script and its build call to the
           script: {}
   install adds a Maven library to the dependencies of the module, the newest version
-          unless one is given, once it resolved for the module; --module picks one in
-          scripts with several, these pick another list than dependencies:
+          unless one is given, once it resolved for the module, or a vcpkg port to a C or
+          C++ module; --module picks one in scripts with several, these pick another
+          list than dependencies:
           {}
   config  shows or changes what new and add remember, like your domain:
           {}
 
 The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.",
         project::project_kinds().join(", "),
-        project::MODULE_KINDS.join(", "),
+        project::module_kinds().join(", "),
         project::DEPENDENCY_KINDS
             .iter()
             .map(|(flag, _)| *flag)
