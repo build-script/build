@@ -46,6 +46,11 @@ pub fn host_architecture() -> Result<HostArchitecture, String> {
 /// build/ of a module, .build/ where a file is in its way: BUILD of Bazel, on a file system that
 /// does not tell cases apart, like that of macOS
 pub fn build_dir(module_dir: &Path) -> PathBuf {
+    // a module in a checkout of git() builds in the project
+    if let Some(build_dir) = super::git::project_build_dir(module_dir) {
+        return build_dir;
+    }
+
     let build_dir = module_dir.join("build");
 
     if build_dir.exists() && !build_dir.is_dir() {

@@ -944,6 +944,23 @@ fn core_functions() -> Vec<(&'static str, Value)> {
             ),
         ),
         (
+            "git",
+            builtin(
+                "git",
+                FunctionParameters::new()
+                    .required("url", Type::String)
+                    // a commit, better its whole hash, or a tag
+                    .required("commit", Type::String)
+                    .returns(Type::String),
+                |context, args| {
+                    let url: String = args.get("url")?;
+                    let commit: String = args.get("commit")?;
+                    let checkout = crate::common::git::checkout(&url, &commit, &context.project_dir)?;
+                    return Ok(checkout.display().to_string().into());
+                },
+            ),
+        ),
+        (
             "current_time_millis",
             builtin(
                 "current_time_millis",
