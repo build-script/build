@@ -2,6 +2,7 @@
 // come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only when it
 // changed.
 mod compile;
+mod configure;
 pub mod templates;
 mod toolchain;
 mod vcpkg;
@@ -110,6 +111,12 @@ fn signature(language: Language) -> FunctionSignature {
         .with_default("defines", strings(), none())
         // also for the modules depending on it, like SPDLOG_COMPILED_LIB
         .with_default("public_defines", strings(), none())
+        // templates like "src/config.h.in", filled like configure_file of CMake into build/generated
+        .with_default("configured_headers", strings(), none())
+        // their values: "NAME=value", or "NAME", which is 1
+        .with_default("configured_values", strings(), none())
+        // like generate_export_header of CMake: "cmark" writes cmark_export.h with CMARK_EXPORT
+        .with_default("export_header", Type::String, "")
         .with_default("flags", strings(), none())
         // like "-framework", "Cocoa", modules depending on the library link them too
         .with_default("link_flags", strings(), none())
@@ -155,10 +162,23 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // with the sources the private headers
     let source_roots = compile::source_roots(&directory, &source_patterns);
 
+    // headers like CMake generates them, written before the sources compile
+    let generated_dir = build_dir.join("generated");
+    let templates = module_paths("configured_headers")?;
+    let values: Vec<String> = args.get("configured_values")?;
+    let export_header: String = args.get("export_header")?;
+    let header_dirs = [include_dirs.clone(), source_roots.clone()].concat();
+    configure::write_headers(&templates, &values, &export_header, &header_dirs, &generated_dir)?;
+
     // what the modules depending on it see too
     let mut public_flags: Vec<String> = include_dirs.iter()
         .map(|dir| format!("-I{}", dir.display()))
         .collect();
+
+    if !templates.is_empty() || !export_header.is_empty() {
+        public_flags.push(format!("-I{}", generated_dir.display()));
+    }
+
     public_flags.extend(args.get::<Vec<String>>("public_defines")?.iter().map(|define| format!("-D{define}")));
 
     let dependencies = Dependencies::read(args, "dependencies")?;
