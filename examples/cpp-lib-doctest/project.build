@@ -1,0 +1,14 @@
+use c
+use cpp
+
+// a C library, a C++ library using it, a program using both
+base = build_c("base", list(), directory = "base")
+
+util = build_cpp(
+    "util",
+    list(base),
+    directory = "util",
+    test_dependencies = list("doctest"),
+)
+
+build_cpp("app", list(util), program = true, directory = "app")

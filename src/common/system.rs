@@ -43,6 +43,18 @@ pub fn host_architecture() -> Result<HostArchitecture, String> {
     }
 }
 
+/// build/ of a module, .build/ where a file is in its way: BUILD of Bazel, on a file system that
+/// does not tell cases apart, like that of macOS
+pub fn build_dir(module_dir: &Path) -> PathBuf {
+    let build_dir = module_dir.join("build");
+
+    if build_dir.exists() && !build_dir.is_dir() {
+        return module_dir.join(".build");
+    }
+
+    return build_dir;
+}
+
 /// JDKs, the Android SDK and emulators
 pub fn data_dir(name: &str) -> PathBuf {
     return BuildHomeEnvironment::read().base_directory(BaseDirectory::Data).join(name);
@@ -647,6 +659,19 @@ impl BuildHomeEnvironment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_named_build_moves_the_build_directory() {
+        let dir = std::env::temp_dir().join(format!("build-script-build-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        create_dir(&dir).unwrap();
+        assert_eq!(build_dir(&dir), dir.join("build"));
+
+        // BUILD of Bazel is build on macOS
+        write_file(&dir.join("build"), "").unwrap();
+        assert_eq!(build_dir(&dir), dir.join(".build"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn home_a() -> BuildHomeEnvironment {
         return BuildHomeEnvironment {

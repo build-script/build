@@ -10,6 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::common::up_to_date::InputFingerprint;
 use crate::common::{system, xml};
 use crate::jvm::{self, JvmOutput};
+use crate::native::NativeOutput;
 use crate::language::lexer::Span;
 
 use super::functions::{BuiltinFunction, FunctionSignature, UserFunction};
@@ -146,12 +147,26 @@ pub struct TestCounts {
 #[derive(Debug)]
 pub enum ModuleOutput {
     Jvm(JvmOutput),
+    Native(NativeOutput),
 }
 
 /// Starts what a module built and returns the exit code for the process
 pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
     match &module.output {
         ModuleOutput::Jvm(output) => return jvm::launch(module, output, args),
+        ModuleOutput::Native(output) => {
+            let program = output.program.as_ref()
+                .ok_or(format!("{} is a library, only programs can be run", module.name))?;
+
+            // like jars, in the module's directory
+            let status = Command::new(program)
+                .args(args)
+                .current_dir(&module.directory)
+                .status()
+                .map_err(|error| format!("could not start {}: {error}", program.display()))?;
+
+            return Ok(status.code().unwrap_or(1));
+        }
     }
 }
 
@@ -331,7 +346,8 @@ impl TestRunner for TestRun {
 }
 
 impl TestCounts {
-    /// Summed over the TEST-*.xml reports in the directory, None without any
+    /// The <testcase> elements of the TEST-*.xml reports in the directory, None without any. Not the
+    /// counts of the suites: GoogleTest counts disabled tests there, doctest assertions.
     pub fn read_junit_reports(directory: &Path) -> Option<Self> {
         let mut counts: Option<TestCounts> = None;
 
@@ -347,23 +363,24 @@ impl TestCounts {
                 continue;
             };
 
-            // a file has one suite, or several in <testsuites>
-            let suites: Vec<&xml::XmlElement> = match root.name.as_str() {
-                "testsuites" => root.children("testsuite").collect(),
-                _ => vec![&root],
-            };
-
             let total = counts.get_or_insert_with(TestCounts::default);
-            for suite in suites {
-                let count = |name: &str| {
-                    suite.attribute(name)
-                        .and_then(|value| value.parse::<u32>().ok())
-                        .unwrap_or(0)
-                };
 
-                total.tests += count("tests");
-                total.failed += count("failures") + count("errors");
-                total.skipped += count("skipped");
+            // in a <testsuite>, which may be in <testsuites> or in another suite
+            let mut pending = vec![&root];
+            while let Some(element) = pending.pop() {
+                if element.name != "testcase" {
+                    pending.extend(&element.children);
+                    continue;
+                }
+
+                total.tests += 1;
+
+                // GoogleTest marks disabled tests with status="notrun"
+                if element.child("skipped").is_some() || element.attribute("status") == Some("notrun") {
+                    total.skipped += 1;
+                } else if element.child("failure").is_some() || element.child("error").is_some() {
+                    total.failed += 1;
+                }
             }
         }
 
@@ -406,6 +423,7 @@ impl BuiltModule {
     pub fn can_launch(&self) -> bool {
         match &self.output {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),
+            ModuleOutput::Native(output) => return output.program.is_some(),
         }
     }
 }
@@ -541,21 +559,33 @@ mod tests {
         system::write_file(
             &dir.join("TEST-junit-jupiter.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="JUnit Jupiter" tests="5" skipped="1" failures="1" errors="0">
+<testsuite name="JUnit Jupiter" tests="3" skipped="1" failures="1" errors="0">
 <testcase name="adds()"><system-out><![CDATA[<not a tag>]]></system-out></testcase>
+<testcase name="later()"><skipped/></testcase>
+<testcase name="fails()"><failure message="expected 2"/></testcase>
 </testsuite>"#,
         )
         .unwrap();
-        system::write_file(&dir.join("TEST-several.xml"), r#"<testsuites><testsuite tests="2" failures="0" errors="1"/><testsuite tests="1"/></testsuites>"#).unwrap();
+        // GoogleTest counts the disabled test among the tests of the suite, doctest the assertions
+        system::write_file(
+            &dir.join("TEST-gtest.xml"),
+            r#"<testsuites tests="2"><testsuite tests="2"><testcase name="a"/><testcase name="DISABLED_b" status="notrun"/></testsuite></testsuites>"#,
+        )
+        .unwrap();
+        system::write_file(
+            &dir.join("TEST-doctest.xml"),
+            r#"<testsuites><testsuite tests="7"><testcase name="c"><error message="thrown"/></testcase></testsuite></testsuites>"#,
+        )
+        .unwrap();
         // not a report
         system::write_file(&dir.join("junit-platform-events.xml"), "<events/>").unwrap();
 
         assert_eq!(
             TestCounts::read_junit_reports(&dir),
             Some(TestCounts {
-                tests: 8,
+                tests: 6,
                 failed: 2,
-                skipped: 1
+                skipped: 2
             })
         );
         system::remove_dir(&dir).unwrap();
@@ -584,7 +614,7 @@ mod tests {
         };
 
         let failing =
-            test_run(r#"echo '<testsuite tests="2" failures="1"/>' > reports/TEST-sh.xml; exit 1"#);
+            test_run(r#"echo '<testsuite><testcase/><testcase><failure/></testcase></testsuite>' > reports/TEST-sh.xml; exit 1"#);
 
         let counts = Some(TestCounts {
             tests: 2,

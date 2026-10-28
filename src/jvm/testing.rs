@@ -189,7 +189,7 @@ impl UnitTests<'_> {
             .collect();
         compile_classpath.extend(classpath.iter().cloned());
 
-        let build_dir = inputs.directory.join("build");
+        let build_dir = system::build_dir(&inputs.directory);
 
         let test_classes = build_dir.join("classes")
             .join(classes_kind(inputs.sources))

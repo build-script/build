@@ -1,0 +1,8 @@
+use c
+
+// a C program: .c files compile with c_standard
+build_c(
+    "notes",
+    list("sqlite3"),
+    program = true,
+)

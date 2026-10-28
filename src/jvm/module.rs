@@ -550,7 +550,7 @@ impl ModuleBuildInputs {
         extra_inputs: &[PathBuf],
     ) -> Result<InputFingerprint, String> {
         let mut fingerprint =
-            InputFingerprint::new(self.directory.join("build/fingerprints").join(name));
+            InputFingerprint::new(system::build_dir(&self.directory).join("fingerprints").join(name));
 
         fingerprint.add(args);
         fingerprint.add(&self.jdk.home);
@@ -653,6 +653,11 @@ impl Dependencies {
                 Value::Module(module) => {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
+
+                    if let ModuleOutput::Native(_) = &module.output {
+                        return Err(format!("{} is a C or C++ module, JVM modules depend on JVM modules", module.name));
+                    }
+
                     dependencies.modules.push(module);
                 }
                 other => {
@@ -759,7 +764,7 @@ impl Compilation<'_> {
     /// Into `output`, without classes of earlier builds. Returns the
     /// directories with the Java resources the symbol processors wrote.
     pub fn run(&self) -> Result<Vec<PathBuf>, String> {
-        let build_dir = self.inputs.directory.join("build");
+        let build_dir = system::build_dir(&self.inputs.directory);
         let tests = self.variant == "test";
 
         let module_name = if tests {

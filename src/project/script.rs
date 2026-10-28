@@ -56,7 +56,13 @@ pub fn with_module(
 
             let is_app = identifier(target) == Some("build_android")
                 || args.iter()
-                    .any(|arg| argument_name(arg) == Some("main_class"));
+                    .any(|arg| argument_name(arg) == Some("main_class"))
+                || args.iter().any(|arg| match &arg.variant {
+                    ExpressionType::Assignment { target, value } => {
+                        identifier(target) == Some("program") && identifier(value) == Some("true")
+                    }
+                    _ => false,
+                });
 
             if is_app && first_app.is_none() {
                 first_app = Some(statement.span.start);
@@ -82,10 +88,12 @@ pub fn with_module(
 
     // inserted at their offset, at equal offsets in the order they were added
     let mut edits: Vec<(usize, String)> = vec![];
-    let mut repositories_argument = "repositories".to_string();
+    // C and C++ modules have none, their ports come from vcpkg
+    let mut repositories_argument = (!template.repositories.is_empty()).then(|| "repositories".to_string());
     let mut new_repositories = None;
 
     match repositories {
+        _ if template.repositories.is_empty() => {}
         Some((value, start)) if module_position.is_none_or(|position| start < position) => {
             match list_arguments(source, value) {
                 Some((after_paren, arguments)) => {
@@ -109,14 +117,14 @@ pub fn with_module(
                 }
                 // no list(...) to extend: the module names its repositories itself
                 None => {
-                    repositories_argument = format!(
+                    repositories_argument = Some(format!(
                         "list({})",
                         template.repositories.join(", ")
-                    )
+                    ))
                 }
             }
         }
-        Some(_) => repositories_argument = format!("list({})", template.repositories.join(", ")),
+        Some(_) => repositories_argument = Some(format!("list({})", template.repositories.join(", "))),
         None => {
             new_repositories = Some(format!(
                 "repositories = list({})",
@@ -172,7 +180,7 @@ pub fn with_module(
         }
     }
 
-    let call = build_call(variable, module, template, &repositories_argument);
+    let call = build_call(variable, module, template, repositories_argument.as_deref());
     match module_position {
         Some(position) => edits.push((position, format!("{call}\n\n"))),
         None if !has_statements || source.ends_with('\n') => {
@@ -189,14 +197,14 @@ fn build_call(
     variable: &str,
     module: &NewModule,
     template: &ModuleTemplate,
-    repositories: &str,
+    repositories: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("{variable} = {}(", template.function)];
     lines.extend(
         template.positional.iter()
             .map(|argument| format!("    {argument},")),
     );
-    lines.push(format!("    {repositories},"));
+    lines.extend(repositories.map(|repositories| format!("    {repositories},")));
     lines.extend(
         template.named.iter()
             .map(|(name, value)| format!("    {name} = {value},")),
@@ -412,10 +420,13 @@ fn not_a_list(module: &ModuleCall, parameter: &str, notation: &str) -> String {
     );
 }
 
-/// group:artifact of a notation, which versions do not change
-fn library_of(notation: &str) -> Option<(&str, &str)> {
-    let mut parts = notation.split(':');
-    return Some((parts.next()?, parts.next()?));
+/// group:artifact of a Maven notation, which versions do not change, else the vcpkg port, which its
+/// features do not change: llvm of llvm[clang]
+fn library_of(notation: &str) -> &str {
+    match notation.match_indices(':').nth(1) {
+        Some((second_colon, _)) => return &notation[..second_colon],
+        None => return notation.split('[').next().unwrap_or(notation),
+    }
 }
 
 /// The value of the last top level assignment to `variable` before `before`
@@ -751,6 +762,19 @@ mod tests {
             installed(source, "app", "dependencies", "g:x:2").unwrap().script,
             "use kotlin\napp = build_kotlin(\n    \"app\",\n    list(\n        \"a:b:1\", // first\n        \"g:x:2\",\n    ),\n    list(maven_central()),\n)\n"
         );
+    }
+
+    #[test]
+    fn vcpkg_ports_replace_no_other_port() {
+        let source = "use cpp\napp = build_cpp(\"app\", list(\"fmt\"), program = true)\n";
+
+        let edit = installed(source, "app", "dependencies", "spdlog").unwrap();
+        assert_eq!(edit.script, "use cpp\napp = build_cpp(\"app\", list(\"fmt\", \"spdlog\"), program = true)\n");
+        assert_eq!(installed(source, "app", "dependencies", "fmt").unwrap().change, DependencyChange::Present);
+
+        // other features are another version of the port
+        let edit = installed(source, "app", "dependencies", "fmt[core]").unwrap();
+        assert_eq!(edit.change, DependencyChange::Replaced("fmt".to_string()));
     }
 
     #[test]

@@ -1,0 +1,16 @@
+use cpp
+
+core = build_cpp(
+    "core",
+    list("fmt"),
+    directory = "core",
+    test_dependencies = list("gtest"),
+)
+
+app = build_cpp(
+    "app",
+    list(core, "spdlog"),
+    program = true,
+    directory = "app",
+    test_dependencies = list("catch2"),
+)

@@ -5,6 +5,7 @@ use crate::common::system;
 use crate::jvm::{self, install::InstallTarget};
 use crate::language::parser::{Parser, Script};
 use crate::language::runtime::{FromValue, ParameterDefault, Runtime};
+use crate::native;
 
 use super::script::{self, DependencyChange, ModuleCall};
 
@@ -48,21 +49,26 @@ pub fn install(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
-    let repositories: Vec<String> = argument_value(&script, call, "repositories", project_dir)?;
-    let jdk: String = argument_value(&script, call, "jdk", project_dir)?;
+    // C and C++ modules take vcpkg ports
+    let library = match call.platform {
+        "c" | "cpp" => native::checked_port(notation)?,
+        _ => {
+            let repositories: Vec<String> = argument_value(&script, call, "repositories", project_dir)?;
+            let jdk: String = argument_value(&script, call, "jdk", project_dir)?;
 
-    let library = jvm::install::checked_library(
-        notation,
-        &InstallTarget {
-            module: &call.name,
-            repositories: &repositories,
-            project_dir,
-            android: call.platform == "android",
-            jdk: &jdk,
-        },
-    )?;
+            let target = InstallTarget {
+                module: &call.name,
+                repositories: &repositories,
+                project_dir,
+                android: call.platform == "android",
+                jdk: &jdk,
+            };
 
-    let edit = script::with_dependency(&source, &script, call, parameter, &library.to_string())?;
+            jvm::install::checked_library(notation, &target)?.to_string()
+        }
+    };
+
+    let edit = script::with_dependency(&source, &script, call, parameter, &library)?;
 
     // what goes into the file has to be a script still
     if let Err(error) = Parser::new(&edit.script).parse_script() {

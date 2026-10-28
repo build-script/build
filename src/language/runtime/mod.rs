@@ -72,7 +72,7 @@ struct Jobs {
 struct Job<'a>(&'a Jobs);
 
 /// The platforms of every language category
-const PLATFORMS: &[&[Platform]] = &[jvm::PLATFORMS];
+const PLATFORMS: &[&[Platform]] = &[jvm::PLATFORMS, crate::native::PLATFORMS];
 
 /// A function that calls itself without an if that ends it never returns, this catches it
 const MAX_CALL_DEPTH: usize = 64;

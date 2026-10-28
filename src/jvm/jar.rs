@@ -116,7 +116,7 @@ fn build_jar(
     args: &Arguments,
     main_class: Option<&str>,
 ) -> Result<(PathBuf, PathBuf), String> {
-    let build_dir = inputs.directory.join("build");
+    let build_dir = system::build_dir(&inputs.directory);
     let resources_dir = build_dir.join("resources/main");
 
     let classes_dir = build_dir.join("classes")
@@ -269,7 +269,7 @@ fn build_fat_jar(
     relocations: &[(String, String)],
     output: &Path,
 ) -> Result<(), String> {
-    let work_dir = inputs.directory.join("build/tmp/fat-jar");
+    let work_dir = system::build_dir(&inputs.directory).join("tmp/fat-jar");
     let contents = work_dir.join("contents");
 
     system::log(&inputs.name, &format!("Fat jar of {} jars", jars.len()));
