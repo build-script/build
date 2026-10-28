@@ -5,6 +5,7 @@ mod script;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::{fs, io};
 
 use crate::common::settings::Settings;
@@ -245,7 +246,8 @@ pub fn add_module(
 }
 
 /// Removes the build directories build-script wrote below the script's directory,
-/// those with fingerprints in them. Build directories of other tools stay.
+/// those with fingerprints in them. Build directories of other tools stay, and the files
+/// git tracks in a build directory: some repositories keep their scripts there.
 pub fn clean(script_file: &Path) -> Result<(), String> {
     if !script_file.is_file() {
         return Err(format!("{} does not exist", script_file.display()));
@@ -275,10 +277,30 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
             let is_build_dir = name == "build" || name == ".build";
 
             if is_build_dir && path.join("fingerprints").is_dir() {
-                system::remove_dir(&path)?;
-                removed.push(path);
+                let tracked = Command::new("git")
+                    .arg("-C")
+                    .arg(&path)
+                    .args(["ls-files", "."])
+                    .output()
+                    .is_ok_and(|output| output.status.success() && !output.stdout.is_empty());
+
+                match tracked {
+                    true => {
+                        let mut command = Command::new("git");
+                        command.arg("-C")
+                            .arg(&path)
+                            .args(["clean", "-d", "-x", "--force", "--quiet", "."]);
+                        system::run_command_quietly(&mut command, "git clean")?;
+                    }
+                    false => system::remove_dir(&path)?,
+                }
+
+                removed.push((path, tracked));
             } else if !is_build_dir {
                 pending.push(path);
+            } else if path.join("git").is_dir() {
+                // checkouts of git() with modules of their own, below a build directory without one
+                pending.push(path.join("git"));
             }
         }
     }
@@ -288,8 +310,11 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
     }
 
     removed.sort();
-    for directory in removed {
-        println!("Removed {}", directory.display());
+    for (directory, tracked) in removed {
+        match tracked {
+            true => println!("Removed {}, but the files git tracks there", directory.display()),
+            false => println!("Removed {}", directory.display()),
+        }
     }
 
     return Ok(());
@@ -481,6 +506,17 @@ mod tests {
         assert!(root.join("web/build/index.html").is_file());
         assert!(root.join("node_modules/x/build/fingerprints/x").is_file());
         assert!(clean(&root.join("missing.build")).unwrap_err().contains("does not exist"));
+
+        // a repository with scripts in build/ keeps them
+        system::write_file(&root.join("lib/build/fingerprints/lib"), "0").unwrap();
+        system::write_file(&root.join("lib/build/cmake/setup.sh"), "").unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+        git(&["init", "--quiet"]);
+        git(&["add", "lib/build/cmake/setup.sh"]);
+
+        clean(&root.join("project.build")).unwrap();
+        assert!(root.join("lib/build/cmake/setup.sh").is_file());
+        assert!(!root.join("lib/build/fingerprints").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 
