@@ -53,7 +53,7 @@ pub fn module_file(project_dir: &Path, name: &str) -> PathBuf {
 pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -> Result<(), String> {
     let inputs = module.inputs;
     let android = module.platform == TargetPlatform::Android;
-    let build_dir = inputs.directory.join("build");
+    let build_dir = system::build_dir(&inputs.directory);
     let url = |path: &Path| escape(&format!("file://{}", idea_path(project_dir, path))).into_owned();
 
     // where KSP and the javac processors write their sources

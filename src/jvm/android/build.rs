@@ -38,7 +38,7 @@ const CMAKE_VERSION: &str = "3.22.1";
 /// what the Android Gradle plugin builds without abiFilters
 const ABIS: &[&str] = &["armeabi-v7a", "arm64-v8a", "x86", "x86_64"];
 /// the CMake builds, and the libraries in libs/<abi> like jniLibs
-const CMAKE_DIR: &str = "build/intermediates/cmake";
+const CMAKE_DIR: &str = "intermediates/cmake";
 
 /// Debug, or release with `build-script build --release`
 #[derive(Clone, Copy, PartialEq)]
@@ -194,7 +194,7 @@ pub fn native_library_dirs(
     let mut dirs = source_set_dirs_with_files(inputs, "jniLibs", build_type);
 
     if args.get::<Option<String>>("cmake")?.is_some() {
-        dirs.push(inputs.directory.join(CMAKE_DIR).join("libs"));
+        dirs.push(system::build_dir(&inputs.directory).join(CMAKE_DIR).join("libs"));
     }
 
     return Ok(dirs);
@@ -238,7 +238,7 @@ impl AndroidBuild {
         args: &Arguments,
         build_type: BuildType,
     ) -> Result<Self, String> {
-        let build_dir = inputs.directory.join("build");
+        let build_dir = system::build_dir(&inputs.directory);
         return Self::prepare_variant(inputs, args, build_type, build_type.name(), build_dir);
     }
 
@@ -248,7 +248,7 @@ impl AndroidBuild {
         inputs: ModuleBuildInputs,
         args: &Arguments,
     ) -> Result<Self, String> {
-        let build_dir = inputs.directory.join("build/androidTest");
+        let build_dir = system::build_dir(&inputs.directory).join("androidTest");
         let mut build =
             Self::prepare_variant(inputs, args, BuildType::Debug, "debugAndroidTest", build_dir)?;
         let test_dir = build.inputs.directory.join("src/androidTest");
@@ -573,7 +573,7 @@ impl AndroidBuild {
             ndk_version: &self.ndk_version,
             min_sdk: self.min_sdk,
             build_type: self.build_type,
-            work_dir: self.inputs.directory.join(CMAKE_DIR),
+            work_dir: system::build_dir(&self.inputs.directory).join(CMAKE_DIR),
             accept_license: self.accept_license,
         }
         .run(&|message| system::log(&self.inputs.name, message));

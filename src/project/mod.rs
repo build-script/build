@@ -271,10 +271,13 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
                 continue;
             }
 
-            if name == "build" && path.join("fingerprints").is_dir() {
+            // .build where a BUILD of Bazel is in the way
+            let is_build_dir = name == "build" || name == ".build";
+
+            if is_build_dir && path.join("fingerprints").is_dir() {
                 system::remove_dir(&path)?;
                 removed.push(path);
-            } else if name != "build" {
+            } else if !is_build_dir {
                 pending.push(path);
             }
         }

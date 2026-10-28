@@ -47,7 +47,7 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
     let name: String = args.get("name")?;
     let main_class: String = args.get("main_class")?;
     let directory = module_directory(context, args)?;
-    let output = directory.join("build/generated/sources").join(&name);
+    let output = system::build_dir(&directory).join("generated/sources").join(&name);
 
     let inputs: Vec<PathBuf> = args.get::<Vec<String>>("inputs")?
         .iter()
@@ -61,7 +61,8 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
         .collect();
 
     let mut fingerprint = InputFingerprint::new(
-        directory.join("build/fingerprints")
+        system::build_dir(&directory)
+            .join("fingerprints")
             .join(format!("generator-{name}")),
     );
 
@@ -97,7 +98,7 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
 
     // a library without a command line comes with a small driver in the project
     if !tool_sources.is_empty() {
-        let tool_classes = directory.join("build/generated/tools").join(&name);
+        let tool_classes = system::build_dir(&directory).join("generated/tools").join(&name);
         system::remove_dir(&tool_classes)?;
         compile_java(
             &jdk,

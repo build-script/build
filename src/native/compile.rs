@@ -84,7 +84,7 @@ impl Compilation<'_> {
                     .to_string_lossy();
 
                 match path.is_dir() {
-                    true if !hidden && path != self.module_dir.join("build") => pending.push(path),
+                    true if !hidden && path != system::build_dir(self.module_dir) => pending.push(path),
                     false if self.language.extensions().contains(&extension.as_ref()) => sources.push(path),
                     _ => {}
                 }

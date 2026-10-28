@@ -44,7 +44,7 @@ const DEFAULT_TEST_RUNNER: &str = "androidx.test.runner.AndroidJUnitRunner";
 /// added to the instrumented tests when they use the default runner without naming it
 const DEFAULT_TEST_RUNNER_LIBRARY: &str = "androidx.test:runner:1.6.2";
 /// R.txt of a library module, what apps write its R class from
-const LIBRARY_SYMBOL_FILE: &str = "build/intermediates/R.txt";
+const LIBRARY_SYMBOL_FILE: &str = "intermediates/R.txt";
 
 /// What consumers of an Android library need besides its classes
 #[derive(Debug, Hash)]
@@ -193,7 +193,7 @@ fn build_android(context: &BuildScriptContext, args: &Arguments) -> Result<Value
     let build_type = BuildType::of(context);
     let settings = ApkSettings::of_app(args, &inputs.directory)?;
     let namespace: String = args.get("namespace")?;
-    let build_dir = inputs.directory.join("build");
+    let build_dir = system::build_dir(&inputs.directory);
     let manifest = build_dir.join("intermediates/manifest/AndroidManifest.xml");
 
     // debug builds work without the passwords of the release key
@@ -324,14 +324,15 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
     let source_manifest = Some(inputs.directory.join("src/main/AndroidManifest.xml"))
         .filter(|manifest| manifest.is_file());
 
-    let jar = inputs.directory.join("build/libs")
+    let jar = system::build_dir(&inputs.directory)
+        .join("libs")
         .join(format!("{}.jar", inputs.name));
 
     let android = AndroidResources {
         namespace: namespace.clone(),
         res_dirs: existing_dirs(&inputs, args, "res_dirs", build_type)?,
         manifest: source_manifest.clone(),
-        symbols: Some(inputs.directory.join(LIBRARY_SYMBOL_FILE)),
+        symbols: Some(system::build_dir(&inputs.directory).join(LIBRARY_SYMBOL_FILE)),
         asset_dirs: existing_dirs(&inputs, args, "asset_dirs", build_type)?,
         native_library_dirs: native_library_dirs(&inputs, args, build_type)?,
         view_binding: args.get("view_binding")?,
@@ -377,7 +378,7 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
         // R with non-final ids only to compile against, apps generate the real one
         system::log(&build.inputs.name, "Linking resources");
         let own_resources = build.compile_own_resources()?;
-        let symbols = build.inputs.directory.join(LIBRARY_SYMBOL_FILE);
+        let symbols = system::build_dir(&build.inputs.directory).join(LIBRARY_SYMBOL_FILE);
         build.link_library(&manifest, &own_resources, &intermediates, &symbols)?;
         let r_classes = intermediates.join("classes/r");
         build.compile_generated_java(
@@ -417,7 +418,7 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
         Some(sdk) => {
             let classes = vec![
                 jar.clone(),
-                inputs.directory.join("build/intermediates/classes/r"),
+                system::build_dir(&inputs.directory).join("intermediates/classes/r"),
             ];
             android_tests(
                 context,
@@ -856,18 +857,10 @@ fn instrumented_tests(
         .extend(test_dependencies.modules);
 
     // where the Gradle plugin puts them
-    let manifest = inputs
-        .directory
-        .join("build/androidTest/intermediates/manifest/AndroidManifest.xml");
-
-    let apk = inputs.directory.join(format!(
-        "build/outputs/apk/androidTest/debug/{}-debug-androidTest.apk",
-        inputs.name
-    ));
-
-    let reports_dir = inputs
-        .directory
-        .join("build/outputs/androidTest-results/connected");
+    let build_dir = system::build_dir(&inputs.directory);
+    let manifest = build_dir.join("androidTest/intermediates/manifest/AndroidManifest.xml");
+    let apk = build_dir.join(format!("outputs/apk/androidTest/debug/{}-debug-androidTest.apk", inputs.name));
+    let reports_dir = build_dir.join("outputs/androidTest-results/connected");
 
     let mut input_paths = android_input_paths(&inputs, args, BuildType::Debug)?;
     input_paths.push(inputs.directory.join("src/androidTest"));

@@ -139,7 +139,7 @@ fn signature(language: Language) -> FunctionSignature {
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
     let directory = context.project_dir.join(args.get::<String>("directory")?);
-    let build_dir = directory.join("build");
+    let build_dir = system::build_dir(&directory);
     let program: bool = args.get("program")?;
     let toolchain = Toolchain::named(&args.get::<String>("toolchain")?)?;
     let release = context.release;
@@ -489,7 +489,7 @@ fn test_program(
     link_flags: &[String],
     setup: &TestSetup,
 ) -> Result<ModuleTests, String> {
-    let build_dir = module.module_dir.join("build");
+    let build_dir = system::build_dir(module.module_dir);
     let executable = build_dir.join("bin").join(program);
 
     let mut fingerprint = InputFingerprint::new(build_dir.join("fingerprints").join("tests").join(program));
