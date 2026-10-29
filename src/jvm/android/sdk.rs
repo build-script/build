@@ -84,6 +84,30 @@ pub struct ArchiveFile {
     checksum: Option<Checksum>,
 }
 
+/// The NDK of the version: that of ANDROID_HOME, else the one in <build home>/android-sdk, installed once
+/// its license is accepted
+pub fn ndk(version: &str, accept_license: bool) -> Result<PathBuf, String> {
+    let installed = ["ANDROID_HOME", "ANDROID_SDK_ROOT"].iter()
+        .filter_map(|variable| std::env::var_os(variable))
+        .map(|root| PathBuf::from(root).join("ndk").join(version))
+        .find(|ndk| ndk.is_dir());
+
+    if let Some(ndk) = installed {
+        return Ok(ndk);
+    }
+
+    let root = system::data_dir("android-sdk");
+    let ndk = root.join("ndk").join(version);
+
+    return system::installing(|| {
+        if !ndk.is_dir() {
+            SdkCatalog::load()?.install(&root, &format!("ndk;{version}"), &ndk, accept_license)?;
+        }
+
+        return Ok(ndk.clone());
+    });
+}
+
 impl AndroidSdk {
     /// adb from platform-tools: of ANDROID_HOME, of the SDK the app was built
     /// with, or installed there like the other SDK packages

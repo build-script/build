@@ -1,7 +1,8 @@
 // C and C++: build_c and build_cpp compile a module into a static or shared library or a program, its
 // libraries come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only
 // when it changed. build_cmake builds CMake projects, like LLVM, system_library takes installed ones, for the
-// modules depending on them. Shared libraries are for programs and for the JVM.
+// modules depending on them. Shared libraries are for programs, for the JVM and for Android apps.
+mod android;
 mod cmake;
 mod compile;
 mod configure;
@@ -26,6 +27,7 @@ use crate::language::runtime::{
 use compile::{Compilation, Language};
 use toolchain::Toolchain;
 
+pub use android::{AndroidSources, build as build_for_android};
 pub use vcpkg::checked_port;
 
 /// `use c` and `use cpp`, both with build_cmake and system_library
@@ -67,6 +69,8 @@ pub struct NativeOutput {
     pub tools_dir: Option<PathBuf>,
     /// with shared = true, for System.loadLibrary
     pub shared_library: Option<PathBuf>,
+    /// what Android apps build of a shared library, None when it has vcpkg ports or libraries of modules
+    pub android: Option<AndroidSources>,
     /// C++ is in it: what links it links with the C++ compiler
     pub cpp: bool,
 }
@@ -231,6 +235,9 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         true => flags.extend(["-O2".to_string(), "-DNDEBUG".to_string()]),
         false => flags.extend(["-O0".to_string(), "-g".to_string()]),
     }
+
+    // Android gets the module's own headers and defines, the rest is of this machine
+    let android_flags = [flags.clone(), vec!["-fPIC".to_string()]].concat();
 
     if args.get("jni")? {
         flags.extend(crate::jvm::jni_include_dirs(&context.project_dir)?.iter().map(|dir| format!("-I{}", dir.display())));
@@ -402,6 +409,23 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         }
     }
 
+    // what Android apps build of it: its own sources, header-only modules are fine
+    let links_modules = dependencies.modules.iter().any(|module| {
+        return matches!(&module.output, ModuleOutput::Native(output) if !output.link_flags.is_empty());
+    });
+
+    let android = (shared && ports.is_empty() && !links_modules).then(|| AndroidSources {
+        name: name.clone(),
+        language,
+        module_dir: directory.clone(),
+        source_patterns: source_patterns.clone(),
+        exclude_patterns: exclude_patterns.clone(),
+        c_standard: c_standard.clone(),
+        cpp_standard: cpp_standard.clone(),
+        flags: [android_flags, compile_flags.clone()].concat(),
+        build_dir: build_dir.clone(),
+    });
+
     let mut tests = vec![];
 
     if context.tests.includes(&name) {
@@ -448,6 +472,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             program: program.then_some(artifact.clone()),
             tools_dir: None,
             shared_library: (shared && !header_only).then_some(artifact),
+            android,
             cpp,
         }),
         tests,

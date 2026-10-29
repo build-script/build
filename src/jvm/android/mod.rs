@@ -25,7 +25,7 @@ use crate::language::runtime::{
 };
 
 use build::{
-    AndroidBuild, BuildType, DEFAULT_NDK_VERSION, LinkedResources, Signature, android_input_paths,
+    AndroidBuild, BuildType, LinkedResources, Signature, android_input_paths,
     existing_dirs, native_library_dirs, read_android_inputs,
 };
 use device::InstrumentedTests;
@@ -34,7 +34,9 @@ use manifest::{launcher_activity, read_manifest_with_placeholders};
 use release::ReleaseKey;
 use sdk::AndroidSdk;
 
+pub use build::DEFAULT_NDK_VERSION;
 pub use device::install_and_start;
+pub use sdk::ndk;
 
 pub const DEFAULT_COMPILE_SDK: i64 = 36;
 pub const DEFAULT_MIN_SDK: i64 = 24;
