@@ -339,6 +339,9 @@ impl<'src> Parser<'src> {
                     span,
                 });
             }
+            TokenType::UnclosedString => {
+                return Err(ParseError::unexpected_token(vec!["\" to close the string".to_string()], None, span));
+            }
             TokenType::Fn => return self.parse_function(span),
             TokenType::If => return self.parse_if(span),
             TokenType::Minus => return self.parse_unary_expression(UnaryOperator::Neg, span),

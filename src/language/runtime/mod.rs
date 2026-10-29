@@ -1028,6 +1028,16 @@ mod tests {
     }
 
     #[test]
+    fn strings_take_escapes_and_must_be_closed() {
+        let runtime = run(r#"x = "GPLATFORM=\"darwin\" \\ \t C:\Users""#).unwrap();
+        assert_eq!(string(&runtime, "x"), "GPLATFORM=\"darwin\" \\ \t C:\\Users");
+        assert_eq!(variable(&runtime, "x").literal(), r#""GPLATFORM=\"darwin\" \\ \t C:\\Users""#);
+
+        let error = Parser::new("x = list(\"abc)").parse_script().unwrap_err();
+        assert_eq!(error.variant.to_string(), "expected \" to close the string, got the end of the script");
+    }
+
+    #[test]
     fn conditions_choose_their_block() {
         let runtime = run(r#"
             ci = "true"

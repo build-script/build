@@ -64,6 +64,8 @@ pub enum TokenType {
 
     Ident(String),
     String(String),
+    /// the rest of the script, which no " closes
+    UnclosedString,
 
     EOF,
 }
@@ -99,6 +101,7 @@ impl ToString for TokenType {
             TokenType::Pipe => "|",
             TokenType::Ident(ident) => ident,
             TokenType::String(str) => str,
+            TokenType::UnclosedString => "\"",
             TokenType::EOF => "<<EOF>>",
         });
     }
@@ -179,16 +182,31 @@ impl<'src> TokenStream<'src> {
             };
         };
 
+        // \" and \\ for themselves, \n and \t for a new line and a tab, other backslashes stay
         if first_char == '"' {
-            let closing_index = trimmed[1..].find('"').expect("expected closing \"");
+            let mut text = String::new();
+            let mut chars = trimmed[1..].char_indices();
 
-            let str_content = &trimmed[1..closing_index + 1];
-            current_pos += str_content.len() + 2; // closing and opening "
+            while let Some((index, char)) = chars.next() {
+                match (char, chars.clone().next().map(|(_, next)| next)) {
+                    ('"', _) => {
+                        current_pos += index + 2;
+                        return Token::new(TokenType::String(text), Span::new(start_pos, current_pos));
+                    }
+                    ('\\', Some(next @ ('"' | '\\' | 'n' | 't'))) => {
+                        text.push(match next {
+                            'n' => '\n',
+                            't' => '\t',
+                            other => other,
+                        });
+                        chars.next();
+                    }
+                    _ => text.push(char),
+                }
+            }
 
-            return Token::new(
-                TokenType::String(str_content.to_string()),
-                Span::new(start_pos, current_pos),
-            );
+            current_pos += trimmed.len();
+            return Token::new(TokenType::UnclosedString, Span::new(start_pos, current_pos));
         };
 
         if let Some((variant, len)) = Self::control_symbol(trimmed) {
