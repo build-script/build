@@ -160,7 +160,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
 
     link_flags.extend(args.get::<Vec<String>>("link_flags")?);
 
-    return Ok(library_module(name, source, stamp, compile_flags, link_flags));
+    return Ok(library_module(name, source, stamp, compile_flags, link_flags, install_dir.join("bin")));
 }
 
 /// A library installed on the system, like the LLVM of Homebrew or apt, through its llvm-config
@@ -178,10 +178,10 @@ pub fn system_library(_context: &BuildScriptContext, args: &Arguments) -> Result
     link_flags.extend(args.get::<Vec<String>>("link_flags")?);
 
     // an update of the library is one of its tool
-    let directory = tool.parent()
+    let tools_dir = tool.parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
-    return Ok(library_module(name, directory, tool, compile_flags, link_flags));
+    return Ok(library_module(name, tools_dir.clone(), tool, compile_flags, link_flags, tools_dir));
 }
 
 fn library_module(
@@ -190,6 +190,7 @@ fn library_module(
     artifact: PathBuf,
     compile_flags: Vec<String>,
     link_flags: Vec<String>,
+    tools_dir: PathBuf,
 ) -> Value {
     return Value::from(Arc::new(BuiltModule {
         name,
@@ -200,6 +201,7 @@ fn library_module(
             compile_flags,
             link_flags,
             program: None,
+            tools_dir: Some(tools_dir),
             // CMake projects, like LLVM, are of C++ mostly
             cpp: true,
         }),

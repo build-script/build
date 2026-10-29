@@ -5,6 +5,7 @@
 mod cmake;
 mod compile;
 mod configure;
+mod tablegen;
 pub mod templates;
 mod toolchain;
 mod vcpkg;
@@ -62,6 +63,8 @@ pub struct NativeOutput {
     pub link_flags: Vec<String>,
     /// None for libraries
     pub program: Option<PathBuf>,
+    /// the tools of a library outside vcpkg, like llvm-tblgen
+    pub tools_dir: Option<PathBuf>,
     /// C++ is in it: what links it links with the C++ compiler
     pub cpp: bool,
 }
@@ -127,6 +130,9 @@ fn signature(language: Language) -> FunctionSignature {
         .with_default("configured_values", strings(), none())
         // like generate_export_header of CMake: "cmark" writes cmark_export.h with CMARK_EXPORT
         .with_default("export_header", Type::String, "")
+        // headers of TableGen: the tool, the .td file, the header and arguments, like
+        // list("mlir-tblgen", "include/Ops.td", "Ops.h.inc", "-gen-op-decls")
+        .with_default("tablegen", Type::list(strings()), none())
         .with_default("flags", strings(), none())
         // like "-framework", "Cocoa", modules depending on the library link them too
         .with_default("link_flags", strings(), none())
@@ -172,11 +178,12 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // with the sources the private headers
     let source_roots = compile::source_roots(&directory, &source_patterns);
 
-    // headers like CMake generates them, written before the sources compile
+    // headers like CMake generates them, and those of TableGen, written before the sources compile
     let generated_dir = build_dir.join("generated");
     let templates = module_paths("configured_headers")?;
     let values: Vec<String> = args.get("configured_values")?;
     let export_header: String = args.get("export_header")?;
+    let tablegen_entries: Vec<Vec<String>> = args.get("tablegen")?;
     let header_dirs = [include_dirs.clone(), source_roots.clone()].concat();
     configure::write_headers(&templates, &values, &export_header, &header_dirs, &generated_dir)?;
 
@@ -185,7 +192,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         .map(|dir| format!("-I{}", dir.display()))
         .collect();
 
-    if !templates.is_empty() || !export_header.is_empty() {
+    if !templates.is_empty() || !export_header.is_empty() || !tablegen_entries.is_empty() {
         public_flags.push(format!("-I{}", generated_dir.display()));
     }
 
@@ -212,6 +219,20 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     flags.extend(args.get::<Vec<String>>("flags")?);
     flags.extend(compile_flags.iter().cloned());
     let flags = without_repeated_flags(flags);
+
+    // the tools come with libraries like LLVM, TableGen includes .td files like headers
+    let tools_dirs: Vec<PathBuf> = BuiltModule::transitive(&dependencies.modules)
+        .iter()
+        .filter_map(|module| match &module.output {
+            ModuleOutput::Native(output) => output.tools_dir.clone(),
+            _ => None,
+        })
+        .collect();
+    let include_flags: Vec<String> = flags.iter()
+        .filter(|flag| flag.starts_with("-I"))
+        .cloned()
+        .collect();
+    tablegen::generate(&name, &tablegen_entries, &directory, &include_flags, &tools_dirs, &generated_dir)?;
 
     // of their own: modules may share a directory
     let objects_dir = build_dir.join("obj")
@@ -390,6 +411,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             compile_flags: [public_flags, compile_flags].concat(),
             link_flags,
             program: program.then_some(artifact.clone()),
+            tools_dir: None,
             cpp,
         }),
         tests,
