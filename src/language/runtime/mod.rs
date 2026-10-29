@@ -961,6 +961,15 @@ fn core_functions() -> Vec<(&'static str, Value)> {
             ),
         ),
         (
+            "operating_system",
+            builtin(
+                "operating_system",
+                FunctionParameters::new().returns(Type::String),
+                // "macos", "linux" or "windows"
+                |_, _| Ok(std::env::consts::OS.into()),
+            ),
+        ),
+        (
             "current_time_millis",
             builtin(
                 "current_time_millis",
