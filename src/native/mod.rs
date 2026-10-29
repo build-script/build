@@ -1,7 +1,7 @@
-// C and C++: build_c and build_cpp compile a module into a static library or a program, its libraries
-// come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only when it
-// changed. build_cmake builds CMake projects, like LLVM, system_library takes installed ones, for the
-// modules depending on them.
+// C and C++: build_c and build_cpp compile a module into a static or shared library or a program, its
+// libraries come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only
+// when it changed. build_cmake builds CMake projects, like LLVM, system_library takes installed ones, for the
+// modules depending on them. Shared libraries are for programs and for the JVM.
 mod cmake;
 mod compile;
 mod configure;
@@ -65,6 +65,8 @@ pub struct NativeOutput {
     pub program: Option<PathBuf>,
     /// the tools of a library outside vcpkg, like llvm-tblgen
     pub tools_dir: Option<PathBuf>,
+    /// with shared = true, for System.loadLibrary
+    pub shared_library: Option<PathBuf>,
     /// C++ is in it: what links it links with the C++ compiler
     pub cpp: bool,
 }
@@ -117,6 +119,10 @@ fn signature(language: Language) -> FunctionSignature {
         .required("dependencies", dependencies())
         // a program `run` starts, else a static library
         .with_default("program", Type::Bool, false)
+        // a shared library, like for JNI: lib<name>.dylib or lib<name>.so
+        .with_default("shared", Type::Bool, false)
+        // jni.h of the JDK
+        .with_default("jni", Type::Bool, false)
         // "system": cc and c++ of the system, "zig": downloaded once
         .with_default("toolchain", Type::String, "system")
         .with_default("c_standard", Type::String, "c17")
@@ -158,14 +164,19 @@ fn signature(language: Language) -> FunctionSignature {
     return parameters.returns(Type::Module);
 }
 
-/// build/lib/lib<name>.a, with program = true build/bin/<name>
+/// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = system::build_dir(&directory);
     let program: bool = args.get("program")?;
+    let shared: bool = args.get("shared")?;
     let toolchain = Toolchain::named(&args.get::<String>("toolchain")?)?;
     let release = context.release;
+
+    if program && shared {
+        return Err(format!("{name}: shared is for libraries, a program is one already"));
+    }
 
     let module_paths = |parameter: &str| -> Result<Vec<PathBuf>, String> {
         let paths = args.get::<Vec<String>>(parameter)?;
@@ -211,9 +222,18 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     flags.extend(source_roots.iter().map(|dir| format!("-I{}", dir.display())));
     flags.extend(args.get::<Vec<String>>("defines")?.iter().map(|define| format!("-D{define}")));
 
+    // shared libraries on Linux link only position independent code, also that of the static ones in them
+    if !program && cfg!(target_os = "linux") {
+        flags.push("-fPIC".to_string());
+    }
+
     match release {
         true => flags.extend(["-O2".to_string(), "-DNDEBUG".to_string()]),
         false => flags.extend(["-O0".to_string(), "-g".to_string()]),
+    }
+
+    if args.get("jni")? {
+        flags.extend(crate::jvm::jni_include_dirs(&context.project_dir)?.iter().map(|dir| format!("-I{}", dir.display())));
     }
 
     flags.extend(args.get::<Vec<String>>("flags")?);
@@ -312,10 +332,13 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let cpp = language == Language::Cpp || links_cpp(&dependencies.modules);
     let test_cpp = cpp || links_cpp(&test_dependencies.modules);
 
-    let artifact = match (program, header_only) {
-        (true, _) => build_dir.join("bin").join(&name),
-        (false, true) => include_dirs.first().cloned().unwrap_or(directory.clone()),
-        (false, false) => build_dir.join("lib").join(format!("lib{name}.a")),
+    let shared_extension = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+
+    let artifact = match (program, header_only, shared) {
+        (true, ..) => build_dir.join("bin").join(&name),
+        (false, true, _) => include_dirs.first().cloned().unwrap_or(directory.clone()),
+        (false, false, true) => build_dir.join("lib").join(format!("lib{name}.{shared_extension}")),
+        (false, false, false) => build_dir.join("lib").join(format!("lib{name}.a")),
     };
 
     // every build checks every source, a source compiles again when it or one of its headers changed
@@ -342,10 +365,19 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     if !compiled && fingerprint.is_up_to_date(&outputs)? {
         system::log(&name, "Up to date");
     } else {
-        match (program, header_only) {
-            (true, _) => compile::link(&toolchain, cpp, &objects, &link_flags, &artifact)?,
-            (false, true) => {}
-            (false, false) => compile::archive(&toolchain, &objects, &artifact)?,
+        match (program, header_only, shared) {
+            (true, ..) => compile::link(&toolchain, cpp, &objects, &link_flags, &artifact)?,
+            (false, true, _) => {}
+            (false, false, true) => {
+                // programs that link it find it by their rpath
+                let library_name = format!("lib{name}.{shared_extension}");
+                let shared_flags = match cfg!(target_os = "macos") {
+                    true => vec!["-shared".to_string(), "-install_name".to_string(), format!("@rpath/{library_name}")],
+                    false => vec!["-shared".to_string(), format!("-Wl,-soname,{library_name}")],
+                };
+                compile::link(&toolchain, cpp, &objects, &[shared_flags, link_flags.clone()].concat(), &artifact)?;
+            }
+            (false, false, false) => compile::archive(&toolchain, &objects, &artifact)?,
         }
 
         // those of other modules in the directory stay
@@ -397,9 +429,12 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         });
     }
 
-    // modules depending on a library get its headers and link it before what it needs
-    if !program && !header_only {
-        link_flags.insert(0, artifact.display().to_string());
+    // modules depending on a library get its headers and link it before what it needs, a shared library
+    // has what it needs inside
+    match (program || header_only, shared) {
+        (true, _) => {}
+        (false, true) => link_flags = vec![artifact.display().to_string(), format!("-Wl,-rpath,{}", build_dir.join("lib").display())],
+        (false, false) => link_flags.insert(0, artifact.display().to_string()),
     }
 
     return Ok(Value::from(Arc::new(BuiltModule {
@@ -412,6 +447,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             link_flags,
             program: program.then_some(artifact.clone()),
             tools_dir: None,
+            shared_library: (shared && !header_only).then_some(artifact),
             cpp,
         }),
         tests,

@@ -99,6 +99,8 @@ pub struct Dependencies {
     pub libraries: Vec<MavenCoordinate>,
     pub platforms: Vec<MavenCoordinate>,
     pub modules: Vec<Arc<BuiltModule>>,
+    /// shared libraries of build_cpp, for System.loadLibrary
+    pub native: Vec<Arc<BuiltModule>>,
 }
 
 pub struct ResolvedDependencies {
@@ -572,10 +574,14 @@ impl ModuleBuildInputs {
 
         for module in BuiltModule::transitive(&args.modules()) {
             fingerprint.add(&module.name);
-            fingerprint.add(module.jvm());
             fingerprint.add_files(&[module.artifact.clone()])?;
+
+            // a shared library of build_cpp counts by its file
+            let ModuleOutput::Jvm(output) = &module.output else { continue };
+            fingerprint.add(output);
+
             // apps compile the resources of their libraries
-            if let Some(android) = &module.jvm().android {
+            if let Some(android) = &output.android {
                 fingerprint.add_files(&android.res_dirs)?;
                 fingerprint.add_files(&android.manifest.iter().cloned().collect::<Vec<_>>())?;
                 fingerprint.add_files(&android.consumer_proguard_files)?;
@@ -627,6 +633,7 @@ impl ModuleBuildInputs {
                 platforms: self.dependencies.platforms.clone(),
                 android,
                 launch,
+                native_library_dirs: self.dependencies.native_library_dirs(),
             }),
             tests,
         });
@@ -654,11 +661,13 @@ impl Dependencies {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
 
-                    if let ModuleOutput::Native(_) = &module.output {
-                        return Err(format!("{} is a C or C++ module, JVM modules depend on JVM modules", module.name));
+                    match &module.output {
+                        ModuleOutput::Jvm(_) => dependencies.modules.push(module),
+                        ModuleOutput::Native(output) if output.shared_library.is_some() => dependencies.native.push(module),
+                        ModuleOutput::Native(_) => {
+                            return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
+                        }
                     }
-
-                    dependencies.modules.push(module);
                 }
                 other => {
                     return Err(format!(
@@ -674,6 +683,22 @@ impl Dependencies {
 
     pub fn is_empty(&self) -> bool {
         return self.libraries.is_empty() && self.modules.is_empty();
+    }
+
+    /// java.library.path: the directories of the shared libraries, also those of the modules
+    pub fn native_library_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self.modules.iter()
+            .flat_map(|module| module.jvm().native_library_dirs.clone())
+            .collect();
+
+        for module in &self.native {
+            if let ModuleOutput::Native(output) = &module.output {
+                dirs.extend(output.shared_library.as_ref().and_then(|library| library.parent()).map(Path::to_path_buf));
+            }
+        }
+
+        dirs.dedup();
+        return dirs;
     }
 
     /// For annotation or symbol processors: the Maven artifacts, and the jars
@@ -822,7 +847,7 @@ impl Compilation<'_> {
             let mut command = self
                 .inputs
                 .jdk
-                .java_command(&self.tools.compiler, KOTLIN_COMPILER_MAIN_CLASS)?;
+                .java_command(&[], &self.tools.compiler, KOTLIN_COMPILER_MAIN_CLASS)?;
 
             command
                 // the standard library is already on the classpath

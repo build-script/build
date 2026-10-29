@@ -21,6 +21,8 @@ use crate::language::runtime::{BuiltModule, ModuleOutput, Platform, Value};
 use android::AndroidResources;
 use maven::MavenCoordinate;
 
+pub use jdk::jni_include_dirs;
+
 /// `use kotlin`, `use java` and `use android`
 pub const PLATFORMS: &[Platform] = &[
     Platform {
@@ -49,6 +51,8 @@ pub struct JvmOutput {
     pub android: Option<AndroidResources>,
     /// None if it cannot be started
     pub launch: Option<JvmLaunch>,
+    /// of the shared C and C++ libraries below, java.library.path of `run` and the tests
+    pub native_library_dirs: Vec<PathBuf>,
 }
 
 /// How `build-script run` starts a JVM module
@@ -79,8 +83,13 @@ pub fn launch(module: &BuiltModule, output: &JvmOutput, args: &[String]) -> Resu
             ));
         }
         Some(JvmLaunch::Jar { java }) => {
-            let status = Command::new(java)
-                .arg("-jar")
+            let mut command = Command::new(java);
+
+            if !output.native_library_dirs.is_empty() {
+                command.arg(format!("-Djava.library.path={}", jdk::join_classpath(&output.native_library_dirs)?.to_string_lossy()));
+            }
+
+            let status = command.arg("-jar")
                 .arg(&module.artifact)
                 .args(args)
                 .current_dir(&module.directory)

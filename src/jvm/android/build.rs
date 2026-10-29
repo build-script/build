@@ -724,7 +724,7 @@ impl AndroidBuild {
             let mut command = self
                 .inputs
                 .jdk
-                .java_command(&[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
+                .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
 
             command.arg(self.dex_mode())
                 .arg("--min-api")
@@ -862,7 +862,7 @@ impl AndroidBuild {
         let mut command = self
             .inputs
             .jdk
-            .java_command(&[self.sdk.d8.clone()], "com.android.tools.r8.D8")?;
+            .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.D8")?;
 
         command.arg(self.dex_mode())
             .arg("--min-api")

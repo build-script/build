@@ -414,6 +414,7 @@ mod tests {
                 platforms: vec![],
                 android: None,
                 launch: None,
+                native_library_dirs: vec![],
             }),
             tests: vec![],
         });
