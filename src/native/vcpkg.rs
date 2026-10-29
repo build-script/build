@@ -150,6 +150,29 @@ pub fn checked_port(port: &str) -> Result<String, String> {
     return Ok(port.to_string());
 }
 
+/// A tool vcpkg downloads for its ports, like "cmake" and "ninja"
+pub fn tool(name: &str) -> Result<PathBuf, String> {
+    let vcpkg = install_vcpkg()?;
+    system::create_dir(&system::cache_dir("vcpkg/downloads"))?;
+
+    let output = Command::new(vcpkg.join("vcpkg"))
+        .args(["fetch", name])
+        .env("VCPKG_ROOT", &vcpkg)
+        .env("VCPKG_DOWNLOADS", system::cache_dir("vcpkg/downloads"))
+        .env("VCPKG_DISABLE_METRICS", "1")
+        .output()
+        .map_err(|error| format!("could not start vcpkg: {error}"))?;
+
+    // the path is the last line
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or("").trim());
+
+    if !output.status.success() || !path.is_file() {
+        return Err(format!("vcpkg could not fetch {name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+
+    return Ok(path);
+}
+
 /// vcpkg at its release into <build home>/vcpkg/<release>, its tool bootstrapped once
 fn install_vcpkg() -> Result<PathBuf, String> {
     let root = system::data_dir("vcpkg").join(VCPKG_RELEASE);

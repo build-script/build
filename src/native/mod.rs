@@ -1,6 +1,8 @@
 // C and C++: build_c and build_cpp compile a module into a static library or a program, its libraries
 // come from vcpkg, its compiler is the system's or zig. Every source compiles on its own, only when it
-// changed.
+// changed. build_cmake builds CMake projects, like LLVM, system_library takes installed ones, for the
+// modules depending on them.
+mod cmake;
 mod compile;
 mod configure;
 pub mod templates;
@@ -25,7 +27,7 @@ use toolchain::Toolchain;
 
 pub use vcpkg::checked_port;
 
-/// `use c` and `use cpp`
+/// `use c` and `use cpp`, both with build_cmake and system_library
 pub const PLATFORMS: &[Platform] = &[
     Platform {
         name: "c",
@@ -84,12 +86,20 @@ struct Dependencies {
 
 fn c_builtins() -> Vec<(&'static str, Value)> {
     let build_c = builtin("build_c", signature(Language::C), |context, args| build_module(context, args, Language::C));
-    return vec![("build_c", build_c)];
+    return [vec![("build_c", build_c)], library_builtins()].concat();
 }
 
 fn cpp_builtins() -> Vec<(&'static str, Value)> {
     let build_cpp = builtin("build_cpp", signature(Language::Cpp), |context, args| build_module(context, args, Language::Cpp));
-    return vec![("build_cpp", build_cpp)];
+    return [vec![("build_cpp", build_cpp)], library_builtins()].concat();
+}
+
+/// Libraries outside vcpkg, for C and C++
+fn library_builtins() -> Vec<(&'static str, Value)> {
+    return vec![
+        ("build_cmake", builtin("build_cmake", cmake::build_cmake_signature(), cmake::build_cmake)),
+        ("system_library", builtin("system_library", cmake::system_library_signature(), cmake::system_library)),
+    ];
 }
 
 /// Those of build_c and build_cpp, which has a cpp_standard
