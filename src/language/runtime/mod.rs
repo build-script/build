@@ -961,6 +961,15 @@ fn core_functions() -> Vec<(&'static str, Value)> {
             ),
         ),
         (
+            "operating_system",
+            builtin(
+                "operating_system",
+                FunctionParameters::new().returns(Type::String),
+                // "macos", "linux" or "windows"
+                |_, _| Ok(std::env::consts::OS.into()),
+            ),
+        ),
+        (
             "current_time_millis",
             builtin(
                 "current_time_millis",
@@ -1025,6 +1034,16 @@ mod tests {
 
     fn string(runtime: &Runtime, name: &str) -> String {
         return variable(runtime, name).to_string();
+    }
+
+    #[test]
+    fn strings_take_escapes_and_must_be_closed() {
+        let runtime = run(r#"x = "GPLATFORM=\"darwin\" \\ \t C:\Users""#).unwrap();
+        assert_eq!(string(&runtime, "x"), "GPLATFORM=\"darwin\" \\ \t C:\\Users");
+        assert_eq!(variable(&runtime, "x").literal(), r#""GPLATFORM=\"darwin\" \\ \t C:\\Users""#);
+
+        let error = Parser::new("x = list(\"abc)").parse_script().unwrap_err();
+        assert_eq!(error.variant.to_string(), "expected \" to close the string, got the end of the script");
     }
 
     #[test]

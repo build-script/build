@@ -204,7 +204,13 @@ impl Value {
     /// How the value is written in a script: strings with quotes
     pub fn literal(&self) -> String {
         match self {
-            Value::String(str) => return format!("\"{str}\""),
+            Value::String(str) => {
+                let escaped = str.replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\t', "\\t");
+                return format!("\"{escaped}\"");
+            }
             other => return other.to_string(),
         }
     }

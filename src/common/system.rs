@@ -60,6 +60,16 @@ pub fn build_dir(module_dir: &Path) -> PathBuf {
     return build_dir;
 }
 
+/// A program by its path, or by its name in the PATH
+pub fn find_program(program: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        return Some(PathBuf::from(program)).filter(|path| path.is_file());
+    }
+
+    let path = std::env::var_os("PATH")?;
+    return std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file());
+}
+
 /// JDKs, the Android SDK and emulators
 pub fn data_dir(name: &str) -> PathBuf {
     return BuildHomeEnvironment::read().base_directory(BaseDirectory::Data).join(name);
