@@ -14,7 +14,8 @@ use crate::jvm::maven::{DependencyResolver, MavenCoordinate, TargetPlatform};
 use crate::jvm::module::{
     self, Compilation, ModuleBuildInputs, ResolvedDependencies, Sources, create_jar,
 };
-use crate::language::runtime::{Arguments, BuildScriptContext, BuiltModule};
+use crate::language::runtime::{Arguments, BuildScriptContext, BuiltModule, ModuleOutput};
+use crate::native;
 
 use super::generated::{
     SymbolTable, binding_class, build_config_java_fields, layouts_by_name, view_binding_source,
@@ -185,7 +186,8 @@ fn dir_of_build_type(module_dir: &Path, dir: impl AsRef<Path>, build_type: Build
     return dir;
 }
 
-/// The module's jniLibs and, with a CMakeLists.txt, the libraries built from it
+/// The module's jniLibs, with a CMakeLists.txt the libraries built from it, and the shared libraries of
+/// build_c and build_cpp, built here for every ABI and the module's min_sdk
 pub fn native_library_dirs(
     inputs: &ModuleBuildInputs,
     args: &Arguments,
@@ -195,6 +197,18 @@ pub fn native_library_dirs(
 
     if args.get::<Option<String>>("cmake")?.is_some() {
         dirs.push(system::build_dir(&inputs.directory).join(CMAKE_DIR).join("libs"));
+    }
+
+    for module in &inputs.dependencies.native {
+        let ModuleOutput::Native(output) = &module.output else { continue };
+
+        let sources = output.android.as_ref().ok_or_else(|| {
+            format!("{} has vcpkg ports or libraries of modules, which are built for this machine only", module.name)
+        })?;
+
+        let release = build_type == BuildType::Release;
+        let ndk_version: String = args.get("ndk_version")?;
+        dirs.push(native::build_for_android(sources, ABIS, args.get("min_sdk")?, &ndk_version, args.get("accept_sdk_license")?, release)?);
     }
 
     return Ok(dirs);
@@ -724,7 +738,7 @@ impl AndroidBuild {
             let mut command = self
                 .inputs
                 .jdk
-                .java_command(&[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
+                .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
 
             command.arg(self.dex_mode())
                 .arg("--min-api")
@@ -862,7 +876,7 @@ impl AndroidBuild {
         let mut command = self
             .inputs
             .jdk
-            .java_command(&[self.sdk.d8.clone()], "com.android.tools.r8.D8")?;
+            .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.D8")?;
 
         command.arg(self.dex_mode())
             .arg("--min-api")

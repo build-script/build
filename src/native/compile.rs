@@ -301,8 +301,9 @@ pub fn archive(toolchain: &Toolchain, objects: &[PathBuf], library: &Path) -> Re
     return system::run_command(&mut command, "archiving");
 }
 
-/// A program of the objects and libraries, with the C++ compiler when C++ is among them: it brings the
-/// C++ standard library. A library several modules need is linked once, after everything that needs it.
+/// A program or shared library of the objects and libraries, with the C++ compiler when C++ is among
+/// them: it brings the C++ standard library. A library several modules need is linked once, after
+/// everything that needs it.
 pub fn link(
     toolchain: &Toolchain,
     cpp: bool,

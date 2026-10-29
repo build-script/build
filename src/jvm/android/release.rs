@@ -225,7 +225,7 @@ pub fn shrink_with_r8(
     let mut command = build
         .inputs
         .jdk
-        .java_command(&[build.sdk.d8.clone()], "com.android.tools.r8.R8")?;
+        .java_command(&[], &[build.sdk.d8.clone()], "com.android.tools.r8.R8")?;
 
     command.arg("--release")
         // the Java resources are packaged apart, as they are
@@ -335,7 +335,7 @@ pub fn build_app_bundle(
 
     let unsigned = work_dir.join("unsigned.aab");
 
-    let mut build_bundle = build.inputs.jdk.java_command(&bundletool, BUNDLETOOL_MAIN_CLASS)?;
+    let mut build_bundle = build.inputs.jdk.java_command(&[], &bundletool, BUNDLETOOL_MAIN_CLASS)?;
     build_bundle.arg("build-bundle")
         .arg(format!("--modules={}", module_zip.display()))
         .arg(format!("--output={}", unsigned.display()))
@@ -351,7 +351,7 @@ pub fn build_app_bundle(
 
     system::run_command_quietly(&mut build_bundle, "bundletool build-bundle")?;
 
-    let mut validate = build.inputs.jdk.java_command(&bundletool, BUNDLETOOL_MAIN_CLASS)?;
+    let mut validate = build.inputs.jdk.java_command(&[], &bundletool, BUNDLETOOL_MAIN_CLASS)?;
     validate.arg("validate").arg(format!("--bundle={}", unsigned.display()));
     system::run_command_quietly(&mut validate, "bundletool validate")?;
 

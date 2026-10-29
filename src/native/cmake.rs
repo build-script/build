@@ -202,6 +202,8 @@ fn library_module(
             link_flags,
             program: None,
             tools_dir: Some(tools_dir),
+            shared_library: None,
+            android: None,
             // CMake projects, like LLVM, are of C++ mostly
             cpp: true,
         }),

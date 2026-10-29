@@ -113,7 +113,7 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
 
     system::recreate_dir(&output)?;
     let output_arg = output.display().to_string();
-    let mut command = jdk.java_command(&classpath, &main_class)?;
+    let mut command = jdk.java_command(&[], &classpath, &main_class)?;
     command.args(
         args.get::<Vec<String>>("args")?
             .iter()

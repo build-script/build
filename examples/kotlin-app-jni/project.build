@@ -1,0 +1,16 @@
+use cpp
+use kotlin
+
+repositories = list(maven_central())
+
+// a library of C++ for System.loadLibrary("greeter"), with jni.h of the JDK
+greeter = build_cpp("greeter", list(), shared = true, jni = true, directory = "greeter")
+
+build_kotlin(
+    "app",
+    list(greeter),
+    repositories,
+    main_class = "com.example.MainKt",
+    directory = "app",
+    test_dependencies = list("org.jetbrains.kotlin:kotlin-test"),
+)

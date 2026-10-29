@@ -204,7 +204,7 @@ pub fn relocate(
 
     classpath.insert(0, driver);
 
-    let mut command = inputs.jdk.java_command(&classpath, "Relocate")?;
+    let mut command = inputs.jdk.java_command(&[], &classpath, "Relocate")?;
     command.arg(input).arg(output);
 
     for (from, to) in relocations {

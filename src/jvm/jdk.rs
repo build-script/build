@@ -34,6 +34,19 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
     )];
 }
 
+/// Where jni.h is, for C and C++ libraries a JVM loads: include/ of the default JDK and that of its system
+pub fn jni_include_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let include = Jdk::resolve(DEFAULT_JAVA_VERSION, DEFAULT_JDK_DISTRIBUTION, project_dir)?.home.join("include");
+
+    let system = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    };
+
+    return Ok(vec![include.clone(), include.join(system)]);
+}
+
 pub fn join_classpath(paths: &[PathBuf]) -> Result<OsString, String> {
     return std::env::join_paths(paths).map_err(|error| format!("invalid classpath: {error}"));
 }
@@ -71,10 +84,11 @@ impl Jdk {
             .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     }
 
-    /// `java -cp <classpath> <main class>`, the arguments of the program follow
-    pub fn java_command(&self, classpath: &[PathBuf], main_class: &str) -> Result<Command, String> {
+    /// `java <options> -cp <classpath> <main class>`, the arguments of the program follow
+    pub fn java_command(&self, options: &[String], classpath: &[PathBuf], main_class: &str) -> Result<Command, String> {
         let mut command = Command::new(self.tool_path("java"));
-        command.arg("-cp")
+        command.args(options)
+            .arg("-cp")
             .arg(join_classpath(classpath)?)
             .arg(main_class);
 

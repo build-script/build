@@ -8,6 +8,7 @@ use crate::language::runtime::{
     Value,
 };
 
+use super::jdk::join_classpath;
 use super::ksp::{ResolvedSymbolProcessors, SymbolProcessors};
 use super::maven::{DependencyResolver, MavenCoordinate, TargetPlatform};
 use super::module::{
@@ -221,9 +222,16 @@ impl UnitTests<'_> {
 
         let reports_dir = build_dir.join("test-results");
 
+        // the shared C and C++ libraries of the module and of the tests
+        let library_dirs = [inputs.dependencies.native_library_dirs(), test_dependencies.native_library_dirs()].concat();
+        let java_options = match library_dirs.is_empty() {
+            true => vec![],
+            false => vec![format!("-Djava.library.path={}", join_classpath(&library_dirs)?.to_string_lossy())],
+        };
+
         let (mut command, runner) = match test_main_class {
             Some(main_class) => (
-                inputs.jdk.java_command(&runtime_classpath, &main_class)?,
+                inputs.jdk.java_command(&java_options, &runtime_classpath, &main_class)?,
                 main_class,
             ),
             None => {
@@ -233,7 +241,7 @@ impl UnitTests<'_> {
 
                 let mut command = inputs
                     .jdk
-                    .java_command(&runtime_classpath, CONSOLE_LAUNCHER_MAIN_CLASS)?;
+                    .java_command(&java_options, &runtime_classpath, CONSOLE_LAUNCHER_MAIN_CLASS)?;
 
                 command.args(console_launcher_options(&version))
                     .arg(format!("--scan-classpath={}", test_classes.display()))
