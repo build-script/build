@@ -246,12 +246,11 @@ fn flags_from(command: &[String], installation: Option<&Path>) -> Result<Vec<Str
     return Ok(flags);
 }
 
-#[cfg(test)]
+// echo of the system, CMake projects are not set up for Windows
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    // echo of the system, CMake projects are not set up for Windows
-    #[cfg(unix)]
     #[test]
     fn flags_come_from_the_tool_without_the_language_standard() {
         let command = ["echo", "-I/llvm/include -std=c++17 -fno-rtti"].map(String::from);

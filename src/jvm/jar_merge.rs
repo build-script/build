@@ -260,6 +260,7 @@ mod tests {
     use super::*;
 
     /// A jar of `files` (path and content), made with zip like any other archive
+    #[cfg(unix)]
     fn jar(directory: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let content_dir = directory.join(format!("{name}-content"));
 
@@ -281,6 +282,8 @@ mod tests {
         return jar;
     }
 
+    // zip of the system
+    #[cfg(unix)]
     #[test]
     fn the_first_jar_wins_services_are_concatenated_signatures_left_out() {
         let directory =

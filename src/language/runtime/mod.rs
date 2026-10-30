@@ -1085,13 +1085,13 @@ mod tests {
     #[test]
     fn environment_variables_with_a_default() {
         let runtime = run(r#"
-            home = env("HOME")
+            path = env("PATH")
             missing = env("BUILD_SCRIPT_SURELY_NOT_SET", default = "fallback")
-            has = has_env("HOME") && !has_env("BUILD_SCRIPT_SURELY_NOT_SET")
+            has = has_env("PATH") && !has_env("BUILD_SCRIPT_SURELY_NOT_SET")
         "#)
         .unwrap();
 
-        assert_eq!(string(&runtime, "home"), std::env::var("HOME").unwrap());
+        assert_eq!(string(&runtime, "path"), std::env::var("PATH").unwrap());
         assert_eq!(string(&runtime, "missing"), "fallback");
         assert_eq!(string(&runtime, "has"), "true");
 

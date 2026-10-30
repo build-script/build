@@ -330,7 +330,7 @@ fn jdk_name(jdk: &Jdk) -> String {
 /// below the project relative to .idea/modules, below the home directory with $USER_HOME$
 fn idea_path(project_dir: &Path, path: &Path) -> String {
     let path = absolute(path);
-    let home = std::env::var_os("HOME").map(|home| absolute(Path::new(&home)));
+    let home = system::home_dir().map(|home| absolute(Path::new(&home)));
     let in_home = home.as_ref().and_then(|home| path.strip_prefix(home).ok());
 
     let (base, rest) = match (path.strip_prefix(absolute(project_dir)), in_home) {
@@ -343,7 +343,12 @@ fn idea_path(project_dir: &Path, path: &Path) -> String {
         return base.to_string();
     }
 
-    return format!("{base}/{}", rest.display());
+    // IntelliJ writes / on every system
+    let rest: Vec<String> = rest.components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+
+    return format!("{base}/{}", rest.join("/"));
 }
 
 /// Absolute and without . and .., the files need not exist
@@ -377,6 +382,8 @@ mod tests {
     use crate::jvm::JvmOutput;
     use crate::language::runtime::ModuleOutput;
 
+    // unix paths
+    #[cfg(unix)]
     #[test]
     fn paths_like_intellij_writes_them() {
         let project = Path::new("/work/shop");

@@ -80,7 +80,7 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
         (
             "maven_local",
             builtin("maven_local", repository(), |_, _| {
-                let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                let home = PathBuf::from(system::home_dir().unwrap_or_default());
                 Ok(format!("file://{}", home.join(".m2/repository").display()).into())
             }),
         ),

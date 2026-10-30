@@ -72,6 +72,11 @@ pub fn find_program(program: &str) -> Option<PathBuf> {
     return std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file());
 }
 
+/// The home of the user: HOME, on Windows USERPROFILE
+pub fn home_dir() -> Option<OsString> {
+    return std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+}
+
 /// JDKs, the Android SDK and emulators
 pub fn data_dir(name: &str) -> PathBuf {
     return BuildHomeEnvironment::read().base_directory(BaseDirectory::Data).join(name);
@@ -626,7 +631,7 @@ struct BuildHomeEnvironment {
 impl BuildHomeEnvironment {
     fn read() -> Self {
         return BuildHomeEnvironment {
-            home: std::env::var_os("HOME"),
+            home: home_dir(),
             build_script_home: std::env::var_os("BUILD_SCRIPT_HOME"),
             xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
             xdg_cache_home: std::env::var_os("XDG_CACHE_HOME"),
@@ -699,6 +704,8 @@ mod tests {
         );
     }
 
+    // XDG and its absolute paths are of unix systems
+    #[cfg(unix)]
     #[test]
     fn build_home_follows_xdg_and_falls_back_to_dot_build_script() {
         assert_eq!(
