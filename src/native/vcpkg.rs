@@ -102,8 +102,11 @@ pub fn install(
         }
     }
 
-    system::log(module, &format!("Installing {} with vcpkg", ports.join(", ")));
-    system::run_command_quietly(&mut command, "vcpkg install")?;
+    // vcpkg locks its root and gives up when another one holds the lock for long, modules install one by one
+    system::installing(|| {
+        system::log(module, &format!("Installing {} with vcpkg", ports.join(", ")));
+        return system::run_command_quietly(&mut command, "vcpkg install");
+    })?;
 
     return Ok(Some(installed));
 }
@@ -154,13 +157,14 @@ pub fn tool(name: &str) -> Result<PathBuf, String> {
     let vcpkg = install_vcpkg()?;
     system::create_dir(&system::cache_dir("vcpkg/downloads"))?;
 
-    let output = Command::new(vcpkg.join("vcpkg"))
-        .args(["fetch", name])
+    let mut fetch = Command::new(vcpkg.join("vcpkg"));
+    fetch.args(["fetch", name])
         .env("VCPKG_ROOT", &vcpkg)
         .env("VCPKG_DOWNLOADS", system::cache_dir("vcpkg/downloads"))
-        .env("VCPKG_DISABLE_METRICS", "1")
-        .output()
-        .map_err(|error| format!("could not start vcpkg: {error}"))?;
+        .env("VCPKG_DISABLE_METRICS", "1");
+
+    // like install, one vcpkg at a time
+    let output = system::installing(|| fetch.output().map_err(|error| format!("could not start vcpkg: {error}")))?;
 
     // the path is the last line
     let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or("").trim());
