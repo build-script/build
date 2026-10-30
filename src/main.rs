@@ -4,6 +4,7 @@ mod language;
 mod native;
 mod project;
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,17 +12,23 @@ use common::settings::Settings;
 use language::parser::Parser;
 use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection};
 
-const USAGE: &str = "usage: build-script [build] [<script>]
-       build-script idea [<script>]
-       build-script run [--module <name>] [<script>] [-- <args>...]
-       build-script test [--module <name>] [<script>]
-       build-script new <kind> <path> [--package <package>]
-       build-script add <kind> <name> [<script>] [--package <package>]
-       build-script install <group:artifact[:version]> [<script>] [--module <name>]
-                            [--compile-only | --test | --android-test | --processor | --ksp]
-       build-script clean [<script>]
-       build-script config [<setting> [<value>]] | config --unset <setting>
-build, run and test take --jobs <n>, the number of modules built at the same time;
+/// Every command and its arguments, in the order of the usage
+const COMMANDS: &[(&str, &str)] = &[
+    ("build", "[build] [<script>]"),
+    ("idea", "idea [<script>]"),
+    ("run", "run [--module <name>] [<script>] [-- <args>...]"),
+    ("test", "test [--module <name>] [<script>]"),
+    ("new", "new <kind> <path> [--package <package>]"),
+    ("add", "add <kind> <name> [<script>] [--package <package>]"),
+    ("install", "install <library> [<script>] [--module <name>] [<list>]"),
+    ("clean", "clean [<script>]"),
+    ("config", "config [<setting> [<value>]] | config --unset <setting>"),
+];
+
+/// What take_build_options takes before the commands get their arguments
+const BUILD_OPTIONS: &[&str] = &["--jobs", "--refresh", "--release"];
+
+const BUILD_OPTIONS_USAGE: &str = "build, run and test take --jobs <n>, the number of modules built at the same time;
 they and install take --refresh, which asks the repositories again for the newest
 versions and SNAPSHOTs; build and run take --release, which builds Android apps for release";
 
@@ -30,7 +37,10 @@ const DEFAULT_SCRIPT: &str = "project.build";
 
 #[derive(Debug, PartialEq)]
 enum Command {
-    Help,
+    /// the usage of every command and what they do, or the usage of one
+    Help {
+        command: Option<&'static str>,
+    },
     Build {
         script: String,
     },
@@ -51,20 +61,20 @@ enum Command {
     },
     /// a new project directory, like cargo new
     New {
-        kind: String,
-        path: String,
+        kind: Option<String>,
+        path: Option<String>,
         package: Option<String>,
     },
     /// a new module next to the script, with its build call in the script
     Add {
-        kind: String,
-        name: String,
+        kind: Option<String>,
+        name: Option<String>,
         script: String,
         package: Option<String>,
     },
     /// a Maven library into a list of a module's build call, `parameter` names the list
     Install {
-        library: String,
+        library: Option<String>,
         script: String,
         module: Option<String>,
         parameter: &'static str,
@@ -81,146 +91,265 @@ enum Command {
     },
 }
 
-fn parse_args(args: &[String]) -> Result<Command, String> {
-    let usage = || USAGE.to_string();
+/// Every command, then the options of those that build
+fn usage() -> String {
+    let lines: Vec<String> = COMMANDS.iter()
+        .enumerate()
+        .map(|(index, (_, arguments))| format!("{} build-script {arguments}", if index == 0 { "usage:" } else { "      " }))
+        .collect();
 
-    let Some((command, rest)) = args.split_first() else {
-        return Ok(Command::Help);
+    return format!("{}\n{BUILD_OPTIONS_USAGE}", lines.join("\n"));
+}
+
+/// The usage of one command, below it what its arguments may be
+fn command_usage(command: &str) -> String {
+    let arguments = COMMANDS.iter()
+        .find(|(name, _)| *name == command)
+        .map_or("", |(_, arguments)| arguments);
+    let lists: Vec<&str> = project::DEPENDENCY_KINDS.iter()
+        .map(|(flag, _)| *flag)
+        .collect();
+    let settings: Vec<&str> = project::SETTINGS.iter()
+        .map(|(name, _)| *name)
+        .collect();
+
+    let choices = match command {
+        "new" => vec![format!("<kind>: {}", project::project_kinds().join(", "))],
+        "add" => vec![format!("<kind>: {}", project::module_kinds().join(", "))],
+        "install" => vec![
+            "<library>: group:artifact[:version] of Maven, or a vcpkg port for a C or C++ module".to_string(),
+            format!("<list>: {}, without one dependencies", lists.join(", ")),
+        ],
+        "config" => vec![format!("<setting>: {}", settings.join(", "))],
+        _ => vec![],
+    };
+
+    let mut lines = vec![format!("usage: build-script {arguments}")];
+    lines.extend(choices.iter().map(|line| format!("       {line}")));
+
+    return lines.join("\n");
+}
+
+/// The command, or what is wrong with the arguments and the usage of the command
+fn parse_args(args: &[String]) -> Result<Command, String> {
+    let Some((first, rest)) = args.split_first() else {
+        return Ok(Command::Help { command: None });
+    };
+
+    let names: Vec<&'static str> = COMMANDS.iter()
+        .map(|(name, _)| *name)
+        .collect();
+
+    let no_command = |word: &str| match word.starts_with('-') {
+        true => format!("build-script has no option {word}{}\n{}", suggestion(word, BUILD_OPTIONS), usage()),
+        false => format!("{word} is no command and no script{}\n{}", suggestion(word, &names), usage()),
+    };
+
+    if matches!(first.as_str(), "help" | "--help" | "-h") {
+        return match rest {
+            [] => Ok(Command::Help { command: None }),
+            [name] => match names.iter().find(|known| *known == name) {
+                Some(command) => Ok(Command::Help { command: Some(command) }),
+                None => Err(no_command(name)),
+            },
+            _ => Err(format!("help takes one command at most\n{}", usage())),
+        };
+    }
+
+    let Some(command) = names.iter().copied().find(|name| name == first) else {
+        // a script alone is built, a word that is no file is most likely a misspelled command
+        let is_script = !first.starts_with('-') && (first.contains(['.', '/']) || Path::new(first).exists());
+
+        return match (is_script, rest) {
+            (true, []) => Ok(Command::Build { script: first.clone() }),
+            (true, _) => Err(format!("{first} is a script, the command goes before it\n{}", usage())),
+            (false, _) => Err(no_command(first)),
+        };
+    };
+
+    // the arguments of a program after -- are its own
+    let own = &rest[..rest.iter().position(|arg| arg == "--").unwrap_or(rest.len())];
+
+    if own.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return Ok(Command::Help { command: Some(command) });
+    }
+
+    let wrong = |problem: String| format!("{problem}\n{}", command_usage(command));
+
+    // an option the command does not have, most likely misspelled
+    let without_unknown_options = |positional: Vec<String>, options: &[&str]| -> Result<Vec<String>, String> {
+        let Some(option) = positional.iter().find(|arg| arg.starts_with('-')) else {
+            return Ok(positional);
+        };
+
+        let known = [options, BUILD_OPTIONS].concat();
+        return Err(wrong(format!("{command} has no option {option}{}", suggestion(option, &known))));
     };
 
     let script_or_default = |positional: &[String]| match positional {
         [] => Ok(DEFAULT_SCRIPT.to_string()),
         [script] => Ok(script.clone()),
-        _ => Err(usage()),
+        _ => Err(wrong(format!("{command} takes one script at most, not {}", positional.join(" ")))),
     };
 
-    match command.as_str() {
-        "--help" | "-h" | "help" if rest.is_empty() => return Ok(Command::Help),
-        "build" => {
-            return Ok(Command::Build {
-                script: script_or_default(rest)?,
-            });
-        }
-        "idea" => {
-            return Ok(Command::Idea {
-                script: script_or_default(rest)?,
+    match command {
+        "build" | "idea" | "clean" => {
+            let script = script_or_default(&without_unknown_options(rest.to_vec(), &[])?)?;
+
+            return Ok(match command {
+                "build" => Command::Build { script },
+                "idea" => Command::Idea { script },
+                _ => Command::Clean { script },
             });
         }
         "run" => {
-            let (own, program_args) = match rest.iter().position(|arg| arg == "--") {
-                Some(index) => (&rest[..index], rest[index + 1..].to_vec()),
-                None => (rest, vec![]),
-            };
-
-            let (module, positional) = take_option(own, "--module")?;
+            let (module, positional) = take_option(own, "--module").map_err(wrong)?;
+            let positional = without_unknown_options(positional, &["--module"])?;
 
             return Ok(Command::Run {
                 script: script_or_default(&positional)?,
                 module,
-                args: program_args,
-            });
-        }
-        "clean" => {
-            return Ok(Command::Clean {
-                script: script_or_default(rest)?,
+                args: rest.get(own.len() + 1..).unwrap_or_default().to_vec(),
             });
         }
         "test" => {
-            let (module, positional) = take_option(rest, "--module")?;
+            let (module, positional) = take_option(rest, "--module").map_err(wrong)?;
+            let positional = without_unknown_options(positional, &["--module"])?;
+
             return Ok(Command::Test {
                 script: script_or_default(&positional)?,
                 module,
             });
         }
-        "new" => match take_option(rest, "--package")? {
-            (package, positional) if positional.len() == 2 => {
-                return Ok(Command::New {
-                    kind: positional[0].clone(),
-                    path: positional[1].clone(),
-                    package,
-                });
-            }
-            _ => return Err(usage()),
-        },
-        "add" => {
-            let (package, positional) = take_option(rest, "--package")?;
+        "new" => {
+            let (package, positional) = take_option(rest, "--package").map_err(wrong)?;
+            let positional = without_unknown_options(positional, &["--package"])?;
 
-            let [kind, name, script @ ..] = positional.as_slice() else {
-                return Err(usage());
-            };
+            if positional.len() > 2 {
+                return Err(wrong(format!("new takes a kind and a path, not {}", positional.join(" "))));
+            }
+
+            return Ok(Command::New {
+                kind: positional.first().cloned(),
+                path: positional.get(1).cloned(),
+                package,
+            });
+        }
+        "add" => {
+            let (package, positional) = take_option(rest, "--package").map_err(wrong)?;
+            let positional = without_unknown_options(positional, &["--package"])?;
 
             return Ok(Command::Add {
-                kind: kind.clone(),
-                name: name.clone(),
-                script: script_or_default(script)?,
+                kind: positional.first().cloned(),
+                name: positional.get(1).cloned(),
+                script: script_or_default(positional.get(2..).unwrap_or_default())?,
                 package,
             });
         }
         "install" => {
-            let (module, args) = take_option(rest, "--module")?;
+            let (module, args) = take_option(rest, "--module").map_err(wrong)?;
+            let is_list = |arg: &String| project::DEPENDENCY_KINDS.iter().any(|(flag, _)| flag == arg);
 
             // a flag names the list the library goes to
-            let (flags, positional): (Vec<String>, Vec<String>) =
-                args.into_iter().partition(|arg| arg.starts_with("--"));
+            let (lists, positional): (Vec<String>, Vec<String>) = args.into_iter().partition(is_list);
+            let flags: Vec<&str> = project::DEPENDENCY_KINDS.iter()
+                .map(|(flag, _)| *flag)
+                .collect();
+            let positional = without_unknown_options(positional, &[&flags[..], &["--module"]].concat())?;
 
-            let parameter = match flags.as_slice() {
+            let parameter = match lists.as_slice() {
                 [] => project::DEPENDENCIES,
-                [flag] => project::DEPENDENCY_KINDS.iter()
-                    .find(|(known, _)| known == flag)
-                    .map(|(_, parameter)| *parameter)
-                    .ok_or_else(usage)?,
-                _ => return Err(usage()),
-            };
-
-            let [library, script @ ..] = positional.as_slice() else {
-                return Err(usage());
+                [list] => project::DEPENDENCY_KINDS.iter()
+                    .find(|(flag, _)| flag == list)
+                    .map_or(project::DEPENDENCIES, |(_, parameter)| *parameter),
+                _ => return Err(wrong(format!("install takes one list, not {}", lists.join(" ")))),
             };
 
             return Ok(Command::Install {
-                library: library.clone(),
-                script: script_or_default(script)?,
+                library: positional.first().cloned(),
+                script: script_or_default(positional.get(1..).unwrap_or_default())?,
                 module,
                 parameter,
             });
         }
-        "config" => match rest {
-            [] => {
-                return Ok(Command::Config {
+        "config" => {
+            let unset = rest.iter().any(|arg| arg == "--unset");
+            let positional = rest.iter()
+                .filter(|arg| *arg != "--unset")
+                .cloned()
+                .collect();
+            let positional = without_unknown_options(positional, &["--unset"])?;
+
+            // config --unset needs the setting later
+            return match (positional.as_slice(), unset) {
+                ([], _) => Ok(Command::Config {
                     setting: None,
                     value: None,
-                    unset: false,
-                });
-            }
-            [unset, setting] if unset == "--unset" => {
-                return Ok(Command::Config {
+                    unset,
+                }),
+                ([setting], _) => Ok(Command::Config {
                     setting: Some(setting.clone()),
                     value: None,
-                    unset: true,
-                });
-            }
-            [setting] => {
-                return Ok(Command::Config {
-                    setting: Some(setting.clone()),
-                    value: None,
-                    unset: false,
-                });
-            }
-            [setting, value] if !setting.starts_with('-') => {
-                return Ok(Command::Config {
+                    unset,
+                }),
+                ([setting, value], false) => Ok(Command::Config {
                     setting: Some(setting.clone()),
                     value: Some(value.clone()),
-                    unset: false,
-                });
-            }
-            _ => return Err(usage()),
-        },
-        script if rest.is_empty() && !script.starts_with('-') => {
-            return Ok(Command::Build {
-                script: script.to_string(),
-            });
+                    unset,
+                }),
+                _ => Err(wrong(format!("config takes a setting and its value at most, not {}", rest.join(" ")))),
+            };
         }
-        _ => return Err(usage()),
+        _ => return Err(no_command(command)),
     }
+}
+
+/// ", did you mean build?" for biuld: the known word the fewest edits away, none when all are too far
+fn suggestion(word: &str, known: &[&str]) -> String {
+    // Levenshtein, a row of the table at a time
+    let distance = |other: &str| {
+        let other: Vec<char> = other.chars().collect();
+        let mut row: Vec<usize> = (0..=other.len()).collect();
+
+        for (index, char) in word.chars().enumerate() {
+            let mut diagonal = row[0];
+            row[0] = index + 1;
+
+            for (position, other_char) in other.iter().enumerate() {
+                let replaced = diagonal + usize::from(char != *other_char);
+                diagonal = row[position + 1];
+                row[position + 1] = replaced.min(diagonal + 1).min(row[position] + 1);
+            }
+        }
+
+        return row[other.len()];
+    };
+
+    // the dashes of options alike in all of them
+    let most_edits = word.trim_start_matches('-').chars().count() / 2;
+
+    return known.iter()
+        .map(|candidate| (distance(candidate), candidate))
+        .filter(|(distance, _)| *distance <= most_edits)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| format!(", did you mean {candidate}?"))
+        .unwrap_or_default();
+}
+
+/// An argument the command was given. Without one, or with one that is none of `choices`, it exits with
+/// what is wrong and the usage of the command.
+fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -> String {
+    if let Some(value) = given.filter(|value| choices.is_empty() || choices.contains(value)) {
+        return value.to_string();
+    }
+
+    let problem = match given {
+        Some(value) => format!("{value} is no {label}{}", suggestion(value, choices)),
+        None => format!("{command} needs the {label}"),
+    };
+
+    eprintln!("{problem}\n{}", command_usage(command));
+    std::process::exit(2);
 }
 
 /// `name value` anywhere in the arguments: the value, and the arguments without both
@@ -305,8 +434,14 @@ fn main() {
     }
 
     let script_path = match &command {
-        Command::Help => {
-            println!("{USAGE}\n{}", help());
+        Command::Help { command: None } => {
+            println!("{}\n{}", usage(), help());
+            return;
+        }
+        Command::Help {
+            command: Some(command),
+        } => {
+            println!("{}", command_usage(command));
             return;
         }
         Command::New {
@@ -314,12 +449,16 @@ fn main() {
             path,
             package,
         } => {
+            let kind = argument("new", kind.as_deref(), "kind of project", &project::project_kinds());
+            let path = argument("new", path.as_deref(), "path of the project", &[]);
+
             exit_on_error(project::new_project(
-                kind,
-                Path::new(path),
+                &kind,
+                Path::new(&path),
                 package.as_deref(),
                 project::domain,
             ));
+
             return;
         }
         Command::Add {
@@ -328,13 +467,17 @@ fn main() {
             script,
             package,
         } => {
+            let kind = argument("add", kind.as_deref(), "kind of module", &project::module_kinds());
+            let name = argument("add", name.as_deref(), "name of the module", &[]);
+
             exit_on_error(project::add_module(
-                kind,
-                name,
+                &kind,
+                &name,
                 Path::new(script),
                 package.as_deref(),
                 project::domain,
             ));
+
             return;
         }
         Command::Config {
@@ -342,7 +485,18 @@ fn main() {
             value,
             unset,
         } => {
+            let settings: Vec<&str> = project::SETTINGS.iter()
+                .map(|(name, _)| *name)
+                .collect();
+
+            // config alone shows them all, config --unset needs one
+            let setting = match (setting, unset) {
+                (None, false) => None,
+                _ => Some(argument("config", setting.as_deref(), "setting", &settings)),
+            };
+
             exit_on_error(config(setting.as_deref(), value.as_deref(), *unset));
+
             return;
         }
         Command::Install {
@@ -351,16 +505,25 @@ fn main() {
             module,
             parameter,
         } => {
+            let library = argument(
+                "install",
+                library.as_deref(),
+                "library, group:artifact[:version] or a vcpkg port",
+                &[],
+            );
+
             exit_on_error(project::install(
-                library,
+                &library,
                 Path::new(script),
                 module.as_deref(),
                 parameter,
             ));
+
             return;
         }
         Command::Clean { script } => {
             exit_on_error(project::clean(Path::new(script)));
+
             return;
         }
         Command::Build { script }
@@ -446,7 +609,13 @@ fn run_script(
     set_up_idea: bool,
 ) -> Vec<Arc<BuiltModule>> {
     let source = std::fs::read_to_string(script_path).unwrap_or_else(|error| {
-        eprintln!("could not read {script_path}: {error}");
+        match error.kind() {
+            io::ErrorKind::NotFound if script_path == DEFAULT_SCRIPT => eprintln!(
+                "there is no {DEFAULT_SCRIPT} in this directory: give the script, or create a project with build-script new"
+            ),
+            io::ErrorKind::NotFound => eprintln!("there is no script {script_path}"),
+            _ => eprintln!("could not read {script_path}: {error}"),
+        }
         std::process::exit(1);
     });
 
@@ -556,10 +725,13 @@ fn config(setting: Option<&str>, value: Option<&str>, unset: bool) -> Result<(),
     return Ok(());
 }
 
-fn exit_on_error(result: Result<(), String>) {
-    if let Err(error) = result {
-        eprintln!("{error}");
-        std::process::exit(1);
+fn exit_on_error<T>(result: Result<T, String>) -> T {
+    match result {
+        Ok(value) => return value,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -770,7 +942,7 @@ mod tests {
     fn commands_are_parsed() {
         let script = "app/project.build".to_string();
 
-        assert_eq!(parse(&[]), Ok(Command::Help));
+        assert_eq!(parse(&[]), Ok(Command::Help { command: None }));
         assert_eq!(
             parse(&["config"]),
             Ok(Command::Config {
@@ -854,7 +1026,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(parse(&["--help"]), Ok(Command::Help));
+        assert_eq!(parse(&["--help"]), Ok(Command::Help { command: None }));
         assert!(parse(&["--verbose"]).is_err());
         assert!(parse(&["build", "a", "b"]).is_err());
         assert!(parse(&["run", "--module"]).is_err());
@@ -886,17 +1058,16 @@ mod tests {
         assert_eq!(
             parse(&["new", "multi", "apps/demo", "--package", "org.acme"]),
             Ok(Command::New {
-                kind: "multi".to_string(),
-                path: "apps/demo".to_string(),
+                kind: Some("multi".to_string()),
+                path: Some("apps/demo".to_string()),
                 package: Some("org.acme".to_string())
             }),
         );
-        assert!(parse(&["new", "kotlin"]).is_err());
         assert_eq!(
             parse(&["add", "kotlin-library", "core"]),
             Ok(Command::Add {
-                kind: "kotlin-library".to_string(),
-                name: "core".to_string(),
+                kind: Some("kotlin-library".to_string()),
+                name: Some("core".to_string()),
                 script: default,
                 package: None
             }),
@@ -911,8 +1082,8 @@ mod tests {
                 "app/project.build"
             ]),
             Ok(Command::Add {
-                kind: "android-library".to_string(),
-                name: "ui".to_string(),
+                kind: Some("android-library".to_string()),
+                name: Some("ui".to_string()),
                 script: "app/project.build".to_string(),
                 package: Some("org.acme.ui".to_string())
             }),
@@ -921,7 +1092,7 @@ mod tests {
         assert_eq!(
             parse(&["install", "org.spigotmc:spigot-api", "--compile-only", "--module", "plugin"]),
             Ok(Command::Install {
-                library: "org.spigotmc:spigot-api".to_string(),
+                library: Some("org.spigotmc:spigot-api".to_string()),
                 script: DEFAULT_SCRIPT.to_string(),
                 module: Some("plugin".to_string()),
                 parameter: "compile_only"
@@ -930,7 +1101,7 @@ mod tests {
         assert_eq!(
             parse(&["install", "com.google.code.gson:gson:2.14.0", "app/project.build"]),
             Ok(Command::Install {
-                library: "com.google.code.gson:gson:2.14.0".to_string(),
+                library: Some("com.google.code.gson:gson:2.14.0".to_string()),
                 script: "app/project.build".to_string(),
                 module: None,
                 parameter: "dependencies"
@@ -938,6 +1109,82 @@ mod tests {
         );
         assert!(parse(&["install", "a:b", "--test", "--ksp"]).is_err());
         assert!(parse(&["install", "a:b", "--shade"]).is_err());
+    }
+
+    #[test]
+    fn missing_arguments_are_checked_later() {
+        assert_eq!(
+            parse(&["new"]),
+            Ok(Command::New {
+                kind: None,
+                path: None,
+                package: None
+            })
+        );
+        assert_eq!(
+            parse(&["new", "cpp"]),
+            Ok(Command::New {
+                kind: Some("cpp".to_string()),
+                path: None,
+                package: None
+            })
+        );
+        assert_eq!(
+            parse(&["config", "--unset"]),
+            Ok(Command::Config {
+                setting: None,
+                value: None,
+                unset: true
+            })
+        );
+        assert!(matches!(parse(&["install"]), Ok(Command::Install { library: None, .. })));
+    }
+
+    #[test]
+    fn errors_say_what_is_wrong_and_show_the_usage_of_the_command() {
+        let error = |args: &[&str]| parse(args).unwrap_err();
+
+        assert!(error(&["biuld"]).starts_with("biuld is no command and no script, did you mean build?\nusage: build-script [build]"));
+        assert!(error(&["--verbose"]).starts_with("build-script has no option --verbose\nusage:"));
+        assert!(error(&["app/project.build", "x"]).starts_with("app/project.build is a script, the command goes before it"));
+        assert_eq!(
+            error(&["build", "--relase"]),
+            "build has no option --relase, did you mean --release?\nusage: build-script [build] [<script>]"
+        );
+        assert_eq!(
+            error(&["run", "--module"]),
+            "--module needs a value\nusage: build-script run [--module <name>] [<script>] [-- <args>...]"
+        );
+        assert!(error(&["new", "cpp", "a", "b"]).starts_with("new takes a kind and a path, not cpp a b\nusage: build-script new"));
+        assert!(error(&["install", "a:b", "--test", "--ksp"]).starts_with("install takes one list, not --test --ksp\n"));
+        assert!(error(&["install", "a:b", "--tset"]).starts_with("install has no option --tset, did you mean --test?"));
+
+        assert_eq!(
+            command_usage("new"),
+            format!(
+                "usage: build-script new <kind> <path> [--package <package>]\n       <kind>: {}",
+                project::project_kinds().join(", ")
+            )
+        );
+        assert_eq!(suggestion("kotln", &project::project_kinds()), ", did you mean kotlin?");
+        assert_eq!(suggestion("x", &["c", "cpp"]), "");
+    }
+
+    #[test]
+    fn help_shows_the_usage_of_one_command() {
+        assert_eq!(parse(&["new", "--help"]), Ok(Command::Help { command: Some("new") }));
+        assert_eq!(parse(&["help", "install"]), Ok(Command::Help { command: Some("install") }));
+        assert!(parse(&["help", "biuld"]).is_err());
+
+        // the program after -- gets its own --help
+        assert_eq!(
+            parse(&["run", "--", "--help"]),
+            Ok(Command::Run {
+                script: DEFAULT_SCRIPT.to_string(),
+                module: None,
+                args: vec!["--help".to_string()]
+            })
+        );
     }
 
     #[test]
