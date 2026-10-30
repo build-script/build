@@ -182,7 +182,7 @@ fn install_vcpkg() -> Result<PathBuf, String> {
             return Ok(root.clone());
         }
 
-        system::log("vcpkg", &format!("Installing vcpkg {VCPKG_RELEASE}"));
+        system::log_tool("vcpkg", &format!("Installing vcpkg {VCPKG_RELEASE}"));
         system::remove_dir(&root)?;
 
         let mut clone = Command::new("git");

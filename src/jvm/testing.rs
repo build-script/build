@@ -2,7 +2,7 @@
 // JUnit Platform, which runs JUnit 4 and 5, kotlin.test, Kotest, TestNG and every other framework with an engine
 use std::path::PathBuf;
 
-use crate::common::system;
+use crate::common::{system, terminal};
 use crate::language::runtime::{
     Arguments, BuiltModule, FunctionParameters, ModuleTests, TestOutcome, TestRun, TestSuite, Type,
     Value,
@@ -246,6 +246,12 @@ impl UnitTests<'_> {
                 command.args(console_launcher_options(&version))
                     .arg(format!("--scan-classpath={}", test_classes.display()))
                     .arg(format!("--reports-dir={}", reports_dir.display()));
+
+                // its tree has colors only when the log has
+                if !terminal::colors() {
+                    command.arg("--disable-ansi-colors");
+                }
+
                 (command, format!("JUnit Platform {version}"))
             }
         };

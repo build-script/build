@@ -1,10 +1,21 @@
-// Asking in the terminal: a line of free input, or one of fixed choices, picked like in fzf. Typing
-// filters the choices, the arrow keys move between them, enter takes one, escape cancels.
+// The terminal: colors of the output, and asking in it, a line of free input, or one of fixed
+// choices, picked like in fzf. Typing filters the choices, the arrow keys move between them, enter
+// takes one, escape cancels.
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 
 /// Choices shown at the same time, the others follow while moving
 const SHOWN_CHOICES: usize = 10;
+
+/// Few colors: orange for the modules and what stands out, yellow for the tools build-script brings,
+/// red only when something failed
+#[derive(Clone, Copy)]
+pub enum Color {
+    Primary,
+    Secondary,
+    Failure,
+}
 
 #[derive(Debug, PartialEq)]
 enum Key {
@@ -15,6 +26,35 @@ enum Key {
     Erase,
     Typed(char),
     Other,
+}
+
+/// `text` in the color, unless the output gets none
+pub fn paint(text: &str, color: Color) -> String {
+    if !colors() {
+        return text.to_string();
+    }
+
+    // orange and yellow of the 256 colors
+    let code = match color {
+        Color::Primary => "38;5;208",
+        Color::Secondary => "38;5;220",
+        Color::Failure => "31",
+    };
+
+    return format!("\x1b[{code}m{text}\x1b[0m");
+}
+
+/// Colors only go to a terminal, NO_COLOR (no-color.org) or TERM=dumb turn them off. Never in the
+/// tests, their expected output has none.
+pub fn colors() -> bool {
+    static COLORS: LazyLock<bool> = LazyLock::new(|| {
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+        let dumb = std::env::var("TERM").is_ok_and(|term| term == "dumb");
+
+        return !cfg!(test) && !no_color && !dumb && io::stdout().is_terminal();
+    });
+
+    return *COLORS;
 }
 
 /// One line, trimmed, None at the end of the input (ctrl-d)
@@ -68,7 +108,7 @@ pub fn choose(question: &str, choices: &[&str], filter: &str) -> Result<String, 
 
         for (index, choice) in matches.iter().enumerate().skip(first).take(SHOWN_CHOICES) {
             match index == selected {
-                true => screen.push_str(&format!("\n\x1b[7m> {choice}\x1b[0m")),
+                true => screen.push_str(&format!("\n{}", paint(&format!("> {choice}"), Color::Primary))),
                 false => screen.push_str(&format!("\n  {choice}")),
             }
         }

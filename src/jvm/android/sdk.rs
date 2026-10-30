@@ -338,7 +338,7 @@ impl SdkCatalog {
             .file_name()
             .ok_or_else(|| format!("invalid url {url}"))?;
 
-        println!("Installing Android SDK package {package}");
+        system::log_tool("android-sdk", &format!("Installing {package}"));
         let unpacked = PathBuf::from(format!("{}.tmp", target.display()));
         let download = sdk_root.join(".downloads").join(file_name);
         system::download_and_extract(

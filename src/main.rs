@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::settings::Settings;
-use common::terminal;
+use common::terminal::{self, Color};
 use language::parser::Parser;
 use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection};
 
@@ -777,7 +777,7 @@ fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -
     };
 
     if module.can_launch() {
-        println!("> Running {}", module.name);
+        println!("{} Running {}", terminal::paint(">", Color::Primary), module.name);
     }
 
     match runtime::launch(module, args) {
@@ -802,7 +802,7 @@ fn run_tests(built: &[Arc<BuiltModule>], name: Option<&str>) -> i32 {
             return 1;
         }
         None if selected.is_empty() => {
-            println!("> No modules to test");
+            println!("{} No modules to test", terminal::paint(">", Color::Primary));
             return 0;
         }
         _ => {}
@@ -876,7 +876,7 @@ fn test_summary(outcomes: &[(String, Option<TestOutcome>)]) -> String {
         .max()
         .unwrap_or(0);
 
-    let mut lines = vec!["> Tests".to_string()];
+    let mut lines = vec![format!("{} Tests", terminal::paint(">", Color::Primary))];
 
     // in the order of the totals line
     let mut totals = [
@@ -915,12 +915,22 @@ fn test_summary(outcomes: &[(String, Option<TestOutcome>)]) -> String {
         };
 
         totals[total].1 += 1;
-        lines.push(format!("  {name:width$}  {description}"));
+
+        // the modules in orange like in the build log, failures in red
+        let name = terminal::paint(&format!("{name:width$}"), Color::Primary);
+        let description = match total {
+            0 => terminal::paint(&description, Color::Failure),
+            _ => description,
+        };
+        lines.push(format!("  {name}  {description}"));
     }
 
     let totals: Vec<String> = totals.iter()
         .filter(|(_, count)| *count > 0)
-        .map(|(what, count)| format!("{count} {what}"))
+        .map(|(what, count)| match *what {
+            "failed" => terminal::paint(&format!("{count} {what}"), Color::Failure),
+            _ => format!("{count} {what}"),
+        })
         .collect();
 
     lines.push(totals.join(", "));

@@ -161,10 +161,9 @@ fn install_jdk(
         }
 
         let package = find_jdk_package(java_version, distribution, &platform)?;
-        println!(
-            "installing JDK {distribution} {} ({})",
-            package.java_version,
-            system::format_size(package.size)
+        system::log_tool(
+            "jdk",
+            &format!("Installing {distribution} {} ({})", package.java_version, system::format_size(package.size)),
         );
 
         if package.checksum.is_none() {
