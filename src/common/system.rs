@@ -3,11 +3,13 @@ use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use super::terminal;
 
 const BUILD_SCRIPT_DIR_NAME: &str = "build-script";
 /// In the user's home, when neither BUILD_SCRIPT_HOME nor XDG is set
@@ -90,20 +92,10 @@ pub fn log(source: &str, message: &str) {
     println!("[{source}] {message}");
 }
 
-/// Reads one answer from the terminal, trimmed and lowercase
+/// Reads one answer from the terminal, trimmed and lowercase, empty at the end of the input
 pub fn prompt(question: &str) -> Result<String, String> {
-    print!("{question}");
-    io::stdout()
-        .flush()
-        .map_err(|error| format!("could not write to the terminal: {error}"))?;
-
-    let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|error| format!("could not read the answer: {error}"))?;
-
-    return Ok(answer.trim().to_ascii_lowercase());
+    let answer = terminal::read_line(question)?.unwrap_or_default();
+    return Ok(answer.to_ascii_lowercase());
 }
 
 /// "810 MB" or "2.2 GB"

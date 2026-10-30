@@ -4,11 +4,12 @@ mod language;
 mod native;
 mod project;
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::settings::Settings;
+use common::terminal;
 use language::parser::Parser;
 use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection};
 
@@ -59,7 +60,7 @@ enum Command {
         script: String,
         module: Option<String>,
     },
-    /// a new project directory, like cargo new
+    /// a new project directory, like cargo new, what is missing is asked in the terminal
     New {
         kind: Option<String>,
         path: Option<String>,
@@ -280,7 +281,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
                 .collect();
             let positional = without_unknown_options(positional, &["--unset"])?;
 
-            // config --unset needs the setting later
+            // config --unset asks which setting
             return match (positional.as_slice(), unset) {
                 ([], _) => Ok(Command::Config {
                     setting: None,
@@ -336,8 +337,8 @@ fn suggestion(word: &str, known: &[&str]) -> String {
         .unwrap_or_default();
 }
 
-/// An argument the command was given. Without one, or with one that is none of `choices`, it exits with
-/// what is wrong and the usage of the command.
+/// An argument the command was given, else chosen or typed in a terminal. Without one it exits with what
+/// is missing and the usage of the command. With `choices` a given one is one of them.
 fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -> String {
     if let Some(value) = given.filter(|value| choices.is_empty() || choices.contains(value)) {
         return value.to_string();
@@ -348,8 +349,22 @@ fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -
         None => format!("{command} needs the {label}"),
     };
 
-    eprintln!("{problem}\n{}", command_usage(command));
-    std::process::exit(2);
+    if !io::stdin().is_terminal() {
+        eprintln!("{problem}\n{}", command_usage(command));
+        std::process::exit(2);
+    }
+
+    if given.is_some() {
+        println!("{problem}");
+    }
+
+    // "kind of project" asks "Kind of project: "
+    let question = label[..1].to_uppercase() + &label[1..];
+
+    return exit_on_error(match choices.is_empty() {
+        true => terminal::ask(&question),
+        false => terminal::choose(&question, choices, given.unwrap_or("")),
+    });
 }
 
 /// `name value` anywhere in the arguments: the value, and the arguments without both
@@ -489,7 +504,7 @@ fn main() {
                 .map(|(name, _)| *name)
                 .collect();
 
-            // config alone shows them all, config --unset needs one
+            // config alone shows them all, config --unset asks which
             let setting = match (setting, unset) {
                 (None, false) => None,
                 _ => Some(argument("config", setting.as_deref(), "setting", &settings)),
@@ -1112,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_arguments_are_checked_later() {
+    fn missing_arguments_are_asked_for_later() {
         assert_eq!(
             parse(&["new"]),
             Ok(Command::New {
