@@ -1,4 +1,4 @@
-// build-script install: a library into the dependencies of a module, once it resolved for the module
+// build install: a library into the dependencies of a module, once it resolved for the module
 use std::path::Path;
 
 use crate::common::system;

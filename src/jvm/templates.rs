@@ -1,4 +1,4 @@
-// Templates of JVM modules for `build-script new` and `build-script add`: Kotlin and Java apps and libraries,
+// Templates of JVM modules for `build new` and `build add`: Kotlin and Java apps and libraries,
 // Android apps and libraries with Jetpack Compose
 use crate::project::{ModuleTemplate, NewModule};
 

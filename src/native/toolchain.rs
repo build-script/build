@@ -95,7 +95,7 @@ fn install_zig() -> Result<PathBuf, String> {
             return Err(format!("zig {ZIG_VERSION} has no build for {host}"));
         };
 
-        system::log("zig", &format!("Installing zig {ZIG_VERSION}"));
+        system::log_tool("zig", &format!("Installing zig {ZIG_VERSION}"));
         let unpacked = system::data_dir("zig").join(format!("{ZIG_VERSION}.unpacked"));
         let archive = target.with_extension("tar.xz");
         system::download_and_extract(url, &archive, Some((256, sha256)), &unpacked)?;

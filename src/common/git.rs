@@ -97,7 +97,7 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
             true => reference.to_string(),
             false => {
                 // only this commit, not the history before it
-                system::log("git", &format!("Fetching {reference} of {url}"));
+                system::log_tool("git", &format!("Fetching {reference} of {url}"));
                 system::run_command_quietly(&mut in_objects(&["fetch", "--quiet", "--depth", "1", url, reference]), "git fetch")?;
 
                 let output = in_objects(&["rev-parse", "FETCH_HEAD^{commit}"])

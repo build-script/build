@@ -1,4 +1,4 @@
-// One module per test framework, all run with `build-script test`
+// One module per test framework, all run with `build test`
 use kotlin
 
 repositories = list(maven_central())

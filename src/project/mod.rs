@@ -1,5 +1,5 @@
-// New projects and modules: `build-script new` and `build-script add`, from the templates of the language
-// categories, and libraries for modules: `build-script install`
+// New projects and modules: `build new` and `build add`, from the templates of the language
+// categories, and libraries for modules: `build install`
 mod install;
 mod script;
 
@@ -360,13 +360,13 @@ pub fn domain() -> Result<String, String> {
             "" | "y" | "yes" => {
                 settings.set(DOMAIN, &domain)?;
                 println!(
-                    "Remembered in {}, build-script config {DOMAIN} <domain> changes it",
+                    "Remembered in {}, build config {DOMAIN} <domain> changes it",
                     settings.file().display()
                 );
             }
             "never" => {
                 settings.set(REMEMBER_DOMAIN, "never")?;
-                println!("Not offered again, build-script config {DOMAIN} <domain> remembers one");
+                println!("Not offered again, build config {DOMAIN} <domain> remembers one");
             }
             _ => {}
         }

@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::terminal;
+use super::terminal::{self, Color};
 
 const BUILD_SCRIPT_DIR_NAME: &str = "build-script";
 /// In the user's home, when neither BUILD_SCRIPT_HOME nor XDG is set
@@ -87,9 +87,14 @@ pub fn config_dir() -> PathBuf {
     return BuildHomeEnvironment::read().base_directory(BaseDirectory::Config);
 }
 
-/// A line of the build log: `[app] Compiling`
-pub fn log(source: &str, message: &str) {
-    println!("[{source}] {message}");
+/// A line of the build log: `[app] Compiling`, the module in orange
+pub fn log(module: &str, message: &str) {
+    println!("[{}] {message}", terminal::paint(module, Color::Primary));
+}
+
+/// A line about a tool build-script brings itself: `[vcpkg] Installing`, the tool in yellow
+pub fn log_tool(tool: &str, message: &str) {
+    println!("[{}] {message}", terminal::paint(tool, Color::Secondary));
 }
 
 /// Reads one answer from the terminal, trimmed and lowercase, empty at the end of the input
