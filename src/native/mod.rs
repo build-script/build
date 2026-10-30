@@ -346,6 +346,21 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     let shared_extension = if cfg!(target_os = "macos") { "dylib" } else { "so" };
 
+    // the shared libraries it loads lie next to its own in build/lib and are found relative to the program
+    // or library: build/ runs wherever it is copied
+    let shared_libraries: Vec<PathBuf> = BuiltModule::transitive(&[dependencies.modules.clone(), test_dependencies.modules.clone()].concat())
+        .iter()
+        .filter_map(|module| match &module.output {
+            ModuleOutput::Native(output) => output.shared_library.clone(),
+            _ => None,
+        })
+        .collect();
+    let origin = if cfg!(target_os = "macos") { "@loader_path" } else { "$ORIGIN" };
+    let program_rpath = match shared_libraries.is_empty() && !shared {
+        true => vec![],
+        false => vec![format!("-Wl,-rpath,{origin}/../lib")],
+    };
+
     let artifact = match (program, header_only, shared) {
         (true, ..) => build_dir.join("bin").join(&name),
         (false, true, _) => include_dirs.first().cloned().unwrap_or(directory.clone()),
@@ -378,15 +393,16 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         system::log(&name, "Up to date");
     } else {
         match (program, header_only, shared) {
-            (true, ..) => compile::link(&toolchain, cpp, &objects, &link_flags, &artifact)?,
+            (true, ..) => compile::link(&toolchain, cpp, &objects, &[link_flags.clone(), program_rpath.clone()].concat(), &artifact)?,
             (false, true, _) => {}
             (false, false, true) => {
-                // programs that link it find it by their rpath
+                // what loads it finds it by its rpath, it finds those it loads next to it
                 let library_name = format!("lib{name}.{shared_extension}");
-                let shared_flags = match cfg!(target_os = "macos") {
+                let mut shared_flags = match cfg!(target_os = "macos") {
                     true => vec!["-shared".to_string(), "-install_name".to_string(), format!("@rpath/{library_name}")],
                     false => vec!["-shared".to_string(), format!("-Wl,-soname,{library_name}")],
                 };
+                shared_flags.extend((!shared_libraries.is_empty()).then(|| format!("-Wl,-rpath,{origin}")));
                 compile::link(&toolchain, cpp, &objects, &[shared_flags, link_flags.clone()].concat(), &artifact)?;
             }
             (false, false, false) => compile::archive(&toolchain, &objects, &artifact)?,
@@ -414,6 +430,16 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         }
     }
 
+    for library in &shared_libraries {
+        let copy = build_dir.join("lib").join(library.file_name().unwrap_or_default());
+        let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+
+        // modules in one directory share build/lib
+        if copy != *library && modified(&copy) < modified(library) {
+            system::copy_file(library, &copy)?;
+        }
+    }
+
     // what Android apps build of it: its own sources, header-only modules are fine
     let links_modules = dependencies.modules.iter().any(|module| {
         return matches!(&module.output, ModuleOutput::Native(output) if !output.link_flags.is_empty());
@@ -435,7 +461,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     if context.tests.includes(&name) {
         let library = (!program && !header_only).then_some(artifact.as_path());
-        let link_flags = [link_flags.clone(), test_link_flags].concat();
+        let link_flags = [link_flags.clone(), test_link_flags, program_rpath].concat();
         let ports = &test_dependencies.ports;
         let framework = TEST_FRAMEWORKS.iter().find(|(port, ..)| ports.iter().any(|known| vcpkg::port_and_features(known).0 == *port));
 
@@ -462,7 +488,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // has what it needs inside
     match (program || header_only, shared) {
         (true, _) => {}
-        (false, true) => link_flags = vec![artifact.display().to_string(), format!("-Wl,-rpath,{}", build_dir.join("lib").display())],
+        (false, true) => link_flags = vec![artifact.display().to_string()],
         (false, false) => link_flags.insert(0, artifact.display().to_string()),
     }
 
