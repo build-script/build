@@ -597,6 +597,8 @@ mod tests {
         system::remove_dir(&dir).unwrap();
     }
 
+    // the tests run in sh
+    #[cfg(unix)]
     #[test]
     fn test_runs_count_their_own_reports_and_remember_passing() {
         let dir =

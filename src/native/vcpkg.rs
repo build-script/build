@@ -2,7 +2,6 @@
 // port to one version. Their flags come from their .pc files, of ports without one from their files.
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -260,8 +259,16 @@ set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
 fn executable(file: &Path, script: &str) -> Result<(), String> {
     system::write_file(file, script)?;
 
-    return fs::set_permissions(file, fs::Permissions::from_mode(0o755))
-        .map_err(|error| format!("could not make {} executable: {error}", file.display()));
+    // Windows has no executable bit, C and C++ are not set up there
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(file, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("could not make {} executable: {error}", file.display()))?;
+    }
+
+    return Ok(());
 }
 
 impl Installed {

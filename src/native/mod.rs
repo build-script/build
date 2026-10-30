@@ -171,6 +171,11 @@ fn signature(language: Language) -> FunctionSignature {
 /// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
+
+    if cfg!(windows) {
+        return Err(format!("{name}: C and C++ modules are not set up for Windows yet"));
+    }
+
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = system::build_dir(&directory);
     let program: bool = args.get("program")?;

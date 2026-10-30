@@ -51,6 +51,11 @@ pub fn system_library_signature() -> FunctionSignature {
 /// sources build into build/cmake/<name>/ of the project. The build goes to build/, the installation to install/.
 pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
     let name: String = args.get("name")?;
+
+    if cfg!(windows) {
+        return Err(format!("{name}: CMake projects are not set up for Windows yet"));
+    }
+
     let options: Vec<String> = args.get("options")?;
     let source = context.project_dir.join(args.get::<String>("source")?);
 
@@ -245,6 +250,8 @@ fn flags_from(command: &[String], installation: Option<&Path>) -> Result<Vec<Str
 mod tests {
     use super::*;
 
+    // echo of the system, CMake projects are not set up for Windows
+    #[cfg(unix)]
     #[test]
     fn flags_come_from_the_tool_without_the_language_standard() {
         let command = ["echo", "-I/llvm/include -std=c++17 -fno-rtti"].map(String::from);
