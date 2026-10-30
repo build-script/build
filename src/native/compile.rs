@@ -3,11 +3,16 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Condvar, LazyLock, Mutex};
 
 use crate::common::system;
 
 use super::toolchain::Toolchain;
+
+/// Compilers running now, of all modules at most one per core: modules build at the same time
+static RUNNING: Mutex<usize> = Mutex::new(0);
+static FINISHED: Condvar = Condvar::new();
+static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
 
 /// What a module is written in: build_c takes .c files, build_cpp also .cc, .cpp and .cxx
 #[derive(Debug, Clone, Copy, PartialEq, Hash)]
@@ -147,9 +152,9 @@ impl Compilation<'_> {
         let language = if self.language == Language::C { "C" } else { "C/C++" };
         system::log(self.module_name, &format!("Compiling {} {language} {files}", outdated.len()));
 
+        let threads = CORES.min(outdated.len());
         let queue = Mutex::new(outdated);
         let errors = Mutex::new(vec![]);
-        let threads = std::thread::available_parallelism().map_or(4, |count| count.get());
 
         std::thread::scope(|scope| {
             for _ in 0..threads {
@@ -184,6 +189,8 @@ impl Compilation<'_> {
         command.arg("-MMD")
             .arg("-MF")
             .arg(object.with_extension("o.d"));
+
+        let _compiler = Compiler::start();
         system::run_command(&mut command, &format!("compiling {}", source.display()))?;
 
         return system::write_file(&object.with_extension("o.line"), &line.join("\n"));
@@ -209,6 +216,30 @@ impl Compilation<'_> {
                 })
             })
             .collect();
+    }
+}
+
+/// One of the compilers running now, the next may start when it is dropped
+struct Compiler;
+
+impl Compiler {
+    /// Waits until fewer compilers than cores run
+    fn start() -> Self {
+        let mut running = RUNNING.lock().unwrap();
+
+        while *running >= *CORES {
+            running = FINISHED.wait(running).unwrap();
+        }
+
+        *running += 1;
+        return Compiler;
+    }
+}
+
+impl Drop for Compiler {
+    fn drop(&mut self) {
+        *RUNNING.lock().unwrap() -= 1;
+        FINISHED.notify_one();
     }
 }
 
