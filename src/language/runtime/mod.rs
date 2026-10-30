@@ -36,17 +36,17 @@ pub struct Platform {
 pub struct BuildScriptContext {
     /// relative paths of the script are resolved against it
     pub project_dir: PathBuf,
-    /// modules that run their tests once they are built, `build-script test`
+    /// modules that run their tests once they are built, `build test`
     pub tests: TestSelection,
-    /// `build-script build --release`: Android apps are built for release
+    /// `build --release`: Android apps are built for release
     pub release: bool,
-    /// modules write their module files for IntelliJ, see `build-script idea`
+    /// modules write their module files for IntelliJ, see `build idea`
     pub idea: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TestSelection {
-    /// `build-script build` and `run`
+    /// `build` and `run`
     None,
     All,
     Module(String),

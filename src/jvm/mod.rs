@@ -55,7 +55,7 @@ pub struct JvmOutput {
     pub native_library_dirs: Vec<PathBuf>,
 }
 
-/// How `build-script run` starts a JVM module
+/// How `build run` starts a JVM module
 #[derive(Debug, Hash)]
 pub enum JvmLaunch {
     /// `java -jar` with the JDK the module was built with

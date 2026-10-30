@@ -88,7 +88,7 @@ impl Settings {
 
         return system::write_file(
             &self.file,
-            &format!("# written by build-script config\n{}", lines.concat()),
+            &format!("# written by build config\n{}", lines.concat()),
         );
     }
 }
@@ -118,7 +118,7 @@ mod tests {
         );
         assert_eq!(
             system::read_file(&file).unwrap(),
-            "# written by build-script config\ndomain = acme.org\nremember_domain = never\n"
+            "# written by build config\ndomain = acme.org\nremember_domain = never\n"
         );
 
         let mut settings = Settings::load_from(file.clone()).unwrap();

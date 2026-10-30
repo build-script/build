@@ -1,5 +1,5 @@
 // IntelliJ: a module writes its module file into .idea/modules once its dependencies are resolved,
-// .idea/modules.xml lists them. `build-script idea` sets it up, every build after keeps it current.
+// .idea/modules.xml lists them. `build idea` sets it up, every build after keeps it current.
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;

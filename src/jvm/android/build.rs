@@ -41,7 +41,7 @@ const ABIS: &[&str] = &["armeabi-v7a", "arm64-v8a", "x86", "x86_64"];
 /// the CMake builds, and the libraries in libs/<abi> like jniLibs
 const CMAKE_DIR: &str = "intermediates/cmake";
 
-/// Debug, or release with `build-script build --release`
+/// Debug, or release with `build --release`
 #[derive(Clone, Copy, PartialEq)]
 pub enum BuildType {
     Debug,

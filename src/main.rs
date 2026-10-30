@@ -15,7 +15,8 @@ use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, Tes
 
 /// Every command and its arguments, in the order of the usage
 const COMMANDS: &[(&str, &str)] = &[
-    ("build", "[build] [<script>]"),
+    // `build build` builds too
+    ("build", "[<script>]"),
     ("idea", "idea [<script>]"),
     ("run", "run [--module <name>] [<script>] [-- <args>...]"),
     ("test", "test [--module <name>] [<script>]"),
@@ -96,7 +97,7 @@ enum Command {
 fn usage() -> String {
     let lines: Vec<String> = COMMANDS.iter()
         .enumerate()
-        .map(|(index, (_, arguments))| format!("{} build-script {arguments}", if index == 0 { "usage:" } else { "      " }))
+        .map(|(index, (_, arguments))| format!("{} build {arguments}", if index == 0 { "usage:" } else { "      " }))
         .collect();
 
     return format!("{}\n{BUILD_OPTIONS_USAGE}", lines.join("\n"));
@@ -125,7 +126,7 @@ fn command_usage(command: &str) -> String {
         _ => vec![],
     };
 
-    let mut lines = vec![format!("usage: build-script {arguments}")];
+    let mut lines = vec![format!("usage: build {arguments}")];
     lines.extend(choices.iter().map(|line| format!("       {line}")));
 
     return lines.join("\n");
@@ -133,8 +134,9 @@ fn command_usage(command: &str) -> String {
 
 /// The command, or what is wrong with the arguments and the usage of the command
 fn parse_args(args: &[String]) -> Result<Command, String> {
+    // build alone builds, like make
     let Some((first, rest)) = args.split_first() else {
-        return Ok(Command::Help { command: None });
+        return Ok(Command::Build { script: DEFAULT_SCRIPT.to_string() });
     };
 
     let names: Vec<&'static str> = COMMANDS.iter()
@@ -142,7 +144,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         .collect();
 
     let no_command = |word: &str| match word.starts_with('-') {
-        true => format!("build-script has no option {word}{}\n{}", suggestion(word, BUILD_OPTIONS), usage()),
+        true => format!("build has no option {word}{}\n{}", suggestion(word, BUILD_OPTIONS), usage()),
         false => format!("{word} is no command and no script{}\n{}", suggestion(word, &names), usage()),
     };
 
@@ -626,7 +628,7 @@ fn run_script(
     let source = std::fs::read_to_string(script_path).unwrap_or_else(|error| {
         match error.kind() {
             io::ErrorKind::NotFound if script_path == DEFAULT_SCRIPT => eprintln!(
-                "there is no {DEFAULT_SCRIPT} in this directory: give the script, or create a project with build-script new"
+                "there is no {DEFAULT_SCRIPT} in this directory: give the script, create a project with build new, or see build --help"
             ),
             io::ErrorKind::NotFound => eprintln!("there is no script {script_path}"),
             _ => eprintln!("could not read {script_path}: {error}"),
@@ -650,7 +652,7 @@ fn run_script(
         .map(|parent| parent.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // once `build-script idea` set it up, every build keeps IntelliJ current, release builds leave it
+    // once `build idea` set it up, every build keeps IntelliJ current, release builds leave it
     let marker = project_dir.join(jvm::idea::MARKER);
 
     if set_up_idea {
@@ -967,7 +969,7 @@ mod tests {
     fn commands_are_parsed() {
         let script = "app/project.build".to_string();
 
-        assert_eq!(parse(&[]), Ok(Command::Help { command: None }));
+        assert_eq!(parse(&[]), Ok(Command::Build { script: "project.build".to_string() }));
         assert_eq!(
             parse(&["config"]),
             Ok(Command::Config {
@@ -1169,25 +1171,25 @@ mod tests {
     fn errors_say_what_is_wrong_and_show_the_usage_of_the_command() {
         let error = |args: &[&str]| parse(args).unwrap_err();
 
-        assert!(error(&["biuld"]).starts_with("biuld is no command and no script, did you mean build?\nusage: build-script [build]"));
-        assert!(error(&["--verbose"]).starts_with("build-script has no option --verbose\nusage:"));
+        assert!(error(&["biuld"]).starts_with("biuld is no command and no script, did you mean build?\nusage: build [<script>]"));
+        assert!(error(&["--verbose"]).starts_with("build has no option --verbose\nusage:"));
         assert!(error(&["app/project.build", "x"]).starts_with("app/project.build is a script, the command goes before it"));
         assert_eq!(
             error(&["build", "--relase"]),
-            "build has no option --relase, did you mean --release?\nusage: build-script [build] [<script>]"
+            "build has no option --relase, did you mean --release?\nusage: build [<script>]"
         );
         assert_eq!(
             error(&["run", "--module"]),
-            "--module needs a value\nusage: build-script run [--module <name>] [<script>] [-- <args>...]"
+            "--module needs a value\nusage: build run [--module <name>] [<script>] [-- <args>...]"
         );
-        assert!(error(&["new", "cpp", "a", "b"]).starts_with("new takes a kind and a path, not cpp a b\nusage: build-script new"));
+        assert!(error(&["new", "cpp", "a", "b"]).starts_with("new takes a kind and a path, not cpp a b\nusage: build new"));
         assert!(error(&["install", "a:b", "--test", "--ksp"]).starts_with("install takes one list, not --test --ksp\n"));
         assert!(error(&["install", "a:b", "--tset"]).starts_with("install has no option --tset, did you mean --test?"));
 
         assert_eq!(
             command_usage("new"),
             format!(
-                "usage: build-script new <kind> <path> [--package <package>]\n       <kind>: {}",
+                "usage: build new <kind> <path> [--package <package>]\n       <kind>: {}",
                 project::project_kinds().join(", ")
             )
         );

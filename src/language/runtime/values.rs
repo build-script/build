@@ -60,7 +60,7 @@ pub struct BuiltModule {
     /// modules of the script it depends on
     pub modules: Vec<Arc<BuiltModule>>,
     pub output: ModuleOutput,
-    /// empty when `build-script test` did not select it
+    /// empty when `build test` did not select it
     pub tests: Vec<TestSuite>,
 }
 
@@ -89,7 +89,7 @@ pub struct TestSuite {
     pub tests: ModuleTests,
 }
 
-/// The tests `build-script test` selected, run once the whole script is built
+/// The tests `build test` selected, run once the whole script is built
 #[derive(Debug)]
 pub enum ModuleTests {
     Run(Box<dyn TestRunner>),
@@ -119,7 +119,7 @@ pub struct TestRun {
     fingerprint: InputFingerprint,
 }
 
-/// What `build-script test` found for a module. A failure is an outcome, not an
+/// What `build test` found for a module. A failure is an outcome, not an
 /// error: the other modules still run their tests.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TestOutcome {
@@ -143,7 +143,7 @@ pub struct TestCounts {
     pub skipped: u32,
 }
 
-/// What a language category keeps of a module for the modules depending on it and for `build-script run`
+/// What a language category keeps of a module for the modules depending on it and for `build run`
 #[derive(Debug)]
 pub enum ModuleOutput {
     Jvm(JvmOutput),
@@ -425,7 +425,7 @@ impl BuiltModule {
         return out;
     }
 
-    /// Whether `build-script run` can start it
+    /// Whether `build run` can start it
     pub fn can_launch(&self) -> bool {
         match &self.output {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),
