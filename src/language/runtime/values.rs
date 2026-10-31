@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use crate::common::up_to_date::InputFingerprint;
 use crate::common::{system, xml};
@@ -117,6 +118,8 @@ pub struct TestRun {
     reports_dir: PathBuf,
     /// stored once the tests passed, they do not run again until their inputs change
     fingerprint: InputFingerprint,
+    /// tests that run longer are stopped and failed
+    timeout: Option<Duration>,
 }
 
 /// What `build test` found for a module. A failure is an outcome, not an
@@ -304,7 +307,13 @@ impl TestRun {
             directory: command.get_current_dir().map(Path::to_path_buf),
             reports_dir,
             fingerprint,
+            timeout: None,
         };
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        return self;
     }
 }
 
@@ -333,7 +342,10 @@ impl TestRunner for TestRun {
             command.current_dir(directory);
         }
 
-        let result = system::run_command(&mut command, "tests");
+        let result = match self.timeout {
+            Some(timeout) => system::run_command_within(&mut command, "tests", timeout),
+            None => system::run_command(&mut command, "tests"),
+        };
         let counts = TestCounts::read_junit_reports(&self.reports_dir);
 
         if let Err(error) = result {
