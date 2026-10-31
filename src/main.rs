@@ -670,6 +670,9 @@ fn run_script(
 
     let idea = !release && marker.is_file();
 
+    // project.lock: the files of Maven repositories the last builds took
+    exit_on_error(jvm::maven::lock::open(Path::new(script_path)));
+
     let mut runtime = Runtime::new(project_dir.clone())
         .with_tests(tests)
         .with_test_arguments(test_arguments)
@@ -685,6 +688,11 @@ fn run_script(
     let worked = built.as_deref()
         .ok()
         .filter(|_| evaluated.is_ok());
+
+    // a failed build may not have come to every library
+    if worked.is_some() && let Err(error) = jvm::maven::lock::save() {
+        eprintln!("{error}");
+    }
 
     if idea && let Err(error) = jvm::idea::write_project(&project_dir, worked) {
         eprintln!("could not write the IntelliJ project: {error}");

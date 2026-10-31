@@ -104,7 +104,7 @@ fn install_zig() -> Result<PathBuf, String> {
             (HostOperatingSystem::Windows, _) => return Err("zig is not set up for Windows".into()),
         };
 
-        let (status, body) = system::http_get("https://ziglang.org/download/index.json")?;
+        let (status, body) = system::http_get("https://ziglang.org/download/index.json", None)?;
 
         if status != 200 {
             return Err(format!("ziglang.org answered {status}"));
