@@ -359,6 +359,11 @@ pub fn link(
         .arg("-o")
         .arg(program);
 
+    // the C++ standard library brings the math library along, on macOS libSystem has it
+    if !cpp && cfg!(target_os = "linux") {
+        command.arg("-lm");
+    }
+
     return system::run_command(&mut command, "linking");
 }
 
