@@ -776,10 +776,41 @@ pub fn kept_in_cache(
 }
 
 /// Where `path` is written before it is complete and renamed. A new one each
-/// call: modules building at the same time may write the same file.
+/// call: modules building at the same time may write the same file. Those of builds
+/// that stopped half way, unchanged for an hour, are removed.
 pub fn partial_path(path: &Path) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let next = NEXT.fetch_add(1, Ordering::Relaxed);
+
+    let name = path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let prefix = format!("{name}.partial-");
+    let entries = path.parent()
+        .and_then(|parent| fs::read_dir(parent).ok())
+        .into_iter()
+        .flatten()
+        .flatten();
+
+    for entry in entries {
+        let abandoned = entry.metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > Duration::from_secs(3600)));
+
+        let name = entry.file_name();
+        if !abandoned || !name.to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+
+        match entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            true => {
+                let _ = remove_dir(&entry.path());
+            }
+            false => {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
 
     return PathBuf::from(format!(
         "{}.partial-{}-{next}",
@@ -1089,6 +1120,36 @@ mod tests {
             extract(&directory.join(name), &directory.join(name).with_extension("extracted")).unwrap();
             assert_eq!(read_file(&directory.join(name).with_extension("extracted").join("dir/file.txt")).unwrap(), "inside");
         }
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn partial_files_of_stopped_builds_are_removed() {
+        let directory = scratch_dir("partial");
+        let target = directory.join("library.jar");
+        let abandoned = directory.join("library.jar.partial-1-0");
+        let running = directory.join("library.jar.partial-2-0");
+        let other = directory.join("other.jar.partial-1-0");
+
+        for file in [&abandoned, &running, &other] {
+            write_file(file, "part").unwrap();
+        }
+
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        for file in [&abandoned, &other] {
+            fs::File::options()
+                .write(true)
+                .open(file)
+                .and_then(|file| file.set_modified(two_hours_ago))
+                .unwrap();
+        }
+
+        let partial = partial_path(&target);
+        assert!(partial.starts_with(&directory));
+        assert!(!abandoned.exists());
+        assert!(running.exists());
+        assert!(other.exists());
 
         fs::remove_dir_all(&directory).unwrap();
     }
