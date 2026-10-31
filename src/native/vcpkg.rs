@@ -402,13 +402,19 @@ fn visit_package(
             .unwrap_or_default();
     };
 
-    for required in fields.get("requires").cloned().unwrap_or_default().replace(',', " ").split_whitespace() {
+    // the libraries are static: what they need themselves too, like pkg-config --static
+    let requires: Vec<String> = ["requires", "requires.private"].iter()
+        .filter_map(|field| fields.get(*field))
+        .map(|names| names.replace(',', " "))
+        .collect();
+
+    for required in requires.join(" ").split_whitespace() {
         visit_package(required, pc_dir, visited, cflags, libs);
     }
 
     // a package links before what it requires
     cflags.extend(words("cflags"));
-    libs.splice(0..0, words("libs"));
+    libs.splice(0..0, [words("libs"), words("libs.private")].concat());
 }
 
 #[cfg(test)]
@@ -436,7 +442,7 @@ mod tests {
         .unwrap();
         system::write_file(
             &pc_dir.join("spdlog.pc"),
-            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\nName: libspdlog\nCFlags: -DSPDLOG_FMT_EXTERNAL\nLibs: \"-L${libdir}\" -lspdlog -pthread\nRequires: fmt\n",
+            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\nName: libspdlog\nCFlags: -DSPDLOG_FMT_EXTERNAL\nLibs: \"-L${libdir}\" -lspdlog -pthread\nLibs.private: -ldl\nRequires.private: fmt\n",
         )
         .unwrap();
 
@@ -444,7 +450,7 @@ mod tests {
         let lib_dir = format!("-L{}/../../lib", pc_dir.display());
 
         assert_eq!(cflags, [format!("-I{}/../../include", pc_dir.display()), "-DSPDLOG_FMT_EXTERNAL".to_string()]);
-        assert_eq!(libs, [lib_dir.clone(), "-lspdlog".to_string(), "-pthread".to_string(), lib_dir, "-lfmt".to_string()]);
+        assert_eq!(libs, [lib_dir.clone(), "-lspdlog".to_string(), "-pthread".to_string(), "-ldl".to_string(), lib_dir, "-lfmt".to_string()]);
 
         fs::remove_dir_all(&pc_dir).unwrap();
     }
