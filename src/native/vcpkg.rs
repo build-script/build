@@ -394,7 +394,11 @@ fn visit_package(
 
     let words = |field: &str| -> Vec<String> {
         return fields.get(field)
-            .map(|value| value.split_whitespace().map(|word| word.trim_matches('"').to_string()).collect())
+            .map(|value| {
+                // "" of an empty variable is no flag
+                let words = value.split_whitespace().map(|word| word.trim_matches('"').to_string());
+                return words.filter(|word| !word.is_empty()).collect();
+            })
             .unwrap_or_default();
     };
 
@@ -427,7 +431,7 @@ mod tests {
 
         system::write_file(
             &pc_dir.join("fmt.pc"),
-            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: fmt\nCflags: -I${includedir}\nLibs: -L${libdir} -lfmt\n",
+            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: fmt\nCflags: -I${includedir} \"\"\nLibs: -L${libdir} -lfmt\n",
         )
         .unwrap();
         system::write_file(
