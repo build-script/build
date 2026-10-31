@@ -2,6 +2,8 @@
 name = "build-script"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/build-script/build"
 
 [dependencies]
 base64 = "0.23.1"
