@@ -1,0 +1,73 @@
+# The build and the tests of build-script on every push and pull request, without warnings. The
+# scenarios that build real projects run in build-script/regressions.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build-script
+        run: |
+          rustup update stable --no-self-update
+          cargo build --release --locked
+          cargo test --release --locked
+
+  # a Linux with nothing installed, not even CA certificates: build-script downloads the JDK and the
+  # libraries itself and builds a Java program, like the release for Linux it is built for musl
+  bare-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build-script for musl
+        run: |
+          sudo apt-get install -q -y musl-tools
+          rustup update stable --no-self-update
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Java program in debian-slim
+        run: |
+          mkdir -p hello/src/main/java
+          cat > hello/project.build <<'EOF'
+          use java
+
+          build_java(
+              "hello",
+              list("com.google.code.gson:gson:2.14.0"),
+              list(maven_central()),
+              main_class = "Hello",
+          )
+          EOF
+          cat > hello/src/main/java/Hello.java <<'EOF'
+          public class Hello {
+              public static void main(String[] arguments) {
+                  System.out.println(new com.google.gson.Gson().toJson(java.util.List.of("bare", "linux")));
+              }
+          }
+          EOF
+          docker run --rm \
+            -v "$PWD/target/x86_64-unknown-linux-musl/release/build-script:/usr/local/bin/build:ro" \
+            -v "$PWD/hello:/hello" -w /hello debian:stable-slim \
+            sh -c '! test -s /etc/ssl/certs/ca-certificates.crt && build run' | tee run.log
+          grep -F '["bare","linux"]' run.log
