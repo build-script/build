@@ -43,6 +43,7 @@ enum Command {
     Help {
         command: Option<&'static str>,
     },
+    Version,
     Build {
         script: String,
     },
@@ -150,6 +151,13 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         true => format!("build has no option {word}{}\n{}", suggestion(word, BUILD_OPTIONS), usage()),
         false => format!("{word} is no command and no script{}\n{}", suggestion(word, &names), usage()),
     };
+
+    if matches!(first.as_str(), "--version" | "-V") {
+        return match rest {
+            [] => Ok(Command::Version),
+            _ => Err(format!("{first} takes no arguments\n{}", usage())),
+        };
+    }
 
     if matches!(first.as_str(), "help" | "--help" | "-h") {
         return match rest {
@@ -428,7 +436,8 @@ fn help() -> String {
   config  shows or changes what new and add remember, like your domain:
           {}
 
-The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.",
+The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.
+build --version shows the version.",
         project::project_kinds().join(", "),
         project::module_kinds().join(", "),
         project::DEPENDENCY_KINDS
@@ -476,6 +485,10 @@ fn main() {
             command: Some(command),
         } => {
             println!("{}", command_usage(command));
+            return;
+        }
+        Command::Version => {
+            println!("build-script {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Command::New {
@@ -1093,6 +1106,8 @@ mod tests {
         );
 
         assert_eq!(parse(&["--help"]), Ok(Command::Help { command: None }));
+        assert_eq!(parse(&["--version"]), Ok(Command::Version));
+        assert!(parse(&["--version", "project.build"]).is_err());
         assert_eq!(parse(&["clean", "--cache"]), Ok(Command::CleanCache));
         assert!(parse(&["clean", "--cache", "app/project.build"]).is_err());
         assert!(parse(&["--verbose"]).is_err());
