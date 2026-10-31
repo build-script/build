@@ -3,12 +3,15 @@ use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 
 use super::terminal::{self, Color};
 
@@ -508,32 +511,34 @@ pub fn http_get(url: &str) -> Result<(u16, String), String> {
     return Ok((status, body.to_string()));
 }
 
-/// SHA-1 or SHA-256 as hex: shasum on macOS, sha1sum and sha256sum on Linux
+/// SHA-1 or SHA-256 of the file as hex
 pub fn sha(file: &Path, bits: u32) -> Result<String, String> {
-    let shasum_args = ["-a".to_string(), bits.to_string()];
-    let tools: [(String, &[String]); 2] = [
-        ("shasum".to_string(), &shasum_args),
-        (format!("sha{bits}sum"), &[]),
-    ];
+    fn hex<Hash: Digest>(file: &Path) -> Result<String, String> {
+        let mut reader = fs::File::open(file)
+            .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+        let mut hash = Hash::new();
+        let mut buffer = vec![0; 1 << 16];
 
-    for (program, args) in &tools {
-        let Ok(output) = Command::new(program).args(*args).arg(file).output() else {
-            continue;
-        };
-
-        if !output.status.success() {
-            continue;
+        loop {
+            let read = reader.read(&mut buffer)
+                .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+            if read == 0 {
+                break;
+            }
+            hash.update(&buffer[..read]);
         }
 
-        if let Some(hash) = String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-        {
-            return Ok(hash.to_ascii_lowercase());
-        }
+        return Ok(hash.finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect());
     }
 
-    return Err(format!("neither shasum nor sha{bits}sum found"));
+    match bits {
+        1 => return hex::<Sha1>(file),
+        256 => return hex::<Sha256>(file),
+        _ => return Err(format!("SHA-{bits} is neither SHA-1 nor SHA-256")),
+    }
 }
 
 /// Zip-like archives (also .aar and .jar) with unzip, everything else with tar
@@ -839,5 +844,24 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(run_command_within(&mut Command::new("true"), "tests", Duration::from_secs(5)), Ok(()));
         assert!(run_command_within(&mut Command::new("false"), "tests", Duration::from_secs(5)).is_err());
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("build-script-{name}-{}", std::process::id()));
+        recreate_dir(&directory).unwrap();
+        return directory;
+    }
+
+    #[test]
+    fn sha_of_a_file_as_hex() {
+        let directory = scratch_dir("sha");
+        let file = directory.join("abc");
+        write_file(&file, "abc").unwrap();
+
+        assert_eq!(sha(&file, 1).unwrap(), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(sha(&file, 256).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert!(sha(&file, 512).is_err());
+
+        fs::remove_dir_all(&directory).unwrap();
     }
 }

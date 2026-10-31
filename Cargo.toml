@@ -7,3 +7,5 @@ edition = "2024"
 quick-xml = { version = "0.42.0", features = ["serialize", "overlapped-lists"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
