@@ -1,12 +1,17 @@
 // The compilers of C and C++ modules: those of the system, or zig, which brings clang, libc and
 // libc++ for every target in one download
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
 
 pub const ZIG_VERSION: &str = "0.17.0";
+
+/// What --version of each compiler said, asked once per build
+static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new());
 
 /// Compiler, archiver and what they need in their environment
 pub struct Toolchain {
@@ -59,6 +64,25 @@ impl Toolchain {
         }
 
         return command;
+    }
+
+    /// What the compiler says to --version, empty when it does not start: compiling then tells why
+    pub fn version(&self, compiler: &[String]) -> String {
+        let mut versions = VERSIONS.lock().unwrap();
+
+        return versions.entry(compiler.to_vec())
+            .or_insert_with(|| {
+                let output = self.command(compiler)
+                    .arg("--version")
+                    .stdin(Stdio::null())
+                    .output();
+
+                match output {
+                    Ok(output) => return String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                    Err(_) => return String::new(),
+                }
+            })
+            .clone();
     }
 }
 

@@ -1,5 +1,6 @@
 // Compiling C and C++: every source on its own, in parallel, and only when its object is older than
-// the source, one of its headers or its command line. clang and gcc name the headers in a depfile.
+// the source, one of its headers, its command line or the version of its compiler. clang and gcc name
+// the headers in a depfile.
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,6 +134,15 @@ impl Compilation<'_> {
         return line;
     }
 
+    /// The command line after the version of its compiler, as the .o.line next to the object keeps it:
+    /// after an update of Xcode or GCC every source is compiled again
+    fn recorded_line(&self, source: &Path) -> Vec<String> {
+        let c_source = source.extension().is_some_and(|extension| extension == "c");
+        let compiler = if c_source { &self.toolchain.c_compiler } else { &self.toolchain.cpp_compiler };
+
+        return [vec![self.toolchain.version(compiler)], self.command_line(source)].concat();
+    }
+
     /// The objects of all sources, and whether one had to be compiled
     pub fn run(&self) -> Result<(Vec<PathBuf>, bool), String> {
         let sources = self.sources();
@@ -177,7 +187,7 @@ impl Compilation<'_> {
         return Ok((objects, true));
     }
 
-    /// With a depfile and the command line next to the object, for the next build
+    /// With a depfile and the recorded line next to the object, for the next build
     fn compile(&self, source: &Path) -> Result<(), String> {
         let object = self.object(source);
         let line = self.command_line(source);
@@ -198,14 +208,14 @@ impl Compilation<'_> {
         let _compiler = Compiler::start();
         system::run_command_in_one_piece(&mut command, &format!("compiling {}", source.display()))?;
 
-        return system::write_file(&object.with_extension("o.line"), &line.join("\n"));
+        return system::write_file(&object.with_extension("o.line"), &self.recorded_line(source).join("\n"));
     }
 
     fn is_up_to_date(&self, source: &Path) -> bool {
         let object = self.object(source);
         let (depfile, line) = (object.with_extension("o.d"), object.with_extension("o.line"));
 
-        return output_is_up_to_date(&object, &depfile, &line, &self.command_line(source));
+        return output_is_up_to_date(&object, &depfile, &line, &self.recorded_line(source));
     }
 
     /// For clangd, which finds build/compile_commands.json of the module from its sources
