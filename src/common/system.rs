@@ -492,8 +492,8 @@ pub fn download_and_extract(
 }
 
 /// The HTTP status and the body, also for error statuses
-pub fn http_get(url: &str) -> Result<(u16, String), String> {
-    let response = http_request(url, None)?;
+pub fn http_get(url: &str, credentials: Option<&Credentials>) -> Result<(u16, String), String> {
+    let response = http_request(url, credentials)?;
     let status = response.status().as_u16();
 
     let mut body = String::new();
@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(download(&format!("{url}/missing"), &target, false, None), Ok(false));
         assert!(download(&format!("{url}/private"), &target, false, None).is_err_and(|error| error.contains("needs credentials")));
 
-        let (status, body) = http_get(&format!("{url}/index.json")).unwrap();
+        let (status, body) = http_get(&format!("{url}/index.json"), None).unwrap();
         assert_eq!(status, 200);
         assert!(body.starts_with("GET /index.json"));
 

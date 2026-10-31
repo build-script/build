@@ -1,6 +1,7 @@
 // Dependency resolver: transitive dependencies via POMs and Gradle module metadata, the highest version wins
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -1011,10 +1012,23 @@ impl DependencyResolver {
             }
 
             let credentials = self.repositories[index].credentials()?;
+            let file_url = format!("{url}/{path}");
 
-            if system::download(&format!("{url}/{path}"), &file, false, credentials.as_ref())? {
-                return Ok(Some(file));
+            // checked before it is in the cache, a file there is never downloaded again
+            let partial = system::partial_path(&file);
+            if !system::download(&file_url, &partial, false, credentials.as_ref())? {
+                continue;
             }
+
+            if let Err(error) = verify_checksum(&file_url, &partial, credentials.as_ref()) {
+                let _ = fs::remove_file(&partial);
+                return Err(error);
+            }
+
+            fs::rename(&partial, &file)
+                .map_err(|error| format!("could not save {}: {error}", file.display()))?;
+
+            return Ok(Some(file));
         }
 
         return Ok(None);
@@ -1052,6 +1066,32 @@ struct GradleVariant {
     files: Vec<String>,
 }
 
+/// Against the .sha1 the repository keeps next to the file, like Maven does it. A repository
+/// without one is trusted.
+fn verify_checksum(url: &str, file: &Path, credentials: Option<&system::Credentials>) -> Result<(), String> {
+    let (status, body) = system::http_get(&format!("{url}.sha1"), credentials)?;
+    if status != 200 {
+        return Ok(());
+    }
+
+    // the hash, the hash and the file name, or SHA1(file name)= hash
+    let line = body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let expected = match line.split_once("= ") {
+        Some((_, hash)) => hash,
+        None => line.split_whitespace().next().unwrap_or_default(),
+    };
+
+    let actual = system::sha(file, 1)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(format!("{url} does not match its checksum: the repository says SHA-1 {expected}, the download has {actual}"));
+    }
+
+    return Ok(());
+}
+
 /// The versions a BOM manages, like Gradle uses them for a platform: entries
 /// with a concrete version, without scope and classifier
 fn managed_versions(bom: &EffectivePom) -> Vec<MavenCoordinate> {
@@ -1078,8 +1118,10 @@ fn json_array(value: Option<&Json>) -> &[Json] {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
 
+    use crate::common::system;
     use crate::jvm::maven;
     use crate::jvm::module::DEFAULT_KOTLIN_VERSION;
 
@@ -1497,6 +1539,82 @@ mod tests {
         let error = resolver.resolve_with_platforms(&[ui], &[]).unwrap_err();
         assert!(error.contains("com.example:ui has no version"), "{error}");
         fs::remove_dir_all(&repository).unwrap();
+    }
+
+    /// A repository on this machine with these files (path and content), every other path is missing
+    fn serve(files: Vec<(String, String)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut request = vec![0; 4096];
+                let read = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                let path = request.split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default();
+
+                let (status, content) = match files.iter().find(|(file, _)| file == path) {
+                    Some((_, content)) => ("200 OK", content.as_str()),
+                    None => ("404 Not Found", ""),
+                };
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{content}", content.len()).unwrap();
+            }
+        });
+
+        return format!("http://{address}");
+    }
+
+    #[test]
+    fn downloads_that_do_not_match_their_checksum_stay_out_of_the_cache() {
+        let directory =
+            std::env::temp_dir().join(format!("build-script-checksums-{}", std::process::id()));
+
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+
+        let sha1 = |content: &str| {
+            let file = directory.join("content");
+            fs::write(&file, content).unwrap();
+            return system::sha(&file, 1).unwrap();
+        };
+
+        let lib = "/com/example/lib/1";
+        let url = serve(vec![
+            (format!("{lib}/good.jar"), "good".to_string()),
+            (format!("{lib}/good.jar.sha1"), format!("{}  good.jar\n", sha1("good"))),
+            (format!("{lib}/upper.jar"), "upper".to_string()),
+            (format!("{lib}/upper.jar.sha1"), format!("SHA1(upper.jar)= {}", sha1("upper").to_uppercase())),
+            (format!("{lib}/plain.jar"), "plain".to_string()),
+            // a proxy that answers with a page of its own
+            (format!("{lib}/bad.jar"), "<html>blocked</html>".to_string()),
+            (format!("{lib}/bad.jar.sha1"), sha1("bad")),
+        ]);
+
+        let repositories = vec![maven::MavenRepository::Remote { url, credentials: None }];
+        let mut resolver = maven::DependencyResolver::new(repositories, maven::TargetPlatform::Jvm);
+        resolver.cache_dir = directory.join("cache");
+
+        for (name, content) in [("good.jar", "good"), ("upper.jar", "upper"), ("plain.jar", "plain")] {
+            let file = resolver.find_in_repositories(&format!("{}/{name}", &lib[1..]))
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(fs::read_to_string(file).unwrap(), content);
+        }
+
+        let error = resolver.find_in_repositories(&format!("{}/bad.jar", &lib[1..])).unwrap_err();
+        assert!(error.contains("bad.jar does not match its checksum"), "{error}");
+
+        // neither the file nor a partial one
+        let cached = fs::read_dir(directory.join("cache").join(&lib[1..]))
+            .unwrap()
+            .count();
+        assert_eq!(cached, 3);
+
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     /// Needs network access: cargo test -- --ignored

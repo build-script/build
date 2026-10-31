@@ -287,7 +287,7 @@ fn find_jdk_package(
     }
 
     // foojay reports unknown versions with HTTP 400 and a message in the body
-    let (status, body) = system::http_get(&request_url)?;
+    let (status, body) = system::http_get(&request_url, None)?;
 
     let response: Json = serde_json::from_str(&body)
         .map_err(|error| format!("foojay API responded with HTTP {status}: {error}"))?;
@@ -302,7 +302,7 @@ fn find_jdk_package(
         ));
     };
 
-    let (status, body) = system::http_get(&foojay_string(package, &["links", "pkg_info_uri"])?)?;
+    let (status, body) = system::http_get(&foojay_string(package, &["links", "pkg_info_uri"])?, None)?;
 
     let package_info_response: Json = serde_json::from_str(&body)
         .map_err(|error| format!("foojay API responded with HTTP {status}: {error}"))?;

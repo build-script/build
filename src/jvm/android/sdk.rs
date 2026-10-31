@@ -258,7 +258,7 @@ impl SdkCatalog {
     }
 
     pub fn load_from(url: &str) -> Result<Self, String> {
-        let (status, body) = system::http_get(url)?;
+        let (status, body) = system::http_get(url, None)?;
 
         if status != 200 {
             return Err(format!("{url} responded with HTTP {status}"));
