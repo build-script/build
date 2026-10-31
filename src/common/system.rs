@@ -529,6 +529,7 @@ fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::ht
             .tls_config(tls)
             .user_agent(format!("build-script/{}", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
             .build()
             .into();
     });
