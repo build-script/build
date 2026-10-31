@@ -15,7 +15,7 @@ const EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 pub const SNAPSHOT: &str = "-SNAPSHOT";
 
 /// Set by `--refresh`: whatever was fetched before counts as expired
-static REFRESHED_AT: OnceLock<SystemTime> = OnceLock::new();
+pub(super) static REFRESHED_AT: OnceLock<SystemTime> = OnceLock::new();
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]

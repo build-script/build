@@ -10,6 +10,7 @@ use serde_json::Value as Json;
 
 use crate::common::system;
 
+use super::lock;
 use super::metadata::{self, MavenMetadata, SnapshotFile};
 use super::pom::{
     EffectivePom, InheritedPom, LibraryLicense, LicenseReportEntry, PomExclusion, PomFile,
@@ -998,35 +999,44 @@ impl DependencyResolver {
                 MavenRepository::Remote { url, .. } => url.clone(),
             };
 
+            // the build the lock keeps, else the newest
             let build_path = match &snapshot {
+                Some(_) if let Some(locked) = lock::snapshot_build(path) => Some(locked),
                 Some(snapshot) => self.snapshot_build_path(index, snapshot)?,
                 None => None,
             };
 
             // timestamped builds never change, so they are cached like releases
-            let path = build_path.as_deref().unwrap_or(path);
-            let file = self.cache_dir.join(path);
+            let path_in_repository = build_path.as_deref().unwrap_or(path);
+            let file = self.cache_dir.join(path_in_repository);
 
             if file.is_file() {
-                return Ok(Some(file));
+                lock::check(path_in_repository, &file, false)?;
+            } else {
+                let credentials = self.repositories[index].credentials()?;
+                let file_url = format!("{url}/{path_in_repository}");
+
+                // checked before it is in the cache, a file there is never downloaded again
+                let partial = system::partial_path(&file);
+                if !system::download(&file_url, &partial, false, credentials.as_ref())? {
+                    continue;
+                }
+
+                let checked = verify_checksum(&file_url, &partial, credentials.as_ref())
+                    .and_then(|()| lock::check(path_in_repository, &partial, true));
+
+                if let Err(error) = checked {
+                    let _ = fs::remove_file(&partial);
+                    return Err(error);
+                }
+
+                fs::rename(&partial, &file)
+                    .map_err(|error| format!("could not save {}: {error}", file.display()))?;
             }
 
-            let credentials = self.repositories[index].credentials()?;
-            let file_url = format!("{url}/{path}");
-
-            // checked before it is in the cache, a file there is never downloaded again
-            let partial = system::partial_path(&file);
-            if !system::download(&file_url, &partial, false, credentials.as_ref())? {
-                continue;
+            if let Some(build) = &build_path {
+                lock::keep_snapshot_build(path, build);
             }
-
-            if let Err(error) = verify_checksum(&file_url, &partial, credentials.as_ref()) {
-                let _ = fs::remove_file(&partial);
-                return Err(error);
-            }
-
-            fs::rename(&partial, &file)
-                .map_err(|error| format!("could not save {}: {error}", file.display()))?;
 
             return Ok(Some(file));
         }
