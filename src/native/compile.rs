@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, LazyLock, Mutex};
 
-use crate::common::system;
+use crate::common::{system, terminal};
 
 use super::toolchain::Toolchain;
 
@@ -190,8 +190,13 @@ impl Compilation<'_> {
             .arg("-MF")
             .arg(object.with_extension("o.d"));
 
+        // the output goes through a pipe, the compiler would leave out its colors
+        if terminal::colors() {
+            command.arg("-fdiagnostics-color=always");
+        }
+
         let _compiler = Compiler::start();
-        system::run_command(&mut command, &format!("compiling {}", source.display()))?;
+        system::run_command_in_one_piece(&mut command, &format!("compiling {}", source.display()))?;
 
         return system::write_file(&object.with_extension("o.line"), &line.join("\n"));
     }
@@ -329,7 +334,7 @@ pub fn archive(toolchain: &Toolchain, objects: &[PathBuf], library: &Path) -> Re
         .arg(library)
         .args(objects);
 
-    return system::run_command(&mut command, "archiving");
+    return system::run_command_in_one_piece(&mut command, "archiving");
 }
 
 /// A program or shared library of the objects and libraries, with the C++ compiler when C++ is among
@@ -364,7 +369,7 @@ pub fn link(
         command.arg("-lm");
     }
 
-    return system::run_command(&mut command, "linking");
+    return system::run_command_in_one_piece(&mut command, "linking");
 }
 
 #[cfg(test)]

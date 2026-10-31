@@ -280,6 +280,29 @@ pub fn run_command_quietly(command: &mut Command, what: &str) -> Result<(), Stri
     return Ok(());
 }
 
+/// Like run_command, but what the tool prints comes in one piece once it ended: compilers running at
+/// the same time do not mix their messages
+pub fn run_command_in_one_piece(command: &mut Command, what: &str) -> Result<(), String> {
+    let output = command.stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            format!(
+                "could not start {}: {error}",
+                command.get_program().to_string_lossy()
+            )
+        })?;
+
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(&output.stdout);
+    let _ = stderr.write_all(&output.stderr);
+
+    if !output.status.success() {
+        return Err(format!("{what} failed ({})", output.status));
+    }
+
+    return Ok(());
+}
+
 /// Like run_command, but stopped once it ran longer than the timeout, like tests that hang
 pub fn run_command_within(command: &mut Command, what: &str, timeout: Duration) -> Result<(), String> {
     let mut child = command.stdin(Stdio::null())
