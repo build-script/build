@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use super::terminal::{self, Color};
 
@@ -277,6 +278,35 @@ pub fn run_command_quietly(command: &mut Command, what: &str) -> Result<(), Stri
     }
 
     return Ok(());
+}
+
+/// Like run_command, but stopped once it ran longer than the timeout, like tests that hang
+pub fn run_command_within(command: &mut Command, what: &str, timeout: Duration) -> Result<(), String> {
+    let mut child = command.stdin(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "could not start {}: {error}",
+                command.get_program().to_string_lossy()
+            )
+        })?;
+
+    let started = Instant::now();
+
+    loop {
+        let status = child.try_wait().map_err(|error| format!("{what}: {error}"))?;
+
+        match status {
+            Some(status) if status.success() => return Ok(()),
+            Some(status) => return Err(format!("{what} failed ({status})")),
+            None if started.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{what} timed out after {}s", timeout.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
 }
 
 /// For servers that want a user name and password. No Debug, the password must not end up in a log.
@@ -773,5 +803,18 @@ mod tests {
             }),
             (PathBuf::from("/bs"), PathBuf::from("/bs/caches"),)
         );
+    }
+
+    // sleep of the system
+    #[cfg(unix)]
+    #[test]
+    fn commands_that_run_too_long_are_stopped() {
+        let started = Instant::now();
+        let result = run_command_within(Command::new("sleep").arg("10"), "tests", Duration::from_millis(200));
+
+        assert!(result.is_err_and(|error| error.starts_with("tests timed out")));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(run_command_within(&mut Command::new("true"), "tests", Duration::from_secs(5)), Ok(()));
+        assert!(run_command_within(&mut Command::new("false"), "tests", Duration::from_secs(5)).is_err());
     }
 }

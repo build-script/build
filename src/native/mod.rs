@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
@@ -45,6 +46,9 @@ pub const PLATFORMS: &[Platform] = &[
 /// The sources and tests of a module that names no other
 const DEFAULT_SOURCES: &str = "src/**";
 const DEFAULT_TEST_SOURCES: &str = "test/**";
+
+/// Seconds a test program may run, then it is stopped: one that hangs does not block the others
+const DEFAULT_TEST_TIMEOUT: i64 = 600;
 
 /// vcpkg port, name in the log, the package of its main(), arguments for a JUnit report at {report}
 type TestFramework = (&'static str, &'static str, Option<&'static str>, &'static [&'static str]);
@@ -84,6 +88,7 @@ struct TestSetup<'a> {
     programs: Vec<String>,
     /// after those of the framework
     arguments: Vec<String>,
+    timeout: Duration,
 }
 
 /// A dependency list: vcpkg ports and modules of the script
@@ -159,7 +164,9 @@ fn signature(language: Language) -> FunctionSignature {
         // test sources that are a program each, with the other test sources: "test/*-test.cc"
         .with_default("test_programs", strings(), none())
         // like "--order", "decl" for Catch2
-        .with_default("test_arguments", strings(), none());
+        .with_default("test_arguments", strings(), none())
+        // seconds a test program may run
+        .with_default("test_timeout", Type::Int, DEFAULT_TEST_TIMEOUT);
 
     if language == Language::Cpp {
         parameters = parameters.with_default("cpp_standard", Type::String, "c++20");
@@ -465,6 +472,11 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         let ports = &test_dependencies.ports;
         let framework = TEST_FRAMEWORKS.iter().find(|(port, ..)| ports.iter().any(|known| vcpkg::port_and_features(known).0 == *port));
 
+        let timeout: i64 = args.get("test_timeout")?;
+        if timeout <= 0 {
+            return Err(format!("{name}: test_timeout is in seconds, more than 0, not {timeout}"));
+        }
+
         let setup = TestSetup {
             framework,
             main_flags: match (framework, installed.as_ref()) {
@@ -473,6 +485,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             },
             programs: args.get("test_programs")?,
             arguments: args.get("test_arguments")?,
+            timeout: Duration::from_secs(timeout as u64),
         };
 
         let outcome = unit_tests(&test_compilation, &compilation, library, test_cpp, link_flags, &setup)
@@ -665,7 +678,7 @@ fn test_program(
 
     command.args(&setup.arguments);
 
-    let run = TestRun::new(runner, &command, reports_dir, fingerprint);
+    let run = TestRun::new(runner, &command, reports_dir, fingerprint).with_timeout(setup.timeout);
     return Ok(ModuleTests::Run(Box::new(run)));
 }
 
