@@ -947,35 +947,15 @@ impl AndroidBuild {
         let aligned = work_dir.join("aligned.apk");
         system::copy_file(linked, &unaligned)?;
 
-        let mut zip = Command::new("zip");
-        zip.args(["-q", "-j"])
-            .arg(&unaligned)
-            .args(system::files_with_extension(
-                &[dex_dir.to_path_buf()],
-                "dex",
-            ));
-        system::run_command(&mut zip, "adding dex files")?;
-
-        if system::contains_files(java_resources) {
-            let unaligned = fs::canonicalize(&unaligned).map_err(|error| error.to_string())?;
-            let mut zip = Command::new("zip");
-            zip.args(["-q", "-r"])
-                .arg(&unaligned)
-                .arg(".")
-                .current_dir(java_resources);
-            system::run_command(&mut zip, "adding java resources")?;
-        }
+        let dex_files: Vec<(String, PathBuf)> = system::files_with_extension(&[dex_dir.to_path_buf()], "dex")
+            .into_iter()
+            .map(|dex| (dex.file_name().unwrap_or_default().to_string_lossy().to_string(), dex))
+            .collect();
+        system::add_to_zip(&unaligned, &dex_files, false)?;
+        system::add_to_zip(&unaligned, &system::relative_files(java_resources), false)?;
 
         // stored and page aligned, so they load from the apk and extractNativeLibs="false" works
-        if system::contains_files(native_libraries) {
-            let unaligned = fs::canonicalize(&unaligned).map_err(|error| error.to_string())?;
-            let mut zip = Command::new("zip");
-            zip.args(["-q", "-r", "-0"])
-                .arg(&unaligned)
-                .arg("lib")
-                .current_dir(native_libraries);
-            system::run_command(&mut zip, "adding native libraries")?;
-        }
+        system::add_to_zip(&unaligned, &system::relative_files(native_libraries), true)?;
 
         let _ = fs::remove_file(&aligned);
         let mut zipalign = Command::new(&self.sdk.zipalign);

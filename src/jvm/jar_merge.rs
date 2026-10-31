@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::common::system;
 
@@ -128,6 +127,7 @@ pub fn merge_jars(
 fn extract_contents(jar: &Path, contents: JarContents, target: &Path) -> Result<(), String> {
     system::recreate_dir(target)?;
 
+    let signature = ["META-INF/MANIFEST.MF", "META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA", "META-INF/*.EC"];
     let excluded: &[&str] = match contents {
         JarContents::JavaResources => &["*.class", "META-INF/versions/*"],
         // a fat jar is no Java module
@@ -136,38 +136,24 @@ fn extract_contents(jar: &Path, contents: JarContents, target: &Path) -> Result<
         }
     };
 
-    let mut unzip = Command::new("unzip");
-    unzip.stdin(Stdio::null())
-        .args(["-q", "-o"])
-        .arg(jar)
-        .args([
-            "-x",
-            "META-INF/MANIFEST.MF",
-            "META-INF/*.SF",
-            "META-INF/*.RSA",
-            "META-INF/*.DSA",
-            "META-INF/*.EC",
-        ])
-        .args(excluded)
-        .arg("-d")
-        .arg(target);
+    return system::extract_zip(jar, target, |name| {
+        return !signature.iter()
+            .chain(excluded)
+            .any(|pattern| matches_pattern(pattern, name));
+    });
+}
 
-    // exit code 1 = only warnings (an exclude pattern did not match), 11 = nothing left to extract
-    let result = unzip.output()
-        .map_err(|error| format!("could not start unzip: {error}"))?;
+/// Like the patterns of unzip: * stands for any characters, / too
+fn matches_pattern(pattern: &str, name: &str) -> bool {
+    let Some((before, after)) = pattern.split_once('*') else {
+        return pattern == name;
+    };
 
-    if !matches!(result.status.code(), Some(0 | 1 | 11)) {
-        return Err(format!(
-            "unzip of {} failed ({}): {}",
-            jar.display(),
-            result.status,
-            String::from_utf8_lossy(&result.stderr).trim()
-        ));
-    }
+    let Some(rest) = name.strip_prefix(before) else {
+        return false;
+    };
 
-    system::make_accessible(target);
-
-    return Ok(());
+    return (0..=rest.len()).any(|start| rest.is_char_boundary(start) && matches_pattern(after, &rest[start..]));
 }
 
 /// Moves the packages of `relocations` (from, to) in the bytecode and the resource
@@ -259,8 +245,7 @@ fn relocated_class(name: &str, relocations: &[(String, String)]) -> String {
 mod tests {
     use super::*;
 
-    /// A jar of `files` (path and content), made with zip like any other archive
-    #[cfg(unix)]
+    /// A jar of `files` (path and content)
     fn jar(directory: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let content_dir = directory.join(format!("{name}-content"));
 
@@ -269,21 +254,11 @@ mod tests {
         }
 
         let jar = directory.join(format!("{name}.jar"));
-        let status = Command::new("zip")
-            .args(["-q", "-r"])
-            .arg(&jar)
-            .arg(".")
-            .current_dir(&content_dir)
-            .status()
-            .unwrap();
-
-        assert!(status.success());
+        system::add_to_zip(&jar, &system::relative_files(&content_dir), false).unwrap();
 
         return jar;
     }
 
-    // zip of the system
-    #[cfg(unix)]
     #[test]
     fn the_first_jar_wins_services_are_concatenated_signatures_left_out() {
         let directory =

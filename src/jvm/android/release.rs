@@ -309,18 +309,10 @@ pub fn build_app_bundle(
     system::copy_dir_contents(native_libraries, &module)?;
     system::copy_dir_contents(java_resources, &module.join("root"))?;
 
-    // zip adds to an archive that is already there
-    let module_zip = fs::canonicalize(&work_dir)
-        .map_err(|error| error.to_string())?
-        .join("base.zip");
+    // add_to_zip would add to the one of the last build
+    let module_zip = work_dir.join("base.zip");
     let _ = fs::remove_file(&module_zip);
-
-    let mut zip = Command::new("zip");
-    zip.args(["-q", "-r"])
-        .arg(&module_zip)
-        .arg(".")
-        .current_dir(&module);
-    system::run_command(&mut zip, "zipping the base module")?;
+    system::add_to_zip(&module_zip, &system::relative_files(&module), false)?;
 
     let mut resolver =
         DependencyResolver::new(build.inputs.repositories.clone(), TargetPlatform::Jvm);
