@@ -23,7 +23,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("new", "new <kind> <path> [--package <package>]"),
     ("add", "add <kind> <name> [<script>] [--package <package>]"),
     ("install", "install <library> [<script>] [--module <name>] [<list>]"),
-    ("clean", "clean [<script>]"),
+    ("clean", "clean [<script>] | clean --cache"),
     ("config", "config [<setting> [<value>]] | config --unset <setting>"),
 ];
 
@@ -86,6 +86,8 @@ enum Command {
     Clean {
         script: String,
     },
+    /// removes the downloads and what was made of them
+    CleanCache,
     /// shows the settings, one of them, sets or removes one
     Config {
         setting: Option<String>,
@@ -197,14 +199,25 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     };
 
     match command {
-        "build" | "idea" | "clean" => {
+        "build" | "idea" => {
             let script = script_or_default(&without_unknown_options(rest.to_vec(), &[])?)?;
 
             return Ok(match command {
                 "build" => Command::Build { script },
-                "idea" => Command::Idea { script },
-                _ => Command::Clean { script },
+                _ => Command::Idea { script },
             });
+        }
+        "clean" => {
+            // the cache belongs to no script
+            if rest.iter().any(|arg| arg == "--cache") {
+                return match rest {
+                    [_] => Ok(Command::CleanCache),
+                    _ => Err(wrong("clean --cache takes no script".to_string())),
+                };
+            }
+
+            let script = script_or_default(&without_unknown_options(rest.to_vec(), &["--cache"])?)?;
+            return Ok(Command::Clean { script });
         }
         "run" => {
             let (module, positional) = take_option(own, "--module").map_err(wrong)?;
@@ -402,7 +415,8 @@ fn help() -> String {
           tests do not stop the others, a summary of all of them follows; arguments
           after -- go to the test programs of C and C++ modules
   clean   removes the build directories build-script wrote below the script's
-          directory, the downloads stay
+          directory, the downloads stay; --cache removes the downloads and what was
+          made of them, the JDKs, SDKs and toolchains stay
   new     creates a project in a new directory: {}
   add     adds a module in a directory next to the script and its build call to the
           script: {}
@@ -543,6 +557,11 @@ fn main() {
         }
         Command::Clean { script } => {
             exit_on_error(project::clean(Path::new(script)));
+
+            return;
+        }
+        Command::CleanCache => {
+            exit_on_error(project::clean_cache());
 
             return;
         }
@@ -1074,6 +1093,8 @@ mod tests {
         );
 
         assert_eq!(parse(&["--help"]), Ok(Command::Help { command: None }));
+        assert_eq!(parse(&["clean", "--cache"]), Ok(Command::CleanCache));
+        assert!(parse(&["clean", "--cache", "app/project.build"]).is_err());
         assert!(parse(&["--verbose"]).is_err());
         assert!(parse(&["build", "a", "b"]).is_err());
         assert!(parse(&["run", "--module"]).is_err());

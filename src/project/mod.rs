@@ -320,6 +320,28 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
     return Ok(());
 }
 
+/// Removes the cache: the downloads of Maven, git and vcpkg and what was made of them, the next
+/// build downloads them again. The JDKs, SDKs and toolchains stay.
+pub fn clean_cache() -> Result<(), String> {
+    // without the slash of the empty name
+    let cache: PathBuf = system::cache_dir("").components().collect();
+    if !cache.is_dir() {
+        println!("Nothing to clean in {}", cache.display());
+        return Ok(());
+    }
+
+    let size: u64 = system::files_below(&[cache.clone()])
+        .iter()
+        .filter_map(|file| fs::symlink_metadata(file).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+
+    system::remove_dir(&cache)?;
+    println!("Removed {}, {}", cache.display(), system::format_size(size));
+
+    return Ok(());
+}
+
 /// The developer's domain new modules are named after: the remembered one, else asked
 /// in a terminal and offered to remember, else example.com
 pub fn domain() -> Result<String, String> {
