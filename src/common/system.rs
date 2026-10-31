@@ -510,8 +510,17 @@ pub fn http_get(url: &str, credentials: Option<&Credentials>) -> Result<(u16, St
 fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::http::Response<ureq::Body>, String> {
     // one client for every request: the connection to a repository stays open for its next files
     static CLIENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+        // a Linux without CA certificates, like a slim container, gets those of Mozilla build-script brings
+        #[cfg(target_os = "linux")]
+        let roots = match rustls_native_certs::load_native_certs().certs.is_empty() {
+            true => ureq::tls::RootCerts::WebPki,
+            false => ureq::tls::RootCerts::PlatformVerifier,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let roots = ureq::tls::RootCerts::PlatformVerifier;
+
         let tls = ureq::tls::TlsConfig::builder()
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .root_certs(roots)
             .build();
 
         return ureq::Agent::config_builder()

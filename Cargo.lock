@@ -31,6 +31,7 @@ dependencies = [
  "flate2",
  "lzma-rust2",
  "quick-xml",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha1",

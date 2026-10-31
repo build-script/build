@@ -15,3 +15,6 @@ sha2 = "0.11.1"
 tar = { version = "0.4.46", default-features = false }
 ureq = { version = "3.5.0", default-features = false, features = ["platform-verifier", "rustls"] }
 zip = { version = "9.2.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustls-native-certs = "0.8.5"
