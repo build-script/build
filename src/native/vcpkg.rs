@@ -349,6 +349,24 @@ fn pkg_config(names: &[String], pc_dir: &Path) -> (Vec<String>, Vec<String>) {
         visit_package(name, pc_dir, &mut visited, &mut cflags, &mut libs);
     }
 
+    // packages vcpkg did not install, like the x11 glfw3 requires on Linux, come from the system
+    let of_the_system: Vec<&String> = visited.iter()
+        .filter(|name| !pc_dir.join(format!("{name}.pc")).is_file())
+        .collect();
+
+    if !of_the_system.is_empty() && let Some(program) = system::find_program("pkg-config") {
+        let flags = |option: &str| -> Vec<String> {
+            let output = Command::new(&program).args(["--static", option]).args(&of_the_system).output();
+            return output.ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).split_whitespace().map(str::to_string).collect())
+                .unwrap_or_default();
+        };
+
+        cflags.extend(flags("--cflags"));
+        libs.extend(flags("--libs"));
+    }
+
     return (cflags, libs);
 }
 
@@ -442,7 +460,7 @@ mod tests {
         .unwrap();
         system::write_file(
             &pc_dir.join("spdlog.pc"),
-            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\nName: libspdlog\nCFlags: -DSPDLOG_FMT_EXTERNAL\nLibs: \"-L${libdir}\" -lspdlog -pthread\nLibs.private: -ldl\nRequires.private: fmt\n",
+            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\nName: libspdlog\nCFlags: -DSPDLOG_FMT_EXTERNAL\nLibs: \"-L${libdir}\" -lspdlog -pthread\nLibs.private: -ldl\nRequires.private: fmt build-script-no-package\n",
         )
         .unwrap();
 
