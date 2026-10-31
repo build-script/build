@@ -19,7 +19,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("build", "[<script>]"),
     ("idea", "idea [<script>]"),
     ("run", "run [--module <name>] [<script>] [-- <args>...]"),
-    ("test", "test [--module <name>] [<script>]"),
+    ("test", "test [--module <name>] [<script>] [-- <args>...]"),
     ("new", "new <kind> <path> [--package <package>]"),
     ("add", "add <kind> <name> [<script>] [--package <package>]"),
     ("install", "install <library> [<script>] [--module <name>] [<list>]"),
@@ -60,6 +60,7 @@ enum Command {
     Test {
         script: String,
         module: Option<String>,
+        args: Vec<String>,
     },
     /// a new project directory, like cargo new, what is missing is asked in the terminal
     New {
@@ -216,12 +217,13 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             });
         }
         "test" => {
-            let (module, positional) = take_option(rest, "--module").map_err(wrong)?;
+            let (module, positional) = take_option(own, "--module").map_err(wrong)?;
             let positional = without_unknown_options(positional, &["--module"])?;
 
             return Ok(Command::Test {
                 script: script_or_default(&positional)?,
                 module,
+                args: rest.get(own.len() + 1..).unwrap_or_default().to_vec(),
             });
         }
         "new" => {
@@ -397,7 +399,8 @@ fn help() -> String {
   run     builds, then starts a module: the last one with a main_class or the last
           Android app, or the one --module names; arguments after -- go to the program
   test    builds, then compiles and runs the tests of every module, or of one; failing
-          tests do not stop the others, a summary of all of them follows
+          tests do not stop the others, a summary of all of them follows; arguments
+          after -- go to the test programs of C and C++ modules
   clean   removes the build directories build-script wrote below the script's
           directory, the downloads stay
   new     creates a project in a new directory: {}
@@ -558,9 +561,14 @@ fn main() {
         _ => TestSelection::None,
     };
 
+    let test_arguments = match &command {
+        Command::Test { args, .. } => args.clone(),
+        _ => vec![],
+    };
+
     let jobs = options.jobs.unwrap_or_else(runtime::default_jobs);
     let set_up_idea = matches!(command, Command::Idea { .. });
-    let modules = run_script(script_path, tests, jobs, options.release, set_up_idea);
+    let modules = run_script(script_path, tests, test_arguments, jobs, options.release, set_up_idea);
 
     match &command {
         Command::Run { module, args, .. } => {
@@ -621,6 +629,7 @@ fn take_build_options(args: &[String]) -> Result<(BuildOptions, Vec<String>), St
 fn run_script(
     script_path: &str,
     tests: TestSelection,
+    test_arguments: Vec<String>,
     jobs: usize,
     release: bool,
     set_up_idea: bool,
@@ -663,6 +672,7 @@ fn run_script(
 
     let mut runtime = Runtime::new(project_dir.clone())
         .with_tests(tests)
+        .with_test_arguments(test_arguments)
         .with_jobs(jobs)
         .with_release(release)
         .with_idea(idea);
@@ -1042,14 +1052,16 @@ mod tests {
             parse(&["test", "app/project.build"]),
             Ok(Command::Test {
                 script: script.clone(),
-                module: None
+                module: None,
+                args: vec![]
             })
         );
         assert_eq!(
-            parse(&["test", "--module", "core", "app/project.build"]),
+            parse(&["test", "--module", "core", "app/project.build", "--", "--gtest_filter=Parser.*"]),
             Ok(Command::Test {
                 script,
-                module: Some("core".to_string())
+                module: Some("core".to_string()),
+                args: vec!["--gtest_filter=Parser.*".to_string()]
             }),
         );
 
@@ -1078,7 +1090,8 @@ mod tests {
             parse(&["test", "--module", "core"]),
             Ok(Command::Test {
                 script: default.clone(),
-                module: Some("core".to_string())
+                module: Some("core".to_string()),
+                args: vec![]
             })
         );
 

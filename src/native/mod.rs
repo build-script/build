@@ -86,7 +86,7 @@ struct TestSetup<'a> {
     main_flags: Vec<String>,
     /// patterns of test sources that are a program each
     programs: Vec<String>,
-    /// after those of the framework
+    /// after those of the framework, then those after `build test --`
     arguments: Vec<String>,
     timeout: Duration,
 }
@@ -484,7 +484,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
                 _ => vec![],
             },
             programs: args.get("test_programs")?,
-            arguments: args.get("test_arguments")?,
+            arguments: [args.get("test_arguments")?, context.test_arguments.clone()].concat(),
             timeout: Duration::from_secs(timeout as u64),
         };
 

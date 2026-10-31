@@ -38,6 +38,8 @@ pub struct BuildScriptContext {
     pub project_dir: PathBuf,
     /// modules that run their tests once they are built, `build test`
     pub tests: TestSelection,
+    /// after `build test --`, for the test programs of C and C++ modules, like --gtest_filter=Parser.*
+    pub test_arguments: Vec<String>,
     /// `build --release`: Android apps are built for release
     pub release: bool,
     /// modules write their module files for IntelliJ, see `build idea`
@@ -111,6 +113,7 @@ impl Runtime {
             context: BuildScriptContext {
                 project_dir,
                 tests: TestSelection::None,
+                test_arguments: vec![],
                 release: false,
                 idea: false,
             },
@@ -131,6 +134,11 @@ impl Runtime {
 
     pub fn with_tests(mut self, tests: TestSelection) -> Self {
         self.context.tests = tests;
+        return self;
+    }
+
+    pub fn with_test_arguments(mut self, arguments: Vec<String>) -> Self {
+        self.context.test_arguments = arguments;
         return self;
     }
 
