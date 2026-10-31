@@ -119,7 +119,7 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
 
         let tar_option = format!("--output={}", tar.display());
         system::run_command_quietly(&mut in_objects(&["archive", "--format=tar", &tar_option, &commit]), "git archive")?;
-        system::run_command_quietly(Command::new("tar").arg("-xf").arg(&tar).arg("-C").arg(&unpacked), "tar")?;
+        system::extract(&tar, &unpacked)?;
         fs::remove_file(&tar).map_err(|error| format!("could not delete {}: {error}", tar.display()))?;
 
         system::write_file(&unpacked.join(MARKER), &pinned)?;
