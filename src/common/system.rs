@@ -3,13 +3,15 @@ use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
@@ -350,87 +352,77 @@ pub fn download(
 ) -> Result<bool, String> {
     create_parent_dir(target)?;
 
-    // renamed once complete, nothing half downloaded stays behind
-    let partial = partial_path(target);
-    let mut command = Command::new("curl");
-    command.args([
-        "--show-error",
-        "--location",
-        "--retry",
-        "2",
-        "--write-out",
-        "%{http_code}",
-        "--output",
-    ])
-        .arg(&partial)
-        .arg(url)
-        .stdout(Stdio::piped());
+    let response = http_request(url, credentials)?;
+    let status = response.status().as_u16();
 
-    if show_progress {
-        command.arg("--progress-bar").stderr(Stdio::inherit());
-    } else {
-        command.arg("--silent").stderr(Stdio::piped());
-    }
-
-    // on stdin: arguments are visible to every process on the machine
-    match credentials {
-        Some(_) => command.args(["--config", "-"]).stdin(Stdio::piped()),
-        None => command.stdin(Stdio::null()),
-    };
-
-    let mut child = command.spawn()
-        .map_err(|error| format!("could not start curl: {error}"))?;
-
-    if let (Some(credentials), Some(mut stdin)) = (credentials, child.stdin.take()) {
-        let quoted = |value: &str| {
-            value.replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r")
-        };
-
-        let config = format!(
-            "user = \"{}:{}\"\n",
-            quoted(&credentials.username),
-            quoted(&credentials.password)
-        );
-
-        stdin.write_all(config.as_bytes())
-            .map_err(|error| format!("could not pass the credentials to curl: {error}"))?;
-    }
-
-    let output = child.wait_with_output()
-        .map_err(|error| format!("curl failed: {error}"))?;
-
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    if output.status.success() && status == "200" {
-        fs::rename(&partial, target)
-            .map_err(|error| format!("could not save {}: {error}", target.display()))?;
-        println!("Download {url}");
-
-        return Ok(true);
-    }
-
-    let _ = fs::remove_file(&partial);
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "download of {url} failed ({}) {stderr}",
-            output.status
-        ));
-    }
-
-    match (status.as_str(), credentials) {
-        ("404" | "410", _) => return Ok(false),
-        ("401" | "403", None) => return Err(format!("{url} needs credentials (HTTP {status})")),
-        ("401" | "403", Some(_)) => {
-            return Err(format!(
-                "{url} did not accept the credentials (HTTP {status})"
-            ));
-        }
+    match (status, credentials) {
+        (200, _) => {}
+        (404 | 410, _) => return Ok(false),
+        (401 | 403, None) => return Err(format!("{url} needs credentials (HTTP {status})")),
+        (401 | 403, Some(_)) => return Err(format!("{url} did not accept the credentials (HTTP {status})")),
         _ => return Err(format!("download of {url} failed: HTTP {status}")),
     }
+
+    // renamed once complete, nothing half downloaded stays behind
+    let partial = partial_path(target);
+    let body = response.into_body();
+    let size = body.content_length();
+    let name = target.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let progress = (show_progress && std::io::stderr().is_terminal()).then_some(name);
+
+    let mut reader = body.into_reader();
+    let written = fs::File::create(&partial).and_then(|mut file| copy_with_progress(&mut reader, &mut file, size, progress));
+
+    if let Err(error) = written {
+        let _ = fs::remove_file(&partial);
+        return Err(format!("download of {url} failed: {error}"));
+    }
+
+    fs::rename(&partial, target)
+        .map_err(|error| format!("could not save {}: {error}", target.display()))?;
+    println!("Download {url}");
+
+    return Ok(true);
+}
+
+/// Like io::copy, with the share copied behind the name of the file while it lasts
+fn copy_with_progress(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    size: Option<u64>,
+    progress: Option<String>,
+) -> std::io::Result<()> {
+    let mut buffer = vec![0; 1 << 16];
+    let mut copied: u64 = 0;
+    let mut shown = Instant::now();
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        writer.write_all(&buffer[..read])?;
+        copied += read as u64;
+
+        if let Some(name) = &progress && shown.elapsed() > Duration::from_millis(100) {
+            let line = match size {
+                Some(size) if size > 0 => format!("{name} {:>3}% of {} MB", copied * 100 / size, size / 1_000_000),
+                _ => format!("{name} {} MB", copied / 1_000_000),
+            };
+            eprint!("\r{line}\x1b[K");
+            shown = Instant::now();
+        }
+    }
+
+    if progress.is_some() {
+        eprint!("\r\x1b[K");
+    }
+
+    return Ok(());
 }
 
 /// `checksum`: the SHA bits (1 or 256) and the expected hex string. A file that does not match is deleted.
@@ -478,37 +470,61 @@ pub fn download_and_extract(
 
 /// The HTTP status and the body, also for error statuses
 pub fn http_get(url: &str) -> Result<(u16, String), String> {
-    let output = Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--location",
-            "--retry",
-            "2",
-            "--write-out",
-            "\n%{http_code}",
-        ])
-        .arg(url)
-        .output()
-        .map_err(|error| format!("could not start curl: {error}"))?;
+    let response = http_request(url, None)?;
+    let status = response.status().as_u16();
 
-    if !output.status.success() {
-        return Err(format!(
-            "request to {url} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    let mut body = String::new();
+    response.into_body()
+        .into_reader()
+        .read_to_string(&mut body)
+        .map_err(|error| format!("response from {url}: {error}"))?;
+
+    return Ok((status, body));
+}
+
+/// A GET, tried twice more when the connection fails or the server is busy, like with curl --retry 2.
+/// Proxies come from HTTPS_PROXY and the like, certificates are trusted when the system trusts them.
+fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::http::Response<ureq::Body>, String> {
+    // one client for every request: the connection to a repository stays open for its next files
+    static CLIENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+        let tls = ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .build();
+
+        return ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
+            .tls_config(tls)
+            .user_agent(format!("build-script/{}", env!("CARGO_PKG_VERSION")))
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .build()
+            .into();
+    });
+
+    let mut attempt = 0;
+
+    loop {
+        let mut request = CLIENT.get(url);
+
+        // like with curl, a redirect to another host does not get them
+        if let Some(credentials) = credentials {
+            let token = BASE64_STANDARD.encode(format!("{}:{}", credentials.username, credentials.password));
+            request = request.header("Authorization", format!("Basic {token}"));
+        }
+
+        let result = request.call();
+        let transient = match &result {
+            Ok(response) => matches!(response.status().as_u16(), 408 | 429 | 500..=599),
+            Err(error) => matches!(error, ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed),
+        };
+
+        if !transient || attempt == 2 {
+            return result.map_err(|error| format!("request to {url} failed: {error}"));
+        }
+
+        attempt += 1;
+        std::thread::sleep(Duration::from_secs(attempt));
     }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| format!("response from {url} is not UTF-8"))?;
-
-    let (body, status) = stdout.rsplit_once('\n').unwrap_or(("", &stdout));
-
-    let status = status.trim()
-        .parse()
-        .map_err(|_| format!("invalid HTTP status from {url}: '{status}'"))?;
-
-    return Ok((status, body.to_string()));
 }
 
 /// SHA-1 or SHA-256 of the file as hex
@@ -861,6 +877,51 @@ mod tests {
         assert_eq!(sha(&file, 1).unwrap(), "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(sha(&file, 256).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert!(sha(&file, 512).is_err());
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A server on this machine that answers one request after the other with these statuses, its
+    /// body is the request it got
+    fn serve(statuses: Vec<&'static str>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        std::thread::spawn(move || {
+            for status in statuses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = vec![0; 4096];
+                let read = stream.read(&mut request).unwrap();
+
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {read}\r\nConnection: close\r\n\r\n").unwrap();
+                stream.write_all(&request[..read]).unwrap();
+            }
+        });
+
+        return format!("http://{address}");
+    }
+
+    #[test]
+    fn downloads_tell_missing_files_and_missing_credentials_apart() {
+        let directory = scratch_dir("download");
+        let url = serve(vec!["200 OK", "404 Not Found", "401 Unauthorized", "200 OK"]);
+        let target = directory.join("file");
+        let credentials = Credentials {
+            username: "user".to_string(),
+            password: "secret".to_string(),
+        };
+
+        assert_eq!(download(&format!("{url}/file"), &target, false, Some(&credentials)), Ok(true));
+        let request = read_file(&target).unwrap();
+        assert!(request.starts_with("GET /file HTTP/1.1"));
+        assert!(request.lines().any(|line| line.trim_end().eq_ignore_ascii_case("authorization: Basic dXNlcjpzZWNyZXQ=")));
+
+        assert_eq!(download(&format!("{url}/missing"), &target, false, None), Ok(false));
+        assert!(download(&format!("{url}/private"), &target, false, None).is_err_and(|error| error.contains("needs credentials")));
+
+        let (status, body) = http_get(&format!("{url}/index.json")).unwrap();
+        assert_eq!(status, 200);
+        assert!(body.starts_with("GET /index.json"));
 
         fs::remove_dir_all(&directory).unwrap();
     }
