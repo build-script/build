@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::common::system;
 use crate::jvm;
 use crate::language::lexer::Span;
 use crate::language::parser::{
@@ -106,7 +107,7 @@ impl Runtime {
     pub fn new(project_dir: impl Into<PathBuf>) -> Self {
         // absolute, so paths such as the one returned by build_kotlin stay valid everywhere
         let project_dir = project_dir.into();
-        let project_dir = std::fs::canonicalize(&project_dir).unwrap_or(project_dir);
+        let project_dir = system::canonical_path(&project_dir).unwrap_or(project_dir);
 
         let mut runtime = Runtime {
             scope: Arc::new(Mutex::new(Scope::default())),
