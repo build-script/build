@@ -948,6 +948,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     fn home_a() -> BuildHomeEnvironment {
         return BuildHomeEnvironment {
             home: Some("/home/a".into()),
@@ -955,6 +956,7 @@ mod tests {
         };
     }
 
+    #[cfg(unix)]
     fn base_dirs(env: BuildHomeEnvironment) -> (PathBuf, PathBuf) {
         return (
             env.base_directory(BaseDirectory::Data),
