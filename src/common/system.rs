@@ -72,14 +72,20 @@ pub fn build_dir(module_dir: &Path) -> PathBuf {
     return build_dir;
 }
 
-/// A program by its path, or by its name in the PATH
+/// A program by its path, or by its name in the PATH. On Windows also <name>.exe.
 pub fn find_program(program: &str) -> Option<PathBuf> {
-    if program.contains('/') {
-        return Some(PathBuf::from(program)).filter(|path| path.is_file());
+    let names = [program.to_string(), format!("{program}{}", std::env::consts::EXE_SUFFIX)];
+
+    if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
+        return names.iter()
+            .map(PathBuf::from)
+            .find(|path| path.is_file());
     }
 
     let path = std::env::var_os("PATH")?;
-    return std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file());
+    return std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file());
 }
 
 /// The home of the user: HOME, on Windows USERPROFILE

@@ -25,7 +25,7 @@ pub fn generate(
         };
 
         let program = tools_dirs.iter()
-            .map(|dir| dir.join(tool))
+            .map(|dir| dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX)))
             .find(|program| program.is_file())
             .or_else(|| system::find_program(tool))
             .ok_or_else(|| format!("{tool} is in no tools directory of the dependencies nor in the PATH"))?;

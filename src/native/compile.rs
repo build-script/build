@@ -103,12 +103,17 @@ impl Compilation<'_> {
         return sources;
     }
 
-    /// Relative to the module directory, like the patterns
+    /// Relative to the module directory, like the patterns, with / on Windows too
     fn relative(&self, file: &Path) -> String {
-        return file.strip_prefix(self.module_dir)
+        let relative = file.strip_prefix(self.module_dir)
             .unwrap_or(file)
             .display()
             .to_string();
+
+        return match cfg!(windows) {
+            true => relative.replace('\\', "/"),
+            false => relative,
+        };
     }
 
     /// src/main.cpp becomes <objects>/src/main.cpp.o
@@ -293,14 +298,33 @@ pub fn output_is_up_to_date(output: &Path, depfile: &Path, line_file: &Path, lin
         return false;
     }
 
-    // output: input input ... with \ at the ends of continued lines
-    let depfile = depfile.replace("\\\n", " ");
+    return depfile_inputs(&depfile)
+        .iter()
+        .all(|input| modified(Path::new(input)).is_ok_and(|changed| changed <= built));
+}
+
+/// The inputs of a depfile, `output: input input ...`: \ escapes spaces in names and ends continued
+/// lines, $$ is a $. Paths of Windows keep their \, the : of their drive is followed by none.
+fn depfile_inputs(depfile: &str) -> Vec<String> {
     let inputs = depfile.split_once(": ")
         .map(|(_, inputs)| inputs)
         .unwrap_or("");
 
-    return inputs.split_whitespace()
-        .all(|input| modified(Path::new(input)).is_ok_and(|changed| changed <= built));
+    let mut names = vec![];
+    let mut name = String::new();
+    let mut characters = inputs.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        match (character, characters.peek()) {
+            ('\\', Some(' ')) | ('$', Some('$')) => name.push(characters.next().unwrap_or(character)),
+            ('\\', Some('\r' | '\n')) => {}
+            (' ' | '\t' | '\r' | '\n', _) => names.extend((!name.is_empty()).then(|| std::mem::take(&mut name))),
+            _ => name.push(character),
+        }
+    }
+
+    names.extend((!name.is_empty()).then_some(name));
+    return names;
 }
 
 /// `*` and `?` within a name, `**` for any directories: "src/**/*.cpp", "testes/**"
@@ -359,7 +383,7 @@ pub fn link(
 ) -> Result<(), String> {
     system::create_parent_dir(program)?;
 
-    let is_library = |flag: &String| flag.starts_with("-l") || flag.ends_with(".a");
+    let is_library = |flag: &String| flag.starts_with("-l") || flag.ends_with(".a") || flag.ends_with(".lib");
     let mut seen = HashSet::new();
     let mut flags: Vec<&String> = link_flags.iter()
         .rev()
@@ -386,7 +410,7 @@ pub fn link(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{matches_glob, source_roots};
+    use super::{depfile_inputs, matches_glob, source_roots};
 
     #[test]
     fn patterns_are_searched_below_their_roots() {
@@ -394,6 +418,15 @@ mod tests {
         let roots = source_roots(Path::new("/module"), &patterns);
 
         assert_eq!(roots, ["/module/src", "/module", "/module/examples"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn depfiles_name_inputs_with_spaces_and_drives() {
+        let depfile = "obj/main.cpp.o: src/main.cpp include/my\\ header.h \\\n  include/cost$$.h\n";
+        assert_eq!(depfile_inputs(depfile), ["src/main.cpp", "include/my header.h", "include/cost$.h"]);
+
+        let depfile = "D:\\a\\obj\\main.cpp.o: D:\\a\\src\\main.cpp \\\r\n  C:\\Program\\ Files\\x.h\r\n";
+        assert_eq!(depfile_inputs(depfile), ["D:\\a\\src\\main.cpp", "C:\\Program Files\\x.h"]);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod android;
 mod cmake;
 mod compile;
 mod configure;
+mod exports;
 mod tablegen;
 pub mod templates;
 mod toolchain;
@@ -178,11 +179,6 @@ fn signature(language: Language) -> FunctionSignature {
 /// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
-
-    if cfg!(windows) {
-        return Err(format!("{name}: C and C++ modules are not set up for Windows yet"));
-    }
-
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = system::build_dir(&directory);
     let program: bool = args.get("program")?;
@@ -351,10 +347,17 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let cpp = language == Language::Cpp || links_cpp(&dependencies.modules);
     let test_cpp = cpp || links_cpp(&test_dependencies.modules);
 
-    let shared_extension = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    // Windows loads a shared library from the directory of the program, <name>.lib links it
+    let windows = cfg!(windows);
+    let shared_name = match std::env::consts::OS {
+        "macos" => format!("lib{name}.dylib"),
+        "windows" => format!("{name}.dll"),
+        _ => format!("lib{name}.so"),
+    };
+    let shared_dir = build_dir.join(if windows { "bin" } else { "lib" });
 
-    // the shared libraries it loads lie next to its own in build/lib and are found relative to the program
-    // or library: build/ runs wherever it is copied
+    // the shared libraries it loads lie next to its own in build/lib, on Windows next to the programs in
+    // build/bin, and are found relative to the program or library: build/ runs wherever it is copied
     let shared_libraries: Vec<PathBuf> = BuiltModule::transitive(&[dependencies.modules.clone(), test_dependencies.modules.clone()].concat())
         .iter()
         .filter_map(|module| match &module.output {
@@ -363,16 +366,22 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         })
         .collect();
     let origin = if cfg!(target_os = "macos") { "@loader_path" } else { "$ORIGIN" };
-    let program_rpath = match shared_libraries.is_empty() && !shared {
+    let program_rpath = match (shared_libraries.is_empty() && !shared) || windows {
         true => vec![],
         false => vec![format!("-Wl,-rpath,{origin}/../lib")],
     };
 
     let artifact = match (program, header_only, shared) {
-        (true, ..) => build_dir.join("bin").join(&name),
+        (true, ..) => build_dir.join("bin").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         (false, true, _) => include_dirs.first().cloned().unwrap_or(directory.clone()),
-        (false, false, true) => build_dir.join("lib").join(format!("lib{name}.{shared_extension}")),
-        (false, false, false) => build_dir.join("lib").join(format!("lib{name}.a")),
+        (false, false, true) => shared_dir.join(&shared_name),
+        (false, false, false) => build_dir.join("lib").join(if windows { format!("{name}.lib") } else { format!("lib{name}.a") }),
+    };
+
+    // what links it, of a shared library on Windows its import library
+    let linked = match shared && windows {
+        true => build_dir.join("lib").join(format!("{name}.lib")),
+        false => artifact.clone(),
     };
 
     // every build checks every source, a source compiles again when it or one of its headers changed
@@ -393,7 +402,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // the headers need not be there: a module of only tests has none
     let outputs: Vec<&Path> = match header_only {
         true => vec![&compile_commands],
-        false => vec![&artifact, &compile_commands],
+        false => vec![&artifact, &linked, &compile_commands],
     };
 
     if !compiled && fingerprint.is_up_to_date(&outputs)? {
@@ -403,13 +412,29 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             (true, ..) => compile::link(&toolchain, cpp, &objects, &[link_flags.clone(), program_rpath.clone()].concat(), &artifact)?,
             (false, true, _) => {}
             (false, false, true) => {
-                // what loads it finds it by its rpath, it finds those it loads next to it
-                let library_name = format!("lib{name}.{shared_extension}");
-                let mut shared_flags = match cfg!(target_os = "macos") {
-                    true => vec!["-shared".to_string(), "-install_name".to_string(), format!("@rpath/{library_name}")],
-                    false => vec!["-shared".to_string(), format!("-Wl,-soname,{library_name}")],
-                };
-                shared_flags.extend((!shared_libraries.is_empty()).then(|| format!("-Wl,-rpath,{origin}")));
+                // what loads it finds it by its rpath, it finds those it loads next to it. Windows exports
+                // what a .def file names, zig takes it like a source.
+                let mut shared_flags = vec!["-shared".to_string()];
+
+                match std::env::consts::OS {
+                    "macos" => shared_flags.extend(["-install_name".to_string(), format!("@rpath/{shared_name}")]),
+                    "windows" => {
+                        let def_file = objects_dir.join(format!("{name}.def"));
+                        exports::write_def_file(&objects, &def_file)?;
+                        system::create_parent_dir(&linked)?;
+
+                        match toolchain.zig {
+                            true => shared_flags.extend([def_file.display().to_string(), format!("-Wl,--out-implib,{}", linked.display())]),
+                            false => shared_flags.extend([format!("-Wl,-def:{}", def_file.display()), format!("-Wl,-implib:{}", linked.display())]),
+                        }
+                    }
+                    _ => shared_flags.push(format!("-Wl,-soname,{shared_name}")),
+                }
+
+                if !shared_libraries.is_empty() && !windows {
+                    shared_flags.push(format!("-Wl,-rpath,{origin}"));
+                }
+
                 compile::link(&toolchain, cpp, &objects, &[shared_flags, link_flags.clone()].concat(), &artifact)?;
             }
             (false, false, false) => compile::archive(&toolchain, &objects, &artifact)?,
@@ -438,10 +463,10 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     }
 
     for library in &shared_libraries {
-        let copy = build_dir.join("lib").join(library.file_name().unwrap_or_default());
+        let copy = shared_dir.join(library.file_name().unwrap_or_default());
         let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
 
-        // modules in one directory share build/lib
+        // modules in one directory share build/lib and build/bin
         if copy != *library && modified(&copy) < modified(library) {
             system::copy_file(library, &copy)?;
         }
@@ -467,7 +492,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let mut tests = vec![];
 
     if context.tests.includes(&name) {
-        let library = (!program && !header_only).then_some(artifact.as_path());
+        let library = (!program && !header_only).then_some(linked.as_path());
         let link_flags = [link_flags.clone(), test_link_flags, program_rpath].concat();
         let ports = &test_dependencies.ports;
         let framework = TEST_FRAMEWORKS.iter().find(|(port, ..)| ports.iter().any(|known| vcpkg::port_and_features(known).0 == *port));
@@ -501,8 +526,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // has what it needs inside
     match (program || header_only, shared) {
         (true, _) => {}
-        (false, true) => link_flags = vec![artifact.display().to_string()],
-        (false, false) => link_flags.insert(0, artifact.display().to_string()),
+        (false, true) => link_flags = vec![linked.display().to_string()],
+        (false, false) => link_flags.insert(0, linked.display().to_string()),
     }
 
     return Ok(Value::from(Arc::new(BuiltModule {
@@ -647,7 +672,7 @@ fn test_program(
     setup: &TestSetup,
 ) -> Result<ModuleTests, String> {
     let build_dir = system::build_dir(module.module_dir);
-    let executable = build_dir.join("bin").join(program);
+    let executable = build_dir.join("bin").join(format!("{program}{}", std::env::consts::EXE_SUFFIX));
 
     let mut fingerprint = InputFingerprint::new(build_dir.join("fingerprints").join("tests").join(program));
     fingerprint.add(link_flags);
