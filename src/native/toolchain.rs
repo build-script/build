@@ -143,7 +143,7 @@ fn clang_dir() -> Option<PathBuf> {
 /// zig from ziglang.org into <build home>/zig/<version>, checked against the SHA-256 of its index
 fn install_zig() -> Result<PathBuf, String> {
     let target = system::data_dir("zig").join(ZIG_VERSION);
-    let zig = target.join("zig");
+    let zig = target.join(format!("zig{}", std::env::consts::EXE_SUFFIX));
 
     return system::installing(|| {
         if zig.is_file() {
@@ -155,7 +155,8 @@ fn install_zig() -> Result<PathBuf, String> {
             (HostOperatingSystem::MacOs, HostArchitecture::X86_64) => "x86_64-macos",
             (HostOperatingSystem::Linux, HostArchitecture::Aarch64) => "aarch64-linux",
             (HostOperatingSystem::Linux, HostArchitecture::X86_64) => "x86_64-linux",
-            (HostOperatingSystem::Windows, _) => return Err("zig is not set up for Windows".into()),
+            (HostOperatingSystem::Windows, HostArchitecture::Aarch64) => "aarch64-windows",
+            (HostOperatingSystem::Windows, HostArchitecture::X86_64) => "x86_64-windows",
         };
 
         let (status, body) = system::http_get("https://ziglang.org/download/index.json", None)?;
@@ -175,7 +176,8 @@ fn install_zig() -> Result<PathBuf, String> {
 
         system::log_tool("zig", &format!("Installing zig {ZIG_VERSION}"));
         let unpacked = system::data_dir("zig").join(format!("{ZIG_VERSION}.unpacked"));
-        let archive = target.with_extension("tar.xz");
+        // a zip on Windows
+        let archive = target.with_extension(if cfg!(windows) { "zip" } else { "tar.xz" });
         system::download_and_extract(url, &archive, Some((256, sha256)), &unpacked)?;
 
         // the archive holds one directory, zig-<host>-<version>
