@@ -74,7 +74,7 @@ impl Toolchain {
 
     /// The program with its arguments. On Windows a command line has at most 32767 characters, the flags of
     /// abseil are more: then the arguments go into the response file, which clang and llvm-ar read like
-    /// their command line.
+    /// their command line. Quoted like for a shell: llvm-ar would take those of Windows.
     pub fn command_with_arguments(&self, program: &[String], arguments: &[String], response_file: &Path) -> Result<Command, String> {
         let length: usize = arguments.iter()
             .map(|argument| argument.len() + 3)
@@ -87,12 +87,13 @@ impl Toolchain {
         }
 
         let quoted: Vec<String> = arguments.iter()
-            .map(|argument| windows_quoted(argument))
+            .map(|argument| format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\"")))
             .collect();
         system::write_file(response_file, &quoted.join("\n"))?;
 
         let mut command = self.command(program);
-        command.arg(format!("@{}", response_file.display()));
+        command.arg("--rsp-quoting=posix")
+            .arg(format!("@{}", response_file.display()));
         return Ok(command);
     }
 
@@ -114,29 +115,6 @@ impl Toolchain {
             })
             .clone();
     }
-}
-
-/// In quotes like on the command line of Windows: a \ stays, those before a " double
-fn windows_quoted(argument: &str) -> String {
-    let mut quoted = String::from("\"");
-    let mut backslashes = 0;
-
-    for character in argument.chars() {
-        match character {
-            '\\' => backslashes += 1,
-            '"' => {
-                quoted.push_str(&"\\".repeat(backslashes + 1));
-                backslashes = 0;
-            }
-            _ => backslashes = 0,
-        }
-
-        quoted.push(character);
-    }
-
-    quoted.push_str(&"\\".repeat(backslashes));
-    quoted.push('"');
-    return quoted;
 }
 
 /// The C compiler, the C++ compiler and the archiver of the system. Windows has no cc: there clang, with
@@ -241,16 +219,4 @@ fn install_zig() -> Result<PathBuf, String> {
 
         return Ok(zig.clone());
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::windows_quoted;
-
-    #[test]
-    fn response_files_quote_like_the_command_line_of_windows() {
-        assert_eq!(windows_quoted(r"-IC:\Program Files\include"), r#""-IC:\Program Files\include""#);
-        assert_eq!(windows_quoted(r#"-DNAME="value""#), r#""-DNAME=\"value\"""#);
-        assert_eq!(windows_quoted(r"C:\dir\"), r#""C:\dir\\""#);
-    }
 }
