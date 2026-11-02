@@ -447,8 +447,21 @@ fn visit_package(
     }
 
     // a package links before what it requires
-    cflags.extend(words("cflags"));
+    cflags.extend(words("cflags").into_iter().filter_map(gnu_style));
     libs.splice(0..0, [words("libs"), words("libs.private")].concat());
+}
+
+/// A compile flag for clang. On Windows the .pc files of ports like abseil have those of MSVC: /D, /U and
+/// /I become -D, -U and -I, the others are of MSVC only, like /W3 and /wd4005.
+fn gnu_style(flag: String) -> Option<String> {
+    if !cfg!(windows) || !flag.starts_with('/') {
+        return Some(flag);
+    }
+
+    match flag.get(1..2) {
+        Some("D" | "U" | "I") => return Some(format!("-{}", &flag[1..])),
+        _ => return None,
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +475,20 @@ mod tests {
 
         assert_eq!(port_and_features("llvm[clang, lld]"), ("llvm", vec!["clang", "lld"]));
         assert_eq!(port_and_features("fmt"), ("fmt", vec![]));
+    }
+
+    #[test]
+    fn flags_of_msvc_become_those_of_clang_on_windows() {
+        let flags = ["/DNOMINMAX", "/wd4005", "/bigobj", "-DSPDLOG_FMT_EXTERNAL"].map(String::from);
+        let converted: Vec<String> = flags.iter()
+            .cloned()
+            .filter_map(gnu_style)
+            .collect();
+
+        match cfg!(windows) {
+            true => assert_eq!(converted, ["-DNOMINMAX", "-DSPDLOG_FMT_EXTERNAL"]),
+            false => assert_eq!(converted, flags),
+        }
     }
 
     #[test]
