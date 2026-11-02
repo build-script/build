@@ -733,7 +733,7 @@ fn run_script(
     if set_up_idea && worked.is_some() {
         println!(
             "Open {} in IntelliJ. A JDK it does not know yet, like temurin-21, is in {}: add it under Project Structure > SDKs with that name.",
-            std::fs::canonicalize(&project_dir)
+            common::system::canonical_path(&project_dir)
                 .unwrap_or(project_dir)
                 .display(),
             common::system::data_dir("jdks").display()

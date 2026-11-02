@@ -360,6 +360,20 @@ pub fn run_command_within(command: &mut Command, what: &str, timeout: Duration) 
     }
 }
 
+/// The absolute path without links. On Windows without the \\?\ that canonicalize puts in front of
+/// drive paths, Java and the tools of the Android SDK do not understand it.
+pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = fs::canonicalize(path)?;
+
+    if let Some(drive_path) = canonical.to_str().and_then(|text| text.strip_prefix(r"\\?\"))
+        && !drive_path.starts_with(r"UNC\")
+    {
+        return Ok(PathBuf::from(drive_path));
+    }
+
+    return Ok(canonical);
+}
+
 /// For servers that want a user name and password. No Debug, the password must not end up in a log.
 pub struct Credentials {
     pub username: String,
