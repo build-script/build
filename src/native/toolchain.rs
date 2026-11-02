@@ -213,6 +213,8 @@ fn install_zig() -> Result<PathBuf, String> {
             .ok_or("the zig archive is empty")?
             .path();
 
+        // what an interrupted install left
+        system::remove_dir(&target)?;
         fs::rename(&inner, &target)
             .map_err(|error| format!("could not move {}: {error}", inner.display()))?;
         system::remove_dir(&unpacked)?;
