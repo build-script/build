@@ -2,7 +2,7 @@
 // libc++ for every target in one download
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
@@ -17,6 +17,8 @@ static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new
 pub struct Toolchain {
     /// vcpkg builds the ports with zig too
     pub zig: bool,
+    /// builds for Windows: programs link its libraries
+    pub windows: bool,
     pub c_compiler: Vec<String>,
     pub cpp_compiler: Vec<String>,
     pub archiver: Vec<String>,
@@ -25,17 +27,20 @@ pub struct Toolchain {
 }
 
 impl Toolchain {
-    /// "system": cc, c++ and ar of the system, or those CC, CXX and AR name, like make takes them.
-    /// "zig": zig cc, zig c++ and zig ar.
+    /// "system": cc, c++ and ar of the system, on Windows clang, clang++ and llvm-ar, or those CC, CXX
+    /// and AR name, like make takes them. "zig": zig cc, zig c++ and zig ar.
     pub fn named(name: &str) -> Result<Self, String> {
         let from_environment = |variable: &str, default: &str| vec![std::env::var(variable).unwrap_or(default.to_string())];
 
         if name == "system" {
+            let [c_compiler, cpp_compiler, archiver] = system_compilers()?;
+
             return Ok(Toolchain {
                 zig: false,
-                c_compiler: from_environment("CC", "cc"),
-                cpp_compiler: from_environment("CXX", "c++"),
-                archiver: from_environment("AR", "ar"),
+                windows: cfg!(windows),
+                c_compiler: from_environment("CC", &c_compiler),
+                cpp_compiler: from_environment("CXX", &cpp_compiler),
+                archiver: from_environment("AR", &archiver),
                 environment: vec![],
             });
         }
@@ -48,6 +53,7 @@ impl Toolchain {
 
         return Ok(Toolchain {
             zig: true,
+            windows: cfg!(windows),
             c_compiler: vec![zig.clone(), "cc".to_string()],
             cpp_compiler: vec![zig.clone(), "c++".to_string()],
             archiver: vec![zig, "ar".to_string()],
@@ -84,6 +90,54 @@ impl Toolchain {
             })
             .clone();
     }
+}
+
+/// The C compiler, the C++ compiler and the archiver of the system. Windows has no cc: there clang, with
+/// the ABI of MSVC, it links with the C library and the linker of Visual Studio.
+pub fn system_compilers() -> Result<[String; 3], String> {
+    if !cfg!(windows) {
+        return Ok(["cc", "c++", "ar"].map(String::from));
+    }
+
+    match clang_dir() {
+        Some(bin) => return Ok(["clang", "clang++", "llvm-ar"].map(|tool| bin.join(format!("{tool}.exe")).display().to_string())),
+        // the compilers CC and CXX name need none
+        None if std::env::var_os("CC").is_some() && std::env::var_os("CXX").is_some() => {
+            return Ok(["clang", "clang++", "llvm-ar"].map(String::from));
+        }
+        None => {
+            return Err("C and C++ build with clang on Windows: install LLVM, like with winget install LLVM.LLVM, or the C++ Clang tools of Visual Studio. CC and CXX name other compilers".into());
+        }
+    }
+}
+
+/// The directory of clang on Windows: of the PATH, of LLVM or of Visual Studio
+fn clang_dir() -> Option<PathBuf> {
+    if let Some(clang) = system::find_program("clang") {
+        return clang.parent().map(Path::to_path_buf);
+    }
+
+    let llvm = PathBuf::from(std::env::var_os("ProgramFiles")?).join(r"LLVM\bin");
+
+    if llvm.join("clang.exe").is_file() {
+        return Some(llvm);
+    }
+
+    // the C++ Clang tools of Visual Studio
+    let vswhere = PathBuf::from(std::env::var_os("ProgramFiles(x86)")?).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+    let architecture = if cfg!(target_arch = "aarch64") { "ARM64" } else { "x64" };
+    let output = Command::new(vswhere)
+        .args(["-latest", "-products", "*", "-find"])
+        .arg(format!(r"VC\Tools\Llvm\{architecture}\bin\clang.exe"))
+        .output()
+        .ok()?;
+    let clang = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().next()?.trim());
+
+    if !clang.is_file() {
+        return None;
+    }
+
+    return clang.parent().map(Path::to_path_buf);
 }
 
 /// zig from ziglang.org into <build home>/zig/<version>, checked against the SHA-256 of its index

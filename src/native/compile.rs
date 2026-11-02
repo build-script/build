@@ -15,6 +15,9 @@ static RUNNING: Mutex<usize> = Mutex::new(0);
 static FINISHED: Condvar = Condvar::new();
 static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
 
+/// What CMake and Visual Studio link every program of Windows with
+const WINDOWS_LIBRARIES: &[&str] = &["kernel32", "user32", "gdi32", "winspool", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "advapi32"];
+
 /// What a module is written in: build_c takes .c files, build_cpp also .cc, .cpp and .cxx
 #[derive(Debug, Clone, Copy, PartialEq, Hash)]
 pub enum Language {
@@ -103,12 +106,17 @@ impl Compilation<'_> {
         return sources;
     }
 
-    /// Relative to the module directory, like the patterns
+    /// Relative to the module directory, like the patterns, with / on Windows too
     fn relative(&self, file: &Path) -> String {
-        return file.strip_prefix(self.module_dir)
+        let relative = file.strip_prefix(self.module_dir)
             .unwrap_or(file)
             .display()
             .to_string();
+
+        return match cfg!(windows) {
+            true => relative.replace('\\', "/"),
+            false => relative,
+        };
     }
 
     /// src/main.cpp becomes <objects>/src/main.cpp.o
@@ -378,7 +386,7 @@ pub fn link(
 ) -> Result<(), String> {
     system::create_parent_dir(program)?;
 
-    let is_library = |flag: &String| flag.starts_with("-l") || flag.ends_with(".a");
+    let is_library = |flag: &String| flag.starts_with("-l") || flag.ends_with(".a") || flag.ends_with(".lib");
     let mut seen = HashSet::new();
     let mut flags: Vec<&String> = link_flags.iter()
         .rev()
@@ -396,6 +404,16 @@ pub fn link(
     // the C++ standard library brings the math library along, on macOS libSystem has it
     if !cpp && cfg!(target_os = "linux") {
         command.arg("-lm");
+    }
+
+    // like CMake and Visual Studio every program links the libraries of Windows. link.exe takes a program
+    // for the console only by a main() among the objects, that of gtest_main is in a library.
+    if toolchain.windows {
+        command.args(WINDOWS_LIBRARIES.iter().map(|library| format!("-l{library}")));
+    }
+
+    if toolchain.windows && !toolchain.zig && program.extension().is_some_and(|extension| extension == "exe") {
+        command.arg("-Wl,-subsystem:console");
     }
 
     return system::run_command_in_one_piece(&mut command, "linking");

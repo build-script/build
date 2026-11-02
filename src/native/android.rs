@@ -64,6 +64,7 @@ pub fn build(
         let target = format!("--target={target}{min_sdk}");
         let toolchain = Toolchain {
             zig: false,
+            windows: false,
             c_compiler: vec![bin.join("clang").display().to_string(), target.clone()],
             cpp_compiler: vec![bin.join("clang++").display().to_string(), target],
             archiver: vec![bin.join("llvm-ar").display().to_string()],

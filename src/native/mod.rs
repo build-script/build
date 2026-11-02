@@ -175,14 +175,10 @@ fn signature(language: Language) -> FunctionSignature {
     return parameters.returns(Type::Module);
 }
 
-/// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>
+/// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>.
+/// On Windows build/lib/<name>.lib and build/bin/<name>.exe.
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
-
-    if cfg!(windows) {
-        return Err(format!("{name}: C and C++ modules are not set up for Windows yet"));
-    }
-
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = system::build_dir(&directory);
     let program: bool = args.get("program")?;
@@ -192,6 +188,11 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     if program && shared {
         return Err(format!("{name}: shared is for libraries, a program is one already"));
+    }
+
+    // Windows exports only what is marked, shared libraries need more there
+    if shared && cfg!(windows) {
+        return Err(format!("{name}: shared libraries are not set up for Windows yet"));
     }
 
     let module_paths = |parameter: &str| -> Result<Vec<PathBuf>, String> {
@@ -351,6 +352,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let cpp = language == Language::Cpp || links_cpp(&dependencies.modules);
     let test_cpp = cpp || links_cpp(&test_dependencies.modules);
 
+    // Windows names programs <name>.exe and libraries <name>.lib
+    let windows = cfg!(windows);
     let shared_extension = if cfg!(target_os = "macos") { "dylib" } else { "so" };
 
     // the shared libraries it loads lie next to its own in build/lib and are found relative to the program
@@ -369,10 +372,10 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     };
 
     let artifact = match (program, header_only, shared) {
-        (true, ..) => build_dir.join("bin").join(&name),
+        (true, ..) => build_dir.join("bin").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
         (false, true, _) => include_dirs.first().cloned().unwrap_or(directory.clone()),
         (false, false, true) => build_dir.join("lib").join(format!("lib{name}.{shared_extension}")),
-        (false, false, false) => build_dir.join("lib").join(format!("lib{name}.a")),
+        (false, false, false) => build_dir.join("lib").join(if windows { format!("{name}.lib") } else { format!("lib{name}.a") }),
     };
 
     // every build checks every source, a source compiles again when it or one of its headers changed
@@ -647,7 +650,7 @@ fn test_program(
     setup: &TestSetup,
 ) -> Result<ModuleTests, String> {
     let build_dir = system::build_dir(module.module_dir);
-    let executable = build_dir.join("bin").join(program);
+    let executable = build_dir.join("bin").join(format!("{program}{}", std::env::consts::EXE_SUFFIX));
 
     let mut fingerprint = InputFingerprint::new(build_dir.join("fingerprints").join("tests").join(program));
     fingerprint.add(link_flags);
