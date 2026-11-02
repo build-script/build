@@ -15,6 +15,9 @@ static RUNNING: Mutex<usize> = Mutex::new(0);
 static FINISHED: Condvar = Condvar::new();
 static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
 
+/// What CMake and Visual Studio link every program of Windows with
+const WINDOWS_LIBRARIES: &[&str] = &["kernel32", "user32", "gdi32", "winspool", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "advapi32"];
+
 /// What a module is written in: build_c takes .c files, build_cpp also .cc, .cpp and .cxx
 #[derive(Debug, Clone, Copy, PartialEq, Hash)]
 pub enum Language {
@@ -198,17 +201,19 @@ impl Compilation<'_> {
         let line = self.command_line(source);
         system::create_parent_dir(&object)?;
 
-        // relative paths in the flags count from the module, like in compile_commands.json
-        let mut command = self.toolchain.command(&line);
-        command.current_dir(self.module_dir);
-        command.arg("-MMD")
-            .arg("-MF")
-            .arg(object.with_extension("o.d"));
+        let c_source = source.extension().is_some_and(|extension| extension == "c");
+        let compiler = if c_source { &self.toolchain.c_compiler } else { &self.toolchain.cpp_compiler };
+        let mut arguments = line[compiler.len()..].to_vec();
+        arguments.extend(["-MMD".to_string(), "-MF".to_string(), object.with_extension("o.d").display().to_string()]);
 
         // the output goes through a pipe, the compiler would leave out its colors
         if terminal::colors() {
-            command.arg("-fdiagnostics-color=always");
+            arguments.push("-fdiagnostics-color=always".to_string());
         }
+
+        // relative paths in the flags count from the module, like in compile_commands.json
+        let mut command = self.toolchain.command_with_arguments(compiler, &arguments, &object.with_extension("o.rsp"))?;
+        command.current_dir(self.module_dir);
 
         let _compiler = Compiler::start();
         system::run_command_in_one_piece(&mut command, &format!("compiling {}", source.display()))?;
@@ -363,11 +368,11 @@ pub fn archive(toolchain: &Toolchain, objects: &[PathBuf], library: &Path) -> Re
     system::create_parent_dir(library)?;
     let _ = fs::remove_file(library);
 
-    let mut command = toolchain.command(&toolchain.archiver);
-    command.arg("rcs")
-        .arg(library)
-        .args(objects);
+    let mut arguments = vec!["rcs".to_string(), library.display().to_string()];
+    arguments.extend(objects.iter().map(|object| object.display().to_string()));
 
+    let response_file = PathBuf::from(format!("{}.rsp", library.display()));
+    let mut command = toolchain.command_with_arguments(&toolchain.archiver, &arguments, &response_file)?;
     return system::run_command_in_one_piece(&mut command, "archiving");
 }
 
@@ -391,18 +396,30 @@ pub fn link(
         .collect();
     flags.reverse();
 
-    let linker = if cpp { &toolchain.cpp_compiler } else { &toolchain.c_compiler };
-    let mut command = toolchain.command(linker);
-    command.args(objects)
-        .args(flags)
-        .arg("-o")
-        .arg(program);
+    let mut arguments: Vec<String> = objects.iter()
+        .map(|object| object.display().to_string())
+        .collect();
+    arguments.extend(flags.into_iter().cloned());
+    arguments.extend(["-o".to_string(), program.display().to_string()]);
 
     // the C++ standard library brings the math library along, on macOS libSystem has it
     if !cpp && cfg!(target_os = "linux") {
-        command.arg("-lm");
+        arguments.push("-lm".to_string());
     }
 
+    // like CMake and Visual Studio every program links the libraries of Windows. link.exe takes a program
+    // for the console only by a main() among the objects, that of gtest_main is in a library.
+    if toolchain.windows {
+        arguments.extend(WINDOWS_LIBRARIES.iter().map(|library| format!("-l{library}")));
+    }
+
+    if toolchain.windows && !toolchain.zig && program.extension().is_some_and(|extension| extension == "exe") {
+        arguments.push("-Wl,-subsystem:console".to_string());
+    }
+
+    let linker = if cpp { &toolchain.cpp_compiler } else { &toolchain.c_compiler };
+    let response_file = PathBuf::from(format!("{}.rsp", program.display()));
+    let mut command = toolchain.command_with_arguments(linker, &arguments, &response_file)?;
     return system::run_command_in_one_piece(&mut command, "linking");
 }
 

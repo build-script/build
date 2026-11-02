@@ -176,7 +176,8 @@ fn signature(language: Language) -> FunctionSignature {
     return parameters.returns(Type::Module);
 }
 
-/// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>
+/// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>.
+/// On Windows build/lib/<name>.lib, build/bin/<name>.dll and build/bin/<name>.exe.
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
     let name: String = args.get("name")?;
     let directory = context.project_dir.join(args.get::<String>("directory")?);

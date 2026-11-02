@@ -65,6 +65,7 @@ pub fn build(
         let tool = |name: &str| bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).display().to_string();
         let toolchain = Toolchain {
             zig: false,
+            windows: false,
             c_compiler: vec![tool("clang"), target.clone()],
             cpp_compiler: vec![tool("clang++"), target],
             archiver: vec![tool("llvm-ar")],

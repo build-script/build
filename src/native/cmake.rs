@@ -112,8 +112,9 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
                 .arg("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded")
                 .arg("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW");
 
+            // CMake reads a \ in a path as an escape
             if resource_compiler.is_file() {
-                configure.arg(format!("-DCMAKE_RC_COMPILER={}", resource_compiler.display()));
+                configure.arg(format!("-DCMAKE_RC_COMPILER={}", resource_compiler.display().to_string().replace('\\', "/")));
             }
         }
 
