@@ -17,7 +17,7 @@ static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new
 pub struct Toolchain {
     /// vcpkg builds the ports with zig too
     pub zig: bool,
-    /// builds for Windows: programs link its libraries
+    /// builds for Windows: shared libraries export through a .def file, programs link its libraries
     pub windows: bool,
     pub c_compiler: Vec<String>,
     pub cpp_compiler: Vec<String>,
