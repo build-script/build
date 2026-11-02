@@ -1,0 +1,88 @@
+# A tag v<version> builds build-script for every platform and publishes the archives as the release
+# of that tag, with their SHA-256. The version of the tag has to be the one in Cargo.toml.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl: one static program for every distribution, the slim ones too
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag $GITHUB_REF_NAME is not v$version of Cargo.toml"
+            exit 1
+          fi
+
+      - name: musl
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get install -q -y musl-tools
+
+      - name: build-script
+        shell: bash
+        run: |
+          rustup update stable --no-self-update
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      # the command is build, Cargo can not name it so, see README.md. Without the version in the name
+      # releases/latest/download/ finds it.
+      - name: Archive
+        shell: bash
+        run: |
+          name=build-script-${{ matrix.target }}
+          mkdir $name
+          cp LICENSE README.md $name/
+
+          if [[ ${{ matrix.target }} == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/build-script.exe $name/build.exe
+            7z a -tzip -bso0 $name.zip $name
+          else
+            cp target/${{ matrix.target }}/release/build-script $name/build
+            tar czf $name.tar.gz $name
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            build-script-*.tar.gz
+            build-script-*.zip
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum build-script-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes build-script-* SHA256SUMS

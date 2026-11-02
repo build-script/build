@@ -492,8 +492,8 @@ pub fn download_and_extract(
 }
 
 /// The HTTP status and the body, also for error statuses
-pub fn http_get(url: &str) -> Result<(u16, String), String> {
-    let response = http_request(url, None)?;
+pub fn http_get(url: &str, credentials: Option<&Credentials>) -> Result<(u16, String), String> {
+    let response = http_request(url, credentials)?;
     let status = response.status().as_u16();
 
     let mut body = String::new();
@@ -510,8 +510,17 @@ pub fn http_get(url: &str) -> Result<(u16, String), String> {
 fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::http::Response<ureq::Body>, String> {
     // one client for every request: the connection to a repository stays open for its next files
     static CLIENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+        // a Linux without CA certificates, like a slim container, gets those of Mozilla build-script brings
+        #[cfg(target_os = "linux")]
+        let roots = match rustls_native_certs::load_native_certs().certs.is_empty() {
+            true => ureq::tls::RootCerts::WebPki,
+            false => ureq::tls::RootCerts::PlatformVerifier,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let roots = ureq::tls::RootCerts::PlatformVerifier;
+
         let tls = ureq::tls::TlsConfig::builder()
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .root_certs(roots)
             .build();
 
         return ureq::Agent::config_builder()
@@ -520,6 +529,7 @@ fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::ht
             .tls_config(tls)
             .user_agent(format!("build-script/{}", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
             .build()
             .into();
     });
@@ -766,10 +776,41 @@ pub fn kept_in_cache(
 }
 
 /// Where `path` is written before it is complete and renamed. A new one each
-/// call: modules building at the same time may write the same file.
+/// call: modules building at the same time may write the same file. Those of builds
+/// that stopped half way, unchanged for an hour, are removed.
 pub fn partial_path(path: &Path) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let next = NEXT.fetch_add(1, Ordering::Relaxed);
+
+    let name = path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let prefix = format!("{name}.partial-");
+    let entries = path.parent()
+        .and_then(|parent| fs::read_dir(parent).ok())
+        .into_iter()
+        .flatten()
+        .flatten();
+
+    for entry in entries {
+        let abandoned = entry.metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > Duration::from_secs(3600)));
+
+        let name = entry.file_name();
+        if !abandoned || !name.to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+
+        match entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            true => {
+                let _ = remove_dir(&entry.path());
+            }
+            false => {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
 
     return PathBuf::from(format!(
         "{}.partial-{}-{next}",
@@ -1084,6 +1125,36 @@ mod tests {
     }
 
     #[test]
+    fn partial_files_of_stopped_builds_are_removed() {
+        let directory = scratch_dir("partial");
+        let target = directory.join("library.jar");
+        let abandoned = directory.join("library.jar.partial-1-0");
+        let running = directory.join("library.jar.partial-2-0");
+        let other = directory.join("other.jar.partial-1-0");
+
+        for file in [&abandoned, &running, &other] {
+            write_file(file, "part").unwrap();
+        }
+
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        for file in [&abandoned, &other] {
+            fs::File::options()
+                .write(true)
+                .open(file)
+                .and_then(|file| file.set_modified(two_hours_ago))
+                .unwrap();
+        }
+
+        let partial = partial_path(&target);
+        assert!(partial.starts_with(&directory));
+        assert!(!abandoned.exists());
+        assert!(running.exists());
+        assert!(other.exists());
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
     fn sha_of_a_file_as_hex() {
         let directory = scratch_dir("sha");
         let file = directory.join("abc");
@@ -1134,7 +1205,7 @@ mod tests {
         assert_eq!(download(&format!("{url}/missing"), &target, false, None), Ok(false));
         assert!(download(&format!("{url}/private"), &target, false, None).is_err_and(|error| error.contains("needs credentials")));
 
-        let (status, body) = http_get(&format!("{url}/index.json")).unwrap();
+        let (status, body) = http_get(&format!("{url}/index.json"), None).unwrap();
         assert_eq!(status, 200);
         assert!(body.starts_with("GET /index.json"));
 

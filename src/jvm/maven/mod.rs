@@ -1,4 +1,5 @@
 // Maven: repositories, coordinates, dependency notations and versions, like in Gradle
+pub mod lock;
 mod metadata;
 mod pom;
 mod resolver;
