@@ -72,6 +72,31 @@ impl Toolchain {
         return command;
     }
 
+    /// The program with its arguments. On Windows a command line has at most 32767 characters, the flags of
+    /// abseil are more: then the arguments go into the response file, which clang and llvm-ar read like
+    /// their command line. Quoted like for a shell: llvm-ar would take those of Windows.
+    pub fn command_with_arguments(&self, program: &[String], arguments: &[String], response_file: &Path) -> Result<Command, String> {
+        let length: usize = arguments.iter()
+            .map(|argument| argument.len() + 3)
+            .sum();
+
+        if !cfg!(windows) || length < 30000 {
+            let mut command = self.command(program);
+            command.args(arguments);
+            return Ok(command);
+        }
+
+        let quoted: Vec<String> = arguments.iter()
+            .map(|argument| format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect();
+        system::write_file(response_file, &quoted.join("\n"))?;
+
+        let mut command = self.command(program);
+        command.arg("--rsp-quoting=posix")
+            .arg(format!("@{}", response_file.display()));
+        return Ok(command);
+    }
+
     /// What the compiler says to --version, empty when it does not start: compiling then tells why
     pub fn version(&self, compiler: &[String]) -> String {
         let mut versions = VERSIONS.lock().unwrap();
