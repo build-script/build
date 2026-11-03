@@ -447,8 +447,34 @@ fn visit_package(
     }
 
     // a package links before what it requires
-    cflags.extend(words("cflags"));
-    libs.splice(0..0, [words("libs"), words("libs.private")].concat());
+    cflags.extend(words("cflags").into_iter().filter_map(gnu_style));
+    libs.splice(0..0, [words("libs"), words("libs.private")].concat().into_iter().map(linker_style));
+}
+
+/// A compile flag for clang. On Windows the .pc files of ports like abseil have those of MSVC: /D, /U and
+/// /I become -D, -U and -I, the others are of MSVC only, like /W3 and /wd4005.
+fn gnu_style(flag: String) -> Option<String> {
+    if !cfg!(windows) || !flag.starts_with('/') {
+        return Some(flag);
+    }
+
+    match flag.get(1..2) {
+        Some("D" | "U" | "I") => return Some(format!("-{}", &flag[1..])),
+        _ => return None,
+    }
+}
+
+/// A link flag for clang. On Windows the .pc files of ports like abseil have options of link.exe, like
+/// -ignore:4221: they go to it through -Wl.
+fn linker_style(flag: String) -> String {
+    let clang_flag = ["-l", "-L", "-W"].iter().any(|prefix| flag.starts_with(prefix));
+    let linker_option = flag.starts_with('/') || (flag.starts_with('-') && flag.contains(':') && !clang_flag);
+
+    if !cfg!(windows) || !linker_option {
+        return flag;
+    }
+
+    return format!("-Wl,-{}", &flag[1..]);
 }
 
 #[cfg(test)]
@@ -462,6 +488,31 @@ mod tests {
 
         assert_eq!(port_and_features("llvm[clang, lld]"), ("llvm", vec!["clang", "lld"]));
         assert_eq!(port_and_features("fmt"), ("fmt", vec![]));
+    }
+
+    #[test]
+    fn flags_of_msvc_become_those_of_clang_on_windows() {
+        let flags = ["/DNOMINMAX", "/wd4005", "/bigobj", "-DSPDLOG_FMT_EXTERNAL"].map(String::from);
+        let converted: Vec<String> = flags.iter()
+            .cloned()
+            .filter_map(gnu_style)
+            .collect();
+
+        match cfg!(windows) {
+            true => assert_eq!(converted, ["-DNOMINMAX", "-DSPDLOG_FMT_EXTERNAL"]),
+            false => assert_eq!(converted, flags),
+        }
+
+        let libs = ["-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"].map(String::from);
+        let converted: Vec<String> = libs.iter()
+            .cloned()
+            .map(linker_style)
+            .collect();
+
+        match cfg!(windows) {
+            true => assert_eq!(converted, ["-Wl,-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"]),
+            false => assert_eq!(converted, libs),
+        }
     }
 
     #[test]
