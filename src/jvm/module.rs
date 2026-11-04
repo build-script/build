@@ -1,4 +1,5 @@
 // JVM module builds: what every module function reads from its arguments, resolving it, compiling it with kotlinc and javac, jars
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -697,7 +698,10 @@ impl Dependencies {
             }
         }
 
-        dirs.dedup();
+        // several modules may load from one directory
+        let mut seen = HashSet::new();
+        dirs.retain(|dir| seen.insert(dir.clone()));
+
         return dirs;
     }
 
