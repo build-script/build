@@ -1377,13 +1377,13 @@ impl UnpackedLibraries {
             .ok_or_else(|| format!("{} has no package", manifest.display()))?
             .to_string();
 
-        // compiled resources of a released aar never change
+        // compiled once per extracted aar: its directory changes with the aar, also a local one overwritten in place
         let res_dir = target.join("res");
         let mut compiled = vec![];
 
         if system::contains_files(&res_dir) {
             let mut hasher = DefaultHasher::new();
-            aar.hash(&mut hasher);
+            target.hash(&mut hasher);
             let cached = system::cache_dir("android/res")
                 .join(&sdk.build_tools)
                 .join(format!("{stem}-{:016x}.zip", hasher.finish()));
