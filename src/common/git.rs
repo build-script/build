@@ -17,34 +17,18 @@ static CHECKOUTS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 /// <cache>/git/checkouts/<repository>/<commit>. `reference` is a commit, better its whole hash, or a tag.
 /// Checked out once on the machine, the next builds take it as it is.
 pub fn checkout(url: &str, reference: &str, project_dir: &Path) -> Result<PathBuf, String> {
-    // https://github.com/llvm/llvm-project becomes github.com/llvm/llvm-project
-    let url_path = url.trim_end_matches('/')
-        .trim_end_matches(".git");
-
-    let repository = url_path.split_once("://")
-        .map_or(url_path, |(_, path)| path)
-        .trim_start_matches('/');
-
-    let version: String = reference.chars()
-        .take(12)
-        .map(|char| if char == '/' {
-            '-'
-        } else {
-            char
-        })
-        .collect();
-
+    let (repository, version) = checkout_names(url, reference);
     let cache = system::cache_dir("git");
 
     let target = cache.join("checkouts")
-        .join(repository)
+        .join(&repository)
         .join(&version);
 
     let checkout = checkout_to(url, reference, &target, &cache.join(format!("{repository}.git")))?;
 
     let outputs = system::build_dir(project_dir)
         .join("git")
-        .join(repository)
+        .join(&repository)
         .join(&version);
 
     CHECKOUTS.lock()
@@ -52,6 +36,26 @@ pub fn checkout(url: &str, reference: &str, project_dir: &Path) -> Result<PathBu
         .push((checkout.clone(), outputs));
 
     return Ok(checkout);
+}
+
+/// The repository, https://github.com/llvm/llvm-project becomes github.com/llvm/llvm-project, and the
+/// directory of the reference: a commit by its first 12 characters, a tag or a branch whole,
+/// llvmorg-19.1.6 and llvmorg-19.1.7 differ only at their end
+fn checkout_names(url: &str, reference: &str) -> (String, String) {
+    let url_path = url.trim_end_matches('/')
+        .trim_end_matches(".git");
+
+    let repository = url_path.split_once("://")
+        .map_or(url_path, |(_, path)| path)
+        .trim_start_matches('/');
+
+    let is_hash = reference.len() == 40 && reference.chars().all(|char| char.is_ascii_hexdigit());
+    let version = match is_hash {
+        true => reference[..12].to_string(),
+        false => reference.replace('/', "-"),
+    };
+
+    return (repository.to_string(), version);
 }
 
 /// Where a module in a checkout of the script builds: below build/git/ of the project
@@ -103,6 +107,11 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
                 let output = in_objects(&["rev-parse", "FETCH_HEAD^{commit}"])
                     .output()
                     .map_err(|error| format!("could not start git: {error}"))?;
+
+                if !output.status.success() {
+                    return Err(format!("git rev-parse of {reference} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+                }
+
                 String::from_utf8_lossy(&output.stdout).trim().to_string()
             }
         };
@@ -133,6 +142,14 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tags_check_out_whole_and_commits_by_twelve_characters() {
+        assert_eq!(checkout_names("https://github.com/llvm/llvm-project.git", "llvmorg-19.1.6"), ("github.com/llvm/llvm-project".to_string(), "llvmorg-19.1.6".to_string()));
+        assert_ne!(checkout_names("https://github.com/llvm/llvm-project", "llvmorg-19.1.6"), checkout_names("https://github.com/llvm/llvm-project", "llvmorg-19.1.7"));
+        assert_eq!(checkout_names("https://github.com/fmtlib/fmt/", "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f").1, "407c905e45ad");
+        assert_eq!(checkout_names("file:///srv/library", "release/2.0"), ("srv/library".to_string(), "release-2.0".to_string()));
+    }
 
     #[test]
     fn commits_are_checked_out_without_git_and_build_in_the_project() {
