@@ -10,6 +10,7 @@ use std::{fs, io};
 
 use crate::common::settings::Settings;
 use crate::common::system;
+use crate::common::up_to_date;
 use crate::jvm::templates;
 use crate::language::runtime;
 use crate::native;
@@ -276,7 +277,7 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
             // .build where a BUILD of Bazel is in the way
             let is_build_dir = name == "build" || name == ".build";
 
-            if is_build_dir && path.join("fingerprints").is_dir() {
+            if is_build_dir && path.join(up_to_date::FINGERPRINTS_DIR).is_dir() {
                 let tracked = system::command_output(Command::new("git").arg("-C").arg(&path).args(["ls-files", "."]), "git ls-files")
                     .is_ok_and(|output| !output.is_empty());
 

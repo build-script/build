@@ -60,18 +60,13 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
         .map(|source| context.project_dir.join(source))
         .collect();
 
-    let mut fingerprint = InputFingerprint::new(
-        system::build_dir(&directory)
-            .join("fingerprints")
-            .join(format!("generator-{name}")),
-    );
+    let mut fingerprint = InputFingerprint::for_module(&directory, &format!("generator-{name}"));
 
     fingerprint.add(args);
     fingerprint.add_files(&inputs)?;
     fingerprint.add_files(&tool_sources)?;
 
-    if fingerprint.is_up_to_date(&[&output])? {
-        system::log(&name, "Up to date");
+    if fingerprint.reports_up_to_date(&name, &[&output])? {
         return Ok(output.display().to_string().into());
     }
 
@@ -123,8 +118,7 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
         .current_dir(&directory);
     system::run_command(&mut command, &main_class)?;
 
-    fingerprint.store()?;
-    system::log(&name, &format!("Done: {output_arg}"));
+    fingerprint.store_done(&name, &output)?;
 
     return Ok(output_arg.into());
 }

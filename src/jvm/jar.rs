@@ -171,7 +171,7 @@ fn build_jar(
     let mut outputs = vec![jar.as_path(), artifact.as_path()];
     outputs.extend(idea_file.as_deref());
 
-    if inputs.is_up_to_date(&fingerprint, &outputs)? {
+    if fingerprint.reports_up_to_date(&inputs.name, &outputs)? {
         return Ok((jar, artifact));
     }
 
@@ -256,7 +256,7 @@ fn build_jar(
         build_fat_jar(inputs, &jars, main_class, &relocations, &artifact)?;
     }
 
-    inputs.finish(&fingerprint, &artifact)?;
+    fingerprint.store_done(&inputs.name, &artifact)?;
 
     return Ok((jar, artifact));
 }

@@ -1,8 +1,6 @@
 // Android builds: resources with aapt2, Kotlin and Java against android.jar, native libraries with CMake, dex with d8, a signed apk
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -718,8 +716,7 @@ impl AndroidBuild {
             None => String::new(),
         };
 
-        let mut hasher = DefaultHasher::new();
-        (
+        let key = up_to_date::hash_hex((
             &self.sdk.d8,
             &self.sdk.android_jar,
             self.min_api(),
@@ -727,9 +724,8 @@ impl AndroidBuild {
             up_to_date::files_hash(&library.jars)?,
             system::read_file(&library.config)?,
             keep_rules_content,
-        )
-            .hash(&mut hasher);
-        let dexed = work_dir.join(format!("{:016x}", hasher.finish()));
+        ));
+        let dexed = work_dir.join(key);
 
         if !dexed.is_dir() {
             system::recreate_dir(work_dir)?;
@@ -823,22 +819,18 @@ impl AndroidBuild {
         libraries: &[PathBuf],
         desugared: Option<&DesugaredLibrary>,
     ) -> Result<PathBuf, String> {
-        let mut hasher = DefaultHasher::new();
-        (
+        let desugared_config = desugared.map(|desugared| system::read_file(&desugared.config)).transpose()?;
+        let key = up_to_date::hash_hex((
             &self.sdk.d8,
             &self.sdk.android_jar,
             self.min_api(),
             self.build_type.name(),
             up_to_date::files_hash(libraries)?,
-        )
-            .hash(&mut hasher);
-
-        if let Some(desugared) = desugared {
-            system::read_file(&desugared.config)?.hash(&mut hasher);
-        }
+            desugared_config,
+        ));
 
         let dexed = self.build_dir.join("intermediates/dex-libraries");
-        let dex = dexed.join(format!("{:016x}", hasher.finish()));
+        let dex = dexed.join(key);
 
         if dex.is_dir() {
             system::log(&self.inputs.name, "Libraries dexed before");
@@ -1370,11 +1362,9 @@ impl UnpackedLibraries {
         let mut compiled = vec![];
 
         if system::contains_files(&res_dir) {
-            let mut hasher = DefaultHasher::new();
-            target.hash(&mut hasher);
             let cached = system::cache_dir("android/res")
                 .join(&sdk.build_tools)
-                .join(format!("{stem}-{:016x}.zip", hasher.finish()));
+                .join(format!("{stem}-{}.zip", up_to_date::hash_hex(&target)));
 
             if !cached.is_file() {
                 compile_resources(&sdk.aapt2, &res_dir, &cached)?;
@@ -1496,13 +1486,8 @@ fn compiled_resources(
     res_cache: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let mut hasher = DefaultHasher::new();
-    (
-        &sdk.build_tools,
-        up_to_date::files_hash(&[res_dir.to_path_buf()])?,
-    )
-        .hash(&mut hasher);
-    let output = res_cache.join(format!("{name}-{:016x}.zip", hasher.finish()));
+    let key = up_to_date::hash_hex((&sdk.build_tools, up_to_date::files_hash(&[res_dir.to_path_buf()])?));
+    let output = res_cache.join(format!("{name}-{key}.zip"));
 
     if output.is_file() {
         return Ok(output);

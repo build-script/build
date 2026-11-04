@@ -252,7 +252,7 @@ fn build_android(context: &BuildScriptContext, args: &Arguments) -> Result<Value
     outputs.extend(idea_file.as_deref());
 
     let (inputs, sdk, merged_manifest) =
-        if inputs.is_up_to_date(&fingerprint, &outputs)? {
+        if fingerprint.reports_up_to_date(&inputs.name, &outputs)? {
             let merged_manifest = xml::parse(&system::read_file(&manifest)?)?;
             (inputs, android_sdk(args)?, merged_manifest)
         } else {
@@ -280,7 +280,7 @@ fn build_android(context: &BuildScriptContext, args: &Arguments) -> Result<Value
             }
             .build(&build)?;
 
-            build.inputs.finish(&fingerprint, &apk)?;
+            fingerprint.store_done(&build.inputs.name, &apk)?;
             (build.inputs, build.sdk, merged_manifest)
         };
 
@@ -352,7 +352,7 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
     let mut outputs = vec![jar.as_path()];
     outputs.extend(idea_file.as_deref());
 
-    let (inputs, sdk) = if inputs.is_up_to_date(&fingerprint, &outputs)? {
+    let (inputs, sdk) = if fingerprint.reports_up_to_date(&inputs.name, &outputs)? {
         // only the tests need the SDK then
         let sdk = if context.tests.includes(&inputs.name) {
             Some(android_sdk(args)?)
@@ -412,7 +412,7 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
         system::copy_dir_contents(&module_resources, &classes)?;
         build.jar(&classes, &jar)?;
 
-        build.inputs.finish(&fingerprint, &jar)?;
+        fingerprint.store_done(&build.inputs.name, &jar)?;
         (build.inputs, Some(build.sdk))
     };
 
@@ -890,7 +890,7 @@ fn instrumented_tests(
             bundle: None,
         }
         .build(&build)?;
-        build.inputs.finish(&fingerprint, &apk)?;
+        fingerprint.store_done(&build.inputs.name, &apk)?;
     }
 
     return Ok(ModuleTests::Run(Box::new(InstrumentedTests {

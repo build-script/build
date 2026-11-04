@@ -203,8 +203,9 @@ impl Compilation<'_> {
 
         let c_source = source.extension().is_some_and(|extension| extension == "c");
         let compiler = if c_source { &self.toolchain.c_compiler } else { &self.toolchain.cpp_compiler };
+        let recorded = RecordedCommand::new(object.clone(), self.recorded_line(source));
         let mut arguments = line[compiler.len()..].to_vec();
-        arguments.extend(["-MMD".to_string(), "-MF".to_string(), object.with_extension("o.d").display().to_string()]);
+        arguments.extend(["-MMD".to_string(), "-MF".to_string(), recorded.depfile.display().to_string()]);
 
         // the output goes through a pipe, the compiler would leave out its colors
         if terminal::colors() {
@@ -218,14 +219,11 @@ impl Compilation<'_> {
         let _compiler = Compiler::start();
         system::run_command_in_one_piece(&mut command, &format!("compiling {}", source.display()))?;
 
-        return system::write_file(&object.with_extension("o.line"), &self.recorded_line(source).join("\n"));
+        return recorded.record();
     }
 
     fn is_up_to_date(&self, source: &Path) -> bool {
-        let object = self.object(source);
-        let (depfile, line) = (object.with_extension("o.d"), object.with_extension("o.line"));
-
-        return output_is_up_to_date(&object, &depfile, &line, &self.recorded_line(source));
+        return RecordedCommand::new(self.object(source), self.recorded_line(source)).is_up_to_date();
     }
 
     /// For clangd, which finds build/compile_commands.json of the module from its sources
@@ -289,23 +287,48 @@ pub fn source_roots(module_dir: &Path, patterns: &[String]) -> Vec<PathBuf> {
     return roots;
 }
 
-/// The output is newer than every input its depfile names, and `line_file` holds this command line
-pub fn output_is_up_to_date(output: &Path, depfile: &Path, line_file: &Path, line: &[String]) -> bool {
-    let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified());
+/// The output of one command, like the object of a source: up to date while it is newer than every input
+/// its depfile names and its .line file holds the same command line
+pub struct RecordedCommand {
+    pub output: PathBuf,
+    /// <output>.d, the tool writes it
+    pub depfile: PathBuf,
+    /// what <output>.line keeps: a new compiler or another flag builds it again
+    pub line: Vec<String>,
+}
 
-    let (Ok(built), Ok(depfile), Ok(stored_line)) =
-        (modified(output), fs::read_to_string(depfile), fs::read_to_string(line_file))
-    else {
-        return false;
-    };
-
-    if stored_line != line.join("\n") {
-        return false;
+impl RecordedCommand {
+    pub fn new(output: PathBuf, line: Vec<String>) -> Self {
+        let depfile = PathBuf::from(format!("{}.d", output.display()));
+        return RecordedCommand { output, depfile, line };
     }
 
-    return depfile_inputs(&depfile)
-        .iter()
-        .all(|input| modified(Path::new(input)).is_ok_and(|changed| changed <= built));
+    pub fn is_up_to_date(&self) -> bool {
+        let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified());
+
+        let (Ok(built), Ok(depfile), Ok(stored_line)) =
+            (modified(&self.output), fs::read_to_string(&self.depfile), fs::read_to_string(self.line_file()))
+        else {
+            return false;
+        };
+
+        if stored_line != self.line.join("\n") {
+            return false;
+        }
+
+        return depfile_inputs(&depfile)
+            .iter()
+            .all(|input| modified(Path::new(input)).is_ok_and(|changed| changed <= built));
+    }
+
+    /// Once the command succeeded, for the next build
+    pub fn record(&self) -> Result<(), String> {
+        return system::write_file(&self.line_file(), &self.line.join("\n"));
+    }
+
+    fn line_file(&self) -> PathBuf {
+        return PathBuf::from(format!("{}.line", self.output.display()));
+    }
 }
 
 /// The inputs of a depfile, `output: input input ...`: \ escapes spaces in names and ends continued

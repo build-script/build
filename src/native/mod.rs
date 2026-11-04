@@ -393,7 +393,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             .map(|module| module.artifact.clone())
             .collect();
 
-    let mut fingerprint = InputFingerprint::new(build_dir.join("fingerprints").join(&name));
+    let mut fingerprint = InputFingerprint::for_module(&directory, &name);
     fingerprint.add(args);
     fingerprint.add(release);
     fingerprint.add(&test_compilation.flags);
@@ -406,9 +406,9 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         false => vec![&artifact, &linked, &compile_commands],
     };
 
-    if !compiled && fingerprint.is_up_to_date(&outputs)? {
-        system::log(&name, "Up to date");
-    } else {
+    let up_to_date = !compiled && fingerprint.reports_up_to_date(&name, &outputs)?;
+
+    if !up_to_date {
         match (program, header_only, shared) {
             (true, ..) => compile::link(&toolchain, cpp, &objects, &[link_flags.clone(), program_rpath.clone()].concat(), &artifact)?,
             (false, true, _) => {}
@@ -675,7 +675,7 @@ fn test_program(
     let build_dir = system::build_dir(module.module_dir);
     let executable = build_dir.join("bin").join(format!("{program}{}", std::env::consts::EXE_SUFFIX));
 
-    let mut fingerprint = InputFingerprint::new(build_dir.join("fingerprints").join("tests").join(program));
+    let mut fingerprint = InputFingerprint::for_module(module.module_dir, &format!("tests/{program}"));
     fingerprint.add(link_flags);
     fingerprint.add(&setup.arguments);
     fingerprint.add_files(objects)?;

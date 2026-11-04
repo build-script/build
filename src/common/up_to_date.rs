@@ -10,6 +10,9 @@ use std::time::SystemTime;
 
 use crate::common::system;
 
+/// Below build/ of a module, the fingerprints of its last builds
+pub const FINGERPRINTS_DIR: &str = "fingerprints";
+
 /// Everything the outputs of a build depend on, condensed into one hash
 #[derive(Debug)]
 pub struct InputFingerprint {
@@ -34,6 +37,11 @@ impl InputFingerprint {
         }
 
         return InputFingerprint { hasher, file };
+    }
+
+    /// In build/fingerprints/`name` of the module in `module_dir`
+    pub fn for_module(module_dir: &Path, name: &str) -> Self {
+        return InputFingerprint::new(system::build_dir(module_dir).join(FINGERPRINTS_DIR).join(name));
     }
 
     pub fn add(&mut self, value: impl Hash) {
@@ -64,6 +72,25 @@ impl InputFingerprint {
     }
 
     /// Once the build succeeded
+    /// Like is_up_to_date, the log of `module` says so when it is
+    pub fn reports_up_to_date(&self, module: &str, outputs: &[&Path]) -> Result<bool, String> {
+        let up_to_date = self.is_up_to_date(outputs)?;
+
+        if up_to_date {
+            system::log(module, "Up to date");
+        }
+
+        return Ok(up_to_date);
+    }
+
+    /// Remembers the fingerprint of the successful build, the log of `module` names what it produced
+    pub fn store_done(&self, module: &str, output: &Path) -> Result<(), String> {
+        self.store()?;
+        system::log(module, &format!("Done: {}", output.display()));
+
+        return Ok(());
+    }
+
     pub fn store(&self) -> Result<(), String> {
         return system::write_file(&self.file, &self.hex());
     }
@@ -79,6 +106,14 @@ pub fn files_hash(paths: &[PathBuf]) -> Result<u64, String> {
     hash_files(paths, &mut hasher)?;
 
     return Ok(hasher.finish());
+}
+
+/// 16 hex digits of the hash, for names in the cache
+pub fn hash_hex(value: impl Hash) -> String {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+
+    return format!("{:016x}", hasher.finish());
 }
 
 fn hash_files(paths: &[PathBuf], hasher: &mut DefaultHasher) -> Result<(), String> {
@@ -104,7 +139,7 @@ fn hash_files(paths: &[PathBuf], hasher: &mut DefaultHasher) -> Result<(), Strin
 static CONTENT_HASHES: LazyLock<Mutex<HashMap<(PathBuf, u64, Option<SystemTime>), u64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Read in chunks, a jar need not fit in memory
-fn content_hash(file: &Path) -> Result<u64, String> {
+pub fn content_hash(file: &Path) -> Result<u64, String> {
     let error = |error: std::io::Error| format!("could not read {}: {error}", file.display());
     let metadata = fs::metadata(file).map_err(error)?;
     let key = (file.to_path_buf(), metadata.len(), metadata.modified().ok());

@@ -9,7 +9,7 @@ use std::process::Command;
 
 use serde_json::Value as Json;
 
-use crate::common::system;
+use crate::common::{system, up_to_date};
 use crate::language::runtime::Arguments;
 
 use super::maven::{self, DependencyResolver, MavenCoordinate};
@@ -332,9 +332,7 @@ impl SymbolProcessing<'_> {
                 // compiled anew by every build, their content decides
                 for file in system::files_below(&[library.clone()]) {
                     file.hash(&mut hasher);
-                    fs::read(&file)
-                        .map_err(|error| format!("could not read {}: {error}", file.display()))?
-                        .hash(&mut hasher);
+                    up_to_date::content_hash(&file)?.hash(&mut hasher);
                 }
             } else {
                 // jars of modules built before change in place, Maven jars do not
@@ -428,12 +426,8 @@ fn source_hashes(source_dirs: &[PathBuf]) -> Result<BTreeMap<PathBuf, u64>, Stri
             continue;
         }
 
-        let content = fs::read(&file)
-            .map_err(|error| format!("could not read {}: {error}", file.display()))?;
-
-        let mut hasher = DefaultHasher::new();
-        content.hash(&mut hasher);
-        sources.insert(file, hasher.finish());
+        let hash = up_to_date::content_hash(&file)?;
+        sources.insert(file, hash);
     }
 
     return Ok(sources);

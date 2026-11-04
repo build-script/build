@@ -1,14 +1,12 @@
 // Libraries outside vcpkg: build_cmake configures, builds and installs CMake projects with the CMake and
 // Ninja of vcpkg, system_library takes an installed one, like the LLVM of Homebrew. The modules depending
 // on them get the headers and the libraries, or what a tool like llvm-config names.
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use crate::common::system::{self, HostOperatingSystem};
-use crate::common::up_to_date::InputFingerprint;
+use crate::common::up_to_date::{self, InputFingerprint};
 use crate::language::runtime::{
     Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, ModuleOutput, Type, Value,
 };
@@ -69,9 +67,8 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
     // a checkout of git() is the same on every machine: its commit is in its path
     let build_dir = match source.starts_with(system::cache_dir("git")) {
         true => {
-            let mut hasher = DefaultHasher::new();
-            (&source, &options, &environment, &cmake).hash(&mut hasher);
-            system::cache_dir("cmake").join(format!("{name}-{:016x}", hasher.finish()))
+            let key = up_to_date::hash_hex((&source, &options, &environment, &cmake));
+            system::cache_dir("cmake").join(format!("{name}-{key}"))
         }
         false => system::build_dir(&context.project_dir).join("cmake").join(&name),
     };

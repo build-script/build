@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::common::system;
 
-use super::compile;
+use super::compile::RecordedCommand;
 
 /// `entries` are lists of the tool, the .td file, the header and the arguments: "mlir-tblgen",
 /// "include/Ops.td", "Ops.h.inc", "-gen-op-decls". The tool is one of `tools_dirs` or of the PATH.
@@ -31,16 +31,14 @@ pub fn generate(
             .ok_or_else(|| format!("{tool} is in no tools directory of the dependencies nor in the PATH"))?;
 
         let output = generated_dir.join(header);
-        let depfile = PathBuf::from(format!("{}.d", output.display()));
-        let line_file = PathBuf::from(format!("{}.line", output.display()));
-
         let mut line = vec![program.display().to_string(), module_dir.join(td_file).display().to_string()];
         line.extend(include_flags.iter().cloned());
         line.extend(arguments.iter().cloned());
         line.extend(["-o".to_string(), output.display().to_string()]);
 
-        if !compile::output_is_up_to_date(&output, &depfile, &line_file, &line) {
-            outdated.push((output, depfile, line_file, line));
+        let recorded = RecordedCommand::new(output, line);
+        if !recorded.is_up_to_date() {
+            outdated.push(recorded);
         }
     }
 
@@ -50,17 +48,17 @@ pub fn generate(
 
     system::log(module, &format!("Generating {} file(s) with TableGen", outdated.len()));
 
-    for (output, depfile, line_file, line) in outdated {
-        system::create_parent_dir(&output)?;
+    for recorded in outdated {
+        system::create_parent_dir(&recorded.output)?;
 
-        let mut command = Command::new(&line[0]);
-        command.args(&line[1..])
+        let mut command = Command::new(&recorded.line[0]);
+        command.args(&recorded.line[1..])
             .arg("-d")
-            .arg(&depfile)
+            .arg(&recorded.depfile)
             .current_dir(module_dir);
-        system::run_command_quietly(&mut command, &format!("generating {}", output.display()))?;
+        system::run_command_quietly(&mut command, &format!("generating {}", recorded.output.display()))?;
 
-        system::write_file(&line_file, &line.join("\n"))?;
+        recorded.record()?;
     }
 
     return Ok(());

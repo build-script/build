@@ -99,18 +99,14 @@ pub fn build(
         link_flags.extend(cpp.then(|| "-static-libstdc++".to_string()));
 
         // linked again when an object changed, also when a source is gone
-        let fingerprint_file = sources.build_dir.join("fingerprints")
-            .join("android")
-            .join(format!("{name}-{abi}-{build_type}"));
-        let mut fingerprint = InputFingerprint::new(fingerprint_file);
+        let mut fingerprint = InputFingerprint::for_module(&sources.module_dir, &format!("android/{name}-{abi}-{build_type}"));
         fingerprint.add(&toolchain.cpp_compiler);
         fingerprint.add(&link_flags);
         fingerprint.add_files(&objects)?;
 
         if !fingerprint.is_up_to_date(&[&library])? {
             compile::link(&toolchain, cpp, &objects, &link_flags, &library)?;
-            fingerprint.store()?;
-            system::log(name, &format!("Done: {}", library.display()));
+            fingerprint.store_done(name, &library)?;
         }
     }
 

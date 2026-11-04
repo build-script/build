@@ -552,8 +552,7 @@ impl ModuleBuildInputs {
         args: &Arguments,
         extra_inputs: &[PathBuf],
     ) -> Result<InputFingerprint, String> {
-        let mut fingerprint =
-            InputFingerprint::new(system::build_dir(&self.directory).join("fingerprints").join(name));
+        let mut fingerprint = InputFingerprint::for_module(&self.directory, name);
 
         fingerprint.add(args);
         fingerprint.add(&self.jdk.home);
@@ -590,29 +589,6 @@ impl ModuleBuildInputs {
         }
 
         return Ok(fingerprint);
-    }
-
-    /// Says so in the log when it is
-    pub fn is_up_to_date(
-        &self,
-        fingerprint: &InputFingerprint,
-        outputs: &[&Path],
-    ) -> Result<bool, String> {
-        let up_to_date = fingerprint.is_up_to_date(outputs)?;
-
-        if up_to_date {
-            system::log(&self.name, "Up to date");
-        }
-
-        return Ok(up_to_date);
-    }
-
-    /// Remembers the fingerprint of the successful build and names what it produced
-    pub fn finish(&self, fingerprint: &InputFingerprint, artifact: &Path) -> Result<(), String> {
-        fingerprint.store()?;
-        system::log(&self.name, &format!("Done: {}", artifact.display()));
-
-        return Ok(());
     }
 
     pub fn built_module(

@@ -1,9 +1,7 @@
 // The host: where build-script keeps its data, files and directories, processes, downloads and archives
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io::{BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,6 +19,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::terminal::{self, Color};
+use super::up_to_date;
 
 const BUILD_SCRIPT_DIR_NAME: &str = "build-script";
 /// In the user's home, when neither BUILD_SCRIPT_HOME nor XDG is set
@@ -844,12 +843,11 @@ pub fn kept_in_cache(
     let metadata = fs::metadata(file)
         .map_err(|error| format!("could not read {}: {error}", file.display()))?;
 
-    let mut hasher = DefaultHasher::new();
-    (file, metadata.len(), metadata.modified().ok()).hash(&mut hasher);
+    let key = up_to_date::hash_hex((file, metadata.len(), metadata.modified().ok()));
     let stem = file.file_stem()
         .unwrap_or_default()
         .to_string_lossy();
-    let target = cache_dir(name).join(format!("{stem}-{:016x}", hasher.finish()));
+    let target = cache_dir(name).join(format!("{stem}-{key}"));
 
     if target.is_dir() {
         return Ok(target);
