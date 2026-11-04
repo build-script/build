@@ -1,11 +1,11 @@
 // Up-to-date checks: a module whose inputs did not change since its last build is not built again
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
 use crate::common::system;
@@ -99,10 +99,9 @@ fn hash_files(paths: &[PathBuf], hasher: &mut DefaultHasher) -> Result<(), Strin
     return Ok(());
 }
 
-thread_local! {
-    /// By path, length and modification time: the jars of a library are inputs of every module above it
-    static CONTENT_HASHES: RefCell<HashMap<(PathBuf, u64, Option<SystemTime>), u64>> = RefCell::new(HashMap::new());
-}
+/// By path, length and modification time: the jars of a library are inputs of every module above it, and
+/// every module builds on a thread of its own
+static CONTENT_HASHES: LazyLock<Mutex<HashMap<(PathBuf, u64, Option<SystemTime>), u64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Read in chunks, a jar need not fit in memory
 fn content_hash(file: &Path) -> Result<u64, String> {
@@ -110,7 +109,12 @@ fn content_hash(file: &Path) -> Result<u64, String> {
     let metadata = fs::metadata(file).map_err(error)?;
     let key = (file.to_path_buf(), metadata.len(), metadata.modified().ok());
 
-    if let Some(hash) = CONTENT_HASHES.with(|hashes| hashes.borrow().get(&key).copied()) {
+    let known = CONTENT_HASHES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .copied();
+
+    if let Some(hash) = known {
         return Ok(hash);
     }
 
@@ -130,7 +134,9 @@ fn content_hash(file: &Path) -> Result<u64, String> {
     }
 
     let hash = hasher.finish();
-    CONTENT_HASHES.with(|hashes| hashes.borrow_mut().insert(key, hash));
+    CONTENT_HASHES.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, hash);
 
     return Ok(hash);
 }
@@ -182,6 +188,25 @@ mod tests {
         fs::remove_file(&output).unwrap();
         assert!(!fingerprint().is_up_to_date(&[&output]).unwrap());
         assert!(!fingerprint().is_up_to_date(&[&output]).unwrap());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_file_is_hashed_once_for_every_module() {
+        let root = std::env::temp_dir().join(format!("build-script-content-hash-{}", std::process::id()));
+        let jar = root.join("library.jar");
+        system::write_file(&jar, "classes").unwrap();
+
+        // the module that hashes it first builds on a thread of its own
+        let first = jar.clone();
+        let hash = std::thread::spawn(move || content_hash(&first).unwrap())
+            .join()
+            .unwrap();
+
+        let metadata = fs::metadata(&jar).unwrap();
+        let key = (jar.clone(), metadata.len(), metadata.modified().ok());
+        assert_eq!(CONTENT_HASHES.lock().unwrap().get(&key), Some(&hash));
 
         fs::remove_dir_all(&root).unwrap();
     }
