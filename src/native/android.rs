@@ -1,10 +1,11 @@
 // Shared libraries of C and C++ modules for Android apps: build_android builds them for its ABIs and its
-// min_sdk with the clang of the NDK, into build/android/<abi>/lib<name>.so of the module, and packs them like
-// jniLibs. The module's own sources, headers and defines: vcpkg ports and the libraries of other modules
+// min_sdk with the clang of the NDK, into build/android/<debug|release>/<abi>/lib<name>.so of the module, and
+// packs them like jniLibs. The module's own sources, headers and defines: vcpkg ports and the libraries of other modules
 // are built for this machine only.
 use std::path::PathBuf;
 
 use crate::common::system::{self, HostOperatingSystem};
+use crate::common::up_to_date::InputFingerprint;
 use crate::jvm::android;
 
 use super::compile::{self, Compilation, Language};
@@ -33,7 +34,7 @@ pub struct AndroidSources {
     pub build_dir: PathBuf,
 }
 
-/// build/android/ of the module, with a directory of the library per ABI
+/// build/android/<debug|release>/ of the module, with a directory of the library per ABI
 pub fn build(
     sources: &AndroidSources,
     abis: &[&str],
@@ -54,7 +55,10 @@ pub fn build(
         .join(host_tag)
         .join("bin");
     let name = &sources.name;
-    let output_dir = sources.build_dir.join("android");
+    let build_type = if release { "release" } else { "debug" };
+
+    // of its own per build type: an app packs the libraries of the one it is built for
+    let output_dir = sources.build_dir.join("android").join(build_type);
 
     for abi in abis {
         let Some((_, target)) = TARGETS.iter().find(|(known, _)| known == abi) else {
@@ -82,20 +86,30 @@ pub fn build(
             flags: sources.flags.clone(),
             c_standard: &sources.c_standard,
             cpp_standard: &sources.cpp_standard,
-            objects_dir: sources.build_dir.join("obj").join(name).join(format!("android-{abi}")).join(if release { "release" } else { "debug" }),
+            objects_dir: sources.build_dir.join("obj").join(name).join(format!("android-{abi}")).join(build_type),
             tests: false,
         };
 
-        let (objects, compiled) = compilation.run()?;
+        let (objects, _) = compilation.run()?;
         let library = output_dir.join(abi).join(format!("lib{name}.so"));
 
-        if compiled || !library.is_file() {
-            // libc++ inside, the app needs no libc++_shared.so; liblog for __android_log_print
-            let cpp = sources.language == Language::Cpp;
-            let mut link_flags = vec!["-shared".to_string(), format!("-Wl,-soname,lib{name}.so"), "-llog".to_string()];
-            link_flags.extend(cpp.then(|| "-static-libstdc++".to_string()));
+        // libc++ inside, the app needs no libc++_shared.so; liblog for __android_log_print
+        let cpp = sources.language == Language::Cpp;
+        let mut link_flags = vec!["-shared".to_string(), format!("-Wl,-soname,lib{name}.so"), "-llog".to_string()];
+        link_flags.extend(cpp.then(|| "-static-libstdc++".to_string()));
 
+        // linked again when an object changed, also when a source is gone
+        let fingerprint_file = sources.build_dir.join("fingerprints")
+            .join("android")
+            .join(format!("{name}-{abi}-{build_type}"));
+        let mut fingerprint = InputFingerprint::new(fingerprint_file);
+        fingerprint.add(&toolchain.cpp_compiler);
+        fingerprint.add(&link_flags);
+        fingerprint.add_files(&objects)?;
+
+        if !fingerprint.is_up_to_date(&[&library])? {
             compile::link(&toolchain, cpp, &objects, &link_flags, &library)?;
+            fingerprint.store()?;
             system::log(name, &format!("Done: {}", library.display()));
         }
     }
