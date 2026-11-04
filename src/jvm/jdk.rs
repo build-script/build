@@ -155,7 +155,7 @@ fn install_jdk(
     }
 
     // builds on other threads may need the same JDK, the first installs it
-    return system::installing(|| {
+    return system::installing(&target, || {
         if let Some(home) = find_jdk_home(&target, 0) {
             return Ok(Jdk { home });
         }

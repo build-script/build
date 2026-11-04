@@ -1,4 +1,5 @@
 // The host: where build-script keeps its data, files and directories, processes, downloads and archives
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::fs;
@@ -7,7 +8,7 @@ use std::io::{BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -839,10 +840,17 @@ pub fn partial_path(path: &Path) -> PathBuf {
     ));
 }
 
-/// One installation at a time: modules building at the same time may need the same JDK or SDK package
-pub fn installing<T>(install: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    static INSTALLING: Mutex<()> = Mutex::new(());
-    let _installing = INSTALLING.lock()
+/// One installation into `target` at a time: modules building at the same time may need the same JDK or SDK
+/// package. Others go on, a vcpkg install of an hour holds back no JDK.
+pub fn installing<T>(target: &Path, install: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    static INSTALLING: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let lock = INSTALLING.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(target.to_path_buf())
+        .or_default()
+        .clone();
+    let _installing = lock.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     return install();

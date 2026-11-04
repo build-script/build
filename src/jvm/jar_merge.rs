@@ -176,7 +176,7 @@ pub fn relocate(
 
     // compiled once for every bytecode level, modules building at the same time may need it
     let jvm_target = inputs.jdk.jvm_target();
-    let driver = system::installing(|| {
+    let driver = system::installing(&system::cache_dir("jar-relocator"), || {
         let source = system::cache_dir("jar-relocator").join("Relocate.java");
 
         if !source.is_file() {

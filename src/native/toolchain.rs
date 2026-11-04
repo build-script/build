@@ -170,7 +170,7 @@ fn install_zig() -> Result<PathBuf, String> {
     let target = system::data_dir("zig").join(ZIG_VERSION);
     let zig = target.join(format!("zig{}", std::env::consts::EXE_SUFFIX));
 
-    return system::installing(|| {
+    return system::installing(&target, || {
         if zig.is_file() {
             return Ok(zig.clone());
         }

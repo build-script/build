@@ -115,7 +115,7 @@ pub fn install(
     }
 
     // vcpkg locks its root and gives up when another one holds the lock for long, modules install one by one
-    system::installing(|| {
+    system::installing(&vcpkg, || {
         system::log(module, &format!("Installing {} with vcpkg", ports.join(", ")));
         return system::run_command_quietly(&mut command, "vcpkg install");
     })?;
@@ -176,7 +176,7 @@ pub fn tool(name: &str) -> Result<PathBuf, String> {
         .env("VCPKG_DISABLE_METRICS", "1");
 
     // like install, one vcpkg at a time
-    let output = system::installing(|| fetch.output().map_err(|error| format!("could not start vcpkg: {error}")))?;
+    let output = system::installing(&vcpkg, || fetch.output().map_err(|error| format!("could not start vcpkg: {error}")))?;
 
     // the path is the last line
     let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or("").trim());
@@ -192,7 +192,7 @@ pub fn tool(name: &str) -> Result<PathBuf, String> {
 fn install_vcpkg() -> Result<PathBuf, String> {
     let root = system::data_dir("vcpkg").join(VCPKG_RELEASE);
 
-    return system::installing(|| {
+    return system::installing(&root, || {
         if root.join(format!("vcpkg{}", std::env::consts::EXE_SUFFIX)).is_file() {
             return Ok(root.clone());
         }

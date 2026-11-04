@@ -78,7 +78,7 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
         return Ok(target.to_path_buf());
     }
 
-    return system::installing(|| {
+    return system::installing(objects, || {
         let in_objects = |args: &[&str]| {
             let mut command = Command::new("git");
             command.arg("--git-dir")

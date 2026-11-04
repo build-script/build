@@ -99,7 +99,7 @@ pub fn ndk(version: &str, accept_license: bool) -> Result<PathBuf, String> {
     let root = system::data_dir("android-sdk");
     let ndk = root.join("ndk").join(version);
 
-    return system::installing(|| {
+    return system::installing(&root, || {
         if !ndk.is_dir() {
             SdkCatalog::load()?.install(&root, &format!("ndk;{version}"), &ndk, accept_license)?;
         }
@@ -127,7 +127,7 @@ impl AndroidSdk {
 
         let target = sdk_root.join("platform-tools");
 
-        system::installing(|| {
+        system::installing(&sdk_root, || {
             if !target.join(&name).is_file() {
                 SdkCatalog::load()?.install(sdk_root, "platform-tools", &target, false)?;
             }
@@ -162,7 +162,7 @@ impl AndroidSdk {
         }
 
         // builds on other threads may need the same packages, the first installs them
-        return system::installing(|| {
+        return system::installing(&root, || {
             let sdk = Self::at(&root, compile_sdk, build_tools);
 
             if sdk.is_complete() {

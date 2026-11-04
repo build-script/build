@@ -1438,7 +1438,7 @@ impl CMakeBuild<'_> {
         ];
 
         if packages.iter().any(|(_, dir)| !dir.is_dir()) {
-            system::installing(|| {
+            system::installing(&self.sdk_root, || {
                 let catalog = SdkCatalog::load()?;
 
                 for (package, dir) in packages.iter().filter(|(_, dir)| !dir.is_dir()) {
