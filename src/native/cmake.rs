@@ -124,14 +124,10 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
         fingerprint.store()?;
     }
 
-    let dry_run = Command::new(&ninja)
-        .arg("-C")
-        .arg(&binary_dir)
-        .arg("-n")
-        .output()
-        .map_err(|error| format!("could not start ninja: {error}"))?;
+    // a ninja that cannot tell has work to do
+    let dry_run = system::command_output(Command::new(&ninja).arg("-C").arg(&binary_dir).arg("-n"), "ninja -n").unwrap_or_default();
 
-    if String::from_utf8_lossy(&dry_run.stdout).contains("no work to do") && stamp.is_file() {
+    if dry_run.contains("no work to do") && stamp.is_file() {
         system::log(&name, "Up to date");
     } else {
         system::log(&name, "Building with CMake and Ninja");
@@ -243,17 +239,8 @@ fn flags_from(command: &[String], installation: Option<&Path>) -> Result<Vec<Str
         None => PathBuf::from(&command[0]),
     };
 
-    let output = Command::new(&program)
-        .args(&command[1..])
-        .output()
-        .map_err(|error| format!("could not start {}: {error}", program.display()))?;
-
-    if !output.status.success() {
-        return Err(format!("{} failed: {}", command.join(" "), String::from_utf8_lossy(&output.stderr).trim()));
-    }
-
-    let flags = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
+    let output = system::command_output(Command::new(&program).args(&command[1..]), &command.join(" "))?;
+    let flags = output.split_whitespace()
         .filter(|flag| !flag.starts_with("-std="))
         .map(str::to_string)
         .collect();

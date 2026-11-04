@@ -16,6 +16,7 @@ mod testing;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::common::system;
 use crate::language::runtime::{BuiltModule, ModuleOutput, Platform, Value};
 
 use android::AndroidResources;
@@ -89,15 +90,12 @@ pub fn launch(module: &BuiltModule, output: &JvmOutput, args: &[String]) -> Resu
                 command.arg(format!("-Djava.library.path={}", jdk::join_classpath(&output.native_library_dirs)?.to_string_lossy()));
             }
 
-            let status = command.arg("-jar")
+            command.arg("-jar")
                 .arg(&module.artifact)
                 .args(args)
-                .current_dir(&module.directory)
-                .status()
-                .map_err(|error| format!("could not start {}: {error}", java.display()))?;
+                .current_dir(&module.directory);
 
-            // killed by a signal: like a shell, report failure
-            return Ok(status.code().unwrap_or(1));
+            return system::run_interactive(&mut command);
         }
         Some(JvmLaunch::Apk {
             sdk_root,

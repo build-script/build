@@ -95,7 +95,7 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
         // a commit the cache has needs no fetch, a tag may have moved
         let is_hash = reference.len() == 40 && reference.chars().all(|char| char.is_ascii_hexdigit());
         let commit_object = format!("{reference}^{{commit}}");
-        let cached = is_hash && in_objects(&["cat-file", "-e", &commit_object]).output().is_ok_and(|output| output.status.success());
+        let cached = is_hash && system::command_succeeds(&mut in_objects(&["cat-file", "-e", &commit_object]));
 
         let commit = match cached {
             true => reference.to_string(),
@@ -104,15 +104,8 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
                 system::log_tool("git", &format!("Fetching {reference} of {url}"));
                 system::run_command_quietly(&mut in_objects(&["fetch", "--quiet", "--depth", "1", url, reference]), "git fetch")?;
 
-                let output = in_objects(&["rev-parse", "FETCH_HEAD^{commit}"])
-                    .output()
-                    .map_err(|error| format!("could not start git: {error}"))?;
-
-                if !output.status.success() {
-                    return Err(format!("git rev-parse of {reference} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
-                }
-
-                String::from_utf8_lossy(&output.stdout).trim().to_string()
+                let output = system::command_output(&mut in_objects(&["rev-parse", "FETCH_HEAD^{commit}"]), "git rev-parse")?;
+                output.trim().to_string()
             }
         };
 

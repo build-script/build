@@ -1017,25 +1017,13 @@ impl AndroidBuild {
         system::run_command(&mut sign, "apksigner sign")?;
 
         // a sanity check, its warnings about META-INF files outside the v2/v3 signature are expected
-        let verify = Command::new(self.inputs.jdk.tool_path("java"))
-            .arg("-jar")
+        let mut verify = Command::new(self.inputs.jdk.tool_path("java"));
+        verify.arg("-jar")
             .arg(&self.sdk.apksigner)
             .arg("verify")
-            .arg(apk)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| format!("could not start apksigner: {error}"))?;
+            .arg(apk);
 
-        if !verify.status.success() {
-            eprint!(
-                "{}{}",
-                String::from_utf8_lossy(&verify.stdout),
-                String::from_utf8_lossy(&verify.stderr)
-            );
-            return Err(format!("apksigner verify failed ({})", verify.status));
-        }
-
-        return Ok(());
+        return system::run_command_quietly(&mut verify, "apksigner verify");
     }
 
     /// aapt2 link of the module's resources `own`, the ids in `symbols`

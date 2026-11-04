@@ -421,11 +421,8 @@ fn start_emulator(
             ));
         }
 
-        let booted = Command::new(adb)
-            .args(["-s", &serial, "shell", "getprop", "sys.boot_completed"])
-            .stdin(Stdio::null())
-            .output()
-            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "1");
+        let booted = system::command_output(Command::new(adb).args(["-s", &serial, "shell", "getprop", "sys.boot_completed"]), "adb getprop")
+            .is_ok_and(|output| output.trim() == "1");
 
         if booted {
             println!("{serial} booted after {}s", started.elapsed().as_secs());
@@ -453,14 +450,9 @@ fn start_emulator(
 
 /// Serial and state of every device adb knows: device, offline, unauthorized
 fn adb_devices(adb: &Path) -> Result<Vec<(String, String)>, String> {
-    let output = Command::new(adb)
-        .arg("devices")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("could not start {}: {error}", adb.display()))?;
+    let output = system::command_output(Command::new(adb).arg("devices"), "adb devices")?;
 
-    return Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
+    return Ok(output.lines()
         .skip(1)
         .filter_map(|line| line.split_once('\t'))
         .map(|(serial, state)| (serial.to_string(), state.trim().to_string()))

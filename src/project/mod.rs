@@ -277,12 +277,8 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
             let is_build_dir = name == "build" || name == ".build";
 
             if is_build_dir && path.join("fingerprints").is_dir() {
-                let tracked = Command::new("git")
-                    .arg("-C")
-                    .arg(&path)
-                    .args(["ls-files", "."])
-                    .output()
-                    .is_ok_and(|output| output.status.success() && !output.stdout.is_empty());
+                let tracked = system::command_output(Command::new("git").arg("-C").arg(&path).args(["ls-files", "."]), "git ls-files")
+                    .is_ok_and(|output| !output.is_empty());
 
                 match tracked {
                     true => {

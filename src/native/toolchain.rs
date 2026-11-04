@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
@@ -103,15 +103,9 @@ impl Toolchain {
 
         return versions.entry(compiler.to_vec())
             .or_insert_with(|| {
-                let output = self.command(compiler)
-                    .arg("--version")
-                    .stdin(Stdio::null())
-                    .output();
-
-                match output {
-                    Ok(output) => return String::from_utf8_lossy(&output.stdout).trim().to_string(),
-                    Err(_) => return String::new(),
-                }
+                let output = system::command_output(self.command(compiler).arg("--version"), "--version");
+                return output.map(|output| output.trim().to_string())
+                    .unwrap_or_default();
             })
             .clone();
     }
@@ -151,12 +145,11 @@ fn clang_dir() -> Option<PathBuf> {
     // the C++ Clang tools of Visual Studio
     let vswhere = PathBuf::from(std::env::var_os("ProgramFiles(x86)")?).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
     let architecture = if cfg!(target_arch = "aarch64") { "ARM64" } else { "x64" };
-    let output = Command::new(vswhere)
-        .args(["-latest", "-products", "*", "-find"])
-        .arg(format!(r"VC\Tools\Llvm\{architecture}\bin\clang.exe"))
-        .output()
-        .ok()?;
-    let clang = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().next()?.trim());
+    let mut find = Command::new(vswhere);
+    find.args(["-latest", "-products", "*", "-find"])
+        .arg(format!(r"VC\Tools\Llvm\{architecture}\bin\clang.exe"));
+    let output = system::command_output(&mut find, "vswhere").ok()?;
+    let clang = PathBuf::from(output.lines().next()?.trim());
 
     if !clang.is_file() {
         return None;

@@ -162,13 +162,7 @@ pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
                 .ok_or(format!("{} is a library, only programs can be run", module.name))?;
 
             // like jars, in the module's directory
-            let status = Command::new(program)
-                .args(args)
-                .current_dir(&module.directory)
-                .status()
-                .map_err(|error| format!("could not start {}: {error}", program.display()))?;
-
-            return Ok(status.code().unwrap_or(1));
+            return system::run_interactive(Command::new(program).args(args).current_dir(&module.directory));
         }
     }
 }

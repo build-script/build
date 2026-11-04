@@ -176,13 +176,13 @@ pub fn tool(name: &str) -> Result<PathBuf, String> {
         .env("VCPKG_DISABLE_METRICS", "1");
 
     // like install, one vcpkg at a time
-    let output = system::installing(&vcpkg, || fetch.output().map_err(|error| format!("could not start vcpkg: {error}")))?;
+    let output = system::installing(&vcpkg, || system::command_output(&mut fetch, &format!("vcpkg fetch {name}")))?;
 
     // the path is the last line
-    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or("").trim());
+    let path = PathBuf::from(output.lines().last().unwrap_or("").trim());
 
-    if !output.status.success() || !path.is_file() {
-        return Err(format!("vcpkg could not fetch {name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    if !path.is_file() {
+        return Err(format!("vcpkg fetch {name} named no program: {}", output.trim()));
     }
 
     return Ok(path);
@@ -372,10 +372,8 @@ fn pkg_config(names: &[String], pc_dir: &Path) -> (Vec<String>, Vec<String>) {
 
     if !of_the_system.is_empty() && let Some(program) = system::find_program("pkg-config") {
         let flags = |option: &str| -> Vec<String> {
-            let output = Command::new(&program).args(["--static", option]).args(&of_the_system).output();
-            return output.ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).split_whitespace().map(str::to_string).collect())
+            let output = system::command_output(Command::new(&program).args(["--static", option]).args(&of_the_system), "pkg-config");
+            return output.map(|output| output.split_whitespace().map(str::to_string).collect())
                 .unwrap_or_default();
         };
 

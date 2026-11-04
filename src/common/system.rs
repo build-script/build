@@ -274,12 +274,7 @@ pub fn contains_files(directory: &Path) -> bool {
 pub fn run_command(command: &mut Command, what: &str) -> Result<(), String> {
     let status = command.stdin(Stdio::null())
         .status()
-        .map_err(|error| {
-            format!(
-                "could not start {}: {error}",
-                command.get_program().to_string_lossy()
-            )
-        })?;
+        .map_err(|error| start_error(command, error))?;
 
     if !status.success() {
         return Err(format!("{what} failed ({status})"));
@@ -292,12 +287,7 @@ pub fn run_command(command: &mut Command, what: &str) -> Result<(), String> {
 pub fn run_command_quietly(command: &mut Command, what: &str) -> Result<(), String> {
     let output = command.stdin(Stdio::null())
         .output()
-        .map_err(|error| {
-            format!(
-                "could not start {}: {error}",
-                command.get_program().to_string_lossy()
-            )
-        })?;
+        .map_err(|error| start_error(command, error))?;
 
     if !output.status.success() {
         let text = format!(
@@ -320,12 +310,7 @@ pub fn run_command_quietly(command: &mut Command, what: &str) -> Result<(), Stri
 pub fn run_command_in_one_piece(command: &mut Command, what: &str) -> Result<(), String> {
     let output = command.stdin(Stdio::null())
         .output()
-        .map_err(|error| {
-            format!(
-                "could not start {}: {error}",
-                command.get_program().to_string_lossy()
-            )
-        })?;
+        .map_err(|error| start_error(command, error))?;
 
     let mut stderr = std::io::stderr().lock();
     let _ = stderr.write_all(&output.stdout);
@@ -338,16 +323,45 @@ pub fn run_command_in_one_piece(command: &mut Command, what: &str) -> Result<(),
     return Ok(());
 }
 
+/// What the command printed, once it ended successfully. `what` names it in errors, which have what it
+/// printed to stderr.
+pub fn command_output(command: &mut Command, what: &str) -> Result<String, String> {
+    let output = command.stdin(Stdio::null())
+        .output()
+        .map_err(|error| start_error(command, error))?;
+
+    if !output.status.success() {
+        return Err(format!("{what} failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim()));
+    }
+
+    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+}
+
+/// Whether the command started and ended successfully, for questions like whether git has a commit
+pub fn command_succeeds(command: &mut Command) -> bool {
+    return command.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+}
+
+/// A program with the terminal, like `run` starts it: its exit code, 1 when a signal stopped it, like
+/// a shell says
+pub fn run_interactive(command: &mut Command) -> Result<i32, String> {
+    let status = command.status().map_err(|error| start_error(command, error))?;
+    return Ok(status.code().unwrap_or(1));
+}
+
+fn start_error(command: &Command, error: std::io::Error) -> String {
+    return format!("could not start {}: {error}", command.get_program().to_string_lossy());
+}
+
 /// Like run_command, but stopped once it ran longer than the timeout, like tests that hang
 pub fn run_command_within(command: &mut Command, what: &str, timeout: Duration) -> Result<(), String> {
     let mut child = command.stdin(Stdio::null())
         .spawn()
-        .map_err(|error| {
-            format!(
-                "could not start {}: {error}",
-                command.get_program().to_string_lossy()
-            )
-        })?;
+        .map_err(|error| start_error(command, error))?;
 
     let started = Instant::now();
 
