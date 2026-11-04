@@ -85,6 +85,15 @@ pub fn fetch(
     repository: &MavenRepository,
     directory: &str,
 ) -> Result<Option<MavenMetadata>, String> {
+    return fetch_from(&system::cache_dir("maven-metadata"), repository, directory);
+}
+
+/// Like fetch, with the answers of remote repositories kept in `cache`
+fn fetch_from(
+    cache: &Path,
+    repository: &MavenRepository,
+    directory: &str,
+) -> Result<Option<MavenMetadata>, String> {
     let path = format!("{directory}/maven-metadata.xml");
 
     let url = match repository {
@@ -102,9 +111,7 @@ pub fn fetch(
     };
 
     // per repository, each one has versions and builds of its own
-    let cached = system::cache_dir("maven-metadata")
-        .join(repository_directory(url))
-        .join(&path);
+    let cached = cache.join(repository_directory(url)).join(&path);
 
     let missing = missing_marker(&cached);
 
@@ -359,19 +366,17 @@ mod tests {
         system::write_file(&cached, METADATA).unwrap();
         assert!(!is_expired(&cached));
 
-        std::fs::remove_dir_all(&directory).unwrap();
-
         // what a repository did not have is not asked for again until it expires
         let repository = MavenRepository::Remote {
             url: "http://127.0.0.1:9".to_string(),
             credentials: None,
         };
-        let cached = system::cache_dir("maven-metadata")
-            .join(repository_directory("http://127.0.0.1:9"))
-            .join("dev/test/nothing/maven-metadata.xml");
+        let cache = directory.join("cache");
+        let cached = cache.join(repository_directory("http://127.0.0.1:9")).join("dev/test/nothing/maven-metadata.xml");
         system::write_file(&missing_marker(&cached), "").unwrap();
-        assert!(fetch(&repository, "dev/test/nothing").unwrap().is_none());
-        std::fs::remove_file(missing_marker(&cached)).unwrap();
+        assert!(fetch_from(&cache, &repository, "dev/test/nothing").unwrap().is_none());
+
+        std::fs::remove_dir_all(&directory).unwrap();
 
         // local repositories have their own name for it
         let local = std::env::temp_dir().join(format!("build-script-local-{}", std::process::id()));
