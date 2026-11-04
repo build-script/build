@@ -13,7 +13,7 @@ use crate::language::runtime::{
     Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, ModuleOutput, Type, Value,
 };
 
-use super::{NativeOutput, vcpkg};
+use super::{NativeOutput, toolchain, vcpkg};
 
 pub fn build_cmake_signature() -> FunctionSignature {
     let strings = || Type::list(Type::String);
@@ -51,11 +51,6 @@ pub fn system_library_signature() -> FunctionSignature {
 /// sources build into build/cmake/<name>/ of the project. The build goes to build/, the installation to install/.
 pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
     let name: String = args.get("name")?;
-
-    if cfg!(windows) {
-        return Err(format!("{name}: CMake projects are not set up for Windows yet"));
-    }
-
     let options: Vec<String> = args.get("options")?;
     let source = context.project_dir.join(args.get::<String>("source")?);
 
@@ -105,6 +100,24 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
         configure.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja.display()));
         configure.arg("-DCMAKE_BUILD_TYPE=Release");
         configure.arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()));
+
+        // on Windows clang like for build_cpp, CMake would find no compiler without the environment of
+        // Visual Studio. With the static C library of release builds, like the ports of vcpkg.
+        if cfg!(windows) {
+            let [c_compiler, cpp_compiler, _] = toolchain::system_compilers()?;
+            let resource_compiler = Path::new(&c_compiler).with_file_name("llvm-rc.exe");
+
+            configure.env("CC", std::env::var("CC").unwrap_or(c_compiler))
+                .env("CXX", std::env::var("CXX").unwrap_or(cpp_compiler))
+                .arg("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded")
+                .arg("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW");
+
+            // CMake reads a \ in a path as an escape
+            if resource_compiler.is_file() {
+                configure.arg(format!("-DCMAKE_RC_COMPILER={}", resource_compiler.display().to_string().replace('\\', "/")));
+            }
+        }
+
         configure.args(options.iter().map(|option| format!("-D{option}")));
         system::run_command_quietly(&mut configure, "configuring with CMake")?;
 
@@ -140,9 +153,11 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
         false => flags_from(&compile_command, Some(&install_dir))?,
     };
 
+    // Windows names them <library>.lib
+    let (prefix, extension) = if cfg!(windows) { ("", "lib") } else { ("lib", "a") };
     let mut link_flags: Vec<String> =
         libraries.iter()
-            .map(|library| lib_dir.join(format!("lib{library}.a")).display().to_string())
+            .map(|library| lib_dir.join(format!("{prefix}{library}.{extension}")).display().to_string())
             .collect();
 
     if !link_command.is_empty() {
@@ -150,7 +165,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
     }
 
     if link_flags.is_empty() {
-        link_flags = system::files_with_extension(&[lib_dir.clone()], "a")
+        link_flags = system::files_with_extension(&[lib_dir.clone()], extension)
             .iter()
             .filter(|library| library.parent() == Some(lib_dir.as_path()))
             .map(|library| library.display().to_string())
@@ -246,7 +261,7 @@ fn flags_from(command: &[String], installation: Option<&Path>) -> Result<Vec<Str
     return Ok(flags);
 }
 
-// echo of the system, CMake projects are not set up for Windows
+// echo of the system, Windows has none
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

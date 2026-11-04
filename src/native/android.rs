@@ -48,7 +48,7 @@ pub fn build(
     let host_tag = match system::host_operating_system()? {
         HostOperatingSystem::MacOs => "darwin-x86_64",
         HostOperatingSystem::Linux => "linux-x86_64",
-        HostOperatingSystem::Windows => return Err("Android libraries are not set up for Windows hosts".into()),
+        HostOperatingSystem::Windows => "windows-x86_64",
     };
     let bin = ndk.join("toolchains/llvm/prebuilt")
         .join(host_tag)
@@ -62,11 +62,13 @@ pub fn build(
         };
 
         let target = format!("--target={target}{min_sdk}");
+        let tool = |name: &str| bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).display().to_string();
         let toolchain = Toolchain {
             zig: false,
-            c_compiler: vec![bin.join("clang").display().to_string(), target.clone()],
-            cpp_compiler: vec![bin.join("clang++").display().to_string(), target],
-            archiver: vec![bin.join("llvm-ar").display().to_string()],
+            windows: false,
+            c_compiler: vec![tool("clang"), target.clone()],
+            cpp_compiler: vec![tool("clang++"), target],
+            archiver: vec![tool("llvm-ar")],
             environment: vec![],
         };
 

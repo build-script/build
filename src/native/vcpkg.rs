@@ -12,7 +12,8 @@ use super::toolchain::Toolchain;
 const VCPKG_RELEASE: &str = "2026.10.16";
 
 /// vcpkg checks its .pc files with pkg-config and fixes the RPATHs of Linux programs with patchelf,
-/// it does not bring them on macOS and Linux. Neither matters for static libraries.
+/// it does not bring them on macOS and Linux. Neither matters for static libraries. On Windows it
+/// downloads pkg-config itself.
 const PKG_CONFIG: &str = "#!/bin/sh\ncase \"$1\" in --version) echo 2.1.0;; esac\nexit 0\n";
 const PATCHELF: &str = "#!/bin/sh\ncase \"$1\" in --version) echo patchelf 0.18.0;; esac\nexit 0\n";
 
@@ -38,8 +39,16 @@ pub fn install(
         (HostOperatingSystem::MacOs, HostArchitecture::X86_64) => "x64-osx",
         (HostOperatingSystem::Linux, HostArchitecture::Aarch64) => "arm64-linux",
         (HostOperatingSystem::Linux, HostArchitecture::X86_64) => "x64-linux",
-        (HostOperatingSystem::Windows, _) => return Err("C and C++ are not set up for Windows".into()),
+        // with the static C library, which clang links by default, and only for release: debug builds link
+        // them too, the C library of debug builds would not match
+        (HostOperatingSystem::Windows, HostArchitecture::Aarch64) => "arm64-windows-static-release",
+        (HostOperatingSystem::Windows, HostArchitecture::X86_64) => "x64-windows-static-release",
     };
+
+    // vcpkg builds the ports of Windows with MSVC, zig's are of MinGW
+    if toolchain.zig && cfg!(windows) {
+        return Err(format!("{module}: vcpkg ports with the zig toolchain are not set up for Windows, the system toolchain builds them"));
+    }
 
     // ports built by zig link with code zig compiled, also on Linux, where the system has libstdc++
     let triplet = match toolchain.zig {
@@ -78,7 +87,6 @@ pub fn install(
         system::create_dir(&system::cache_dir("vcpkg").join(cache))?;
     }
 
-    let path = std::env::var("PATH").unwrap_or_default();
     let mut command = Command::new(vcpkg.join("vcpkg"));
     command.arg("install")
         .arg(format!("--triplet={}", installed.triplet))
@@ -89,9 +97,13 @@ pub fn install(
         .env("VCPKG_DEFAULT_BINARY_CACHE", system::cache_dir("vcpkg/archives"))
         .env("VCPKG_DOWNLOADS", system::cache_dir("vcpkg/downloads"))
         .env("X_VCPKG_REGISTRIES_CACHE", system::cache_dir("vcpkg/registries"))
-        .env("VCPKG_DISABLE_METRICS", "1")
-        .env("PKG_CONFIG", tools.join("pkg-config"))
-        .env("PATH", format!("{}:{path}", tools.display()));
+        .env("VCPKG_DISABLE_METRICS", "1");
+
+    if !cfg!(windows) {
+        let path = std::env::var("PATH").unwrap_or_default();
+        command.env("PKG_CONFIG", tools.join("pkg-config"))
+            .env("PATH", format!("{}:{path}", tools.display()));
+    }
 
     if toolchain.zig {
         let triplets = zig_triplets(&tools, &toolchain.c_compiler[0], host)?;
@@ -181,7 +193,7 @@ fn install_vcpkg() -> Result<PathBuf, String> {
     let root = system::data_dir("vcpkg").join(VCPKG_RELEASE);
 
     return system::installing(|| {
-        if root.join("vcpkg").is_file() {
+        if root.join(format!("vcpkg{}", std::env::consts::EXE_SUFFIX)).is_file() {
             return Ok(root.clone());
         }
 
@@ -196,11 +208,14 @@ fn install_vcpkg() -> Result<PathBuf, String> {
 
         let tools = root.join("build-script");
 
-        for (name, script) in [("pkg-config", PKG_CONFIG), ("patchelf", PATCHELF)] {
-            executable(&tools.join(name), script)?;
+        // Windows takes its own, its programs have no RPATH
+        if !cfg!(windows) {
+            for (name, script) in [("pkg-config", PKG_CONFIG), ("patchelf", PATCHELF)] {
+                executable(&tools.join(name), script)?;
+            }
         }
 
-        let mut bootstrap = Command::new(root.join("bootstrap-vcpkg.sh"));
+        let mut bootstrap = Command::new(root.join(if cfg!(windows) { "bootstrap-vcpkg.bat" } else { "bootstrap-vcpkg.sh" }));
         bootstrap.arg("-disableMetrics");
         system::run_command_quietly(&mut bootstrap, "vcpkg bootstrap")?;
 
@@ -263,7 +278,7 @@ set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
 fn executable(file: &Path, script: &str) -> Result<(), String> {
     system::write_file(file, script)?;
 
-    // Windows has no executable bit, C and C++ are not set up there
+    // Windows has no executable bit
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -298,7 +313,8 @@ impl Installed {
                 .collect();
 
             if chosen.is_empty() {
-                let libraries = files.iter().filter(|file| file.starts_with(&lib_dir) && file.ends_with(".a"));
+                let extension = if cfg!(windows) { ".lib" } else { ".a" };
+                let libraries = files.iter().filter(|file| file.starts_with(&lib_dir) && file.ends_with(extension));
                 link_flags.extend(libraries.map(|file| self.root.join(file).display().to_string()));
                 continue;
             }
@@ -316,9 +332,9 @@ impl Installed {
         return pkg_config(names, &self.root.join(self.lib_dir(release)).join("pkgconfig"));
     }
 
-    /// arm64-osx/lib, of debug builds arm64-osx/debug/lib
+    /// arm64-osx/lib, of debug builds arm64-osx/debug/lib. Windows has only those of release.
     fn lib_dir(&self, release: bool) -> String {
-        return format!("{}/{}", self.triplet, if release { "lib" } else { "debug/lib" });
+        return format!("{}/{}", self.triplet, if release || cfg!(windows) { "lib" } else { "debug/lib" });
     }
 
     /// The files vcpkg installed for the port, relative to the install root
@@ -431,8 +447,34 @@ fn visit_package(
     }
 
     // a package links before what it requires
-    cflags.extend(words("cflags"));
-    libs.splice(0..0, [words("libs"), words("libs.private")].concat());
+    cflags.extend(words("cflags").into_iter().filter_map(gnu_style));
+    libs.splice(0..0, [words("libs"), words("libs.private")].concat().into_iter().map(linker_style));
+}
+
+/// A compile flag for clang. On Windows the .pc files of ports like abseil have those of MSVC: /D, /U and
+/// /I become -D, -U and -I, the others are of MSVC only, like /W3 and /wd4005.
+fn gnu_style(flag: String) -> Option<String> {
+    if !cfg!(windows) || !flag.starts_with('/') {
+        return Some(flag);
+    }
+
+    match flag.get(1..2) {
+        Some("D" | "U" | "I") => return Some(format!("-{}", &flag[1..])),
+        _ => return None,
+    }
+}
+
+/// A link flag for clang. On Windows the .pc files of ports like abseil have options of link.exe, like
+/// -ignore:4221: they go to it through -Wl.
+fn linker_style(flag: String) -> String {
+    let clang_flag = ["-l", "-L", "-W"].iter().any(|prefix| flag.starts_with(prefix));
+    let linker_option = flag.starts_with('/') || (flag.starts_with('-') && flag.contains(':') && !clang_flag);
+
+    if !cfg!(windows) || !linker_option {
+        return flag;
+    }
+
+    return format!("-Wl,-{}", &flag[1..]);
 }
 
 #[cfg(test)]
@@ -446,6 +488,31 @@ mod tests {
 
         assert_eq!(port_and_features("llvm[clang, lld]"), ("llvm", vec!["clang", "lld"]));
         assert_eq!(port_and_features("fmt"), ("fmt", vec![]));
+    }
+
+    #[test]
+    fn flags_of_msvc_become_those_of_clang_on_windows() {
+        let flags = ["/DNOMINMAX", "/wd4005", "/bigobj", "-DSPDLOG_FMT_EXTERNAL"].map(String::from);
+        let converted: Vec<String> = flags.iter()
+            .cloned()
+            .filter_map(gnu_style)
+            .collect();
+
+        match cfg!(windows) {
+            true => assert_eq!(converted, ["-DNOMINMAX", "-DSPDLOG_FMT_EXTERNAL"]),
+            false => assert_eq!(converted, flags),
+        }
+
+        let libs = ["-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"].map(String::from);
+        let converted: Vec<String> = libs.iter()
+            .cloned()
+            .map(linker_style)
+            .collect();
+
+        match cfg!(windows) {
+            true => assert_eq!(converted, ["-Wl,-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"]),
+            false => assert_eq!(converted, libs),
+        }
     }
 
     #[test]

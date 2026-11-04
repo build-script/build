@@ -2,7 +2,7 @@
 // libc++ for every target in one download
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
@@ -17,6 +17,8 @@ static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new
 pub struct Toolchain {
     /// vcpkg builds the ports with zig too
     pub zig: bool,
+    /// builds for Windows: shared libraries export through a .def file, programs link its libraries
+    pub windows: bool,
     pub c_compiler: Vec<String>,
     pub cpp_compiler: Vec<String>,
     pub archiver: Vec<String>,
@@ -25,17 +27,20 @@ pub struct Toolchain {
 }
 
 impl Toolchain {
-    /// "system": cc, c++ and ar of the system, or those CC, CXX and AR name, like make takes them.
-    /// "zig": zig cc, zig c++ and zig ar.
+    /// "system": cc, c++ and ar of the system, on Windows clang, clang++ and llvm-ar, or those CC, CXX
+    /// and AR name, like make takes them. "zig": zig cc, zig c++ and zig ar.
     pub fn named(name: &str) -> Result<Self, String> {
         let from_environment = |variable: &str, default: &str| vec![std::env::var(variable).unwrap_or(default.to_string())];
 
         if name == "system" {
+            let [c_compiler, cpp_compiler, archiver] = system_compilers()?;
+
             return Ok(Toolchain {
                 zig: false,
-                c_compiler: from_environment("CC", "cc"),
-                cpp_compiler: from_environment("CXX", "c++"),
-                archiver: from_environment("AR", "ar"),
+                windows: cfg!(windows),
+                c_compiler: from_environment("CC", &c_compiler),
+                cpp_compiler: from_environment("CXX", &cpp_compiler),
+                archiver: from_environment("AR", &archiver),
                 environment: vec![],
             });
         }
@@ -48,6 +53,7 @@ impl Toolchain {
 
         return Ok(Toolchain {
             zig: true,
+            windows: cfg!(windows),
             c_compiler: vec![zig.clone(), "cc".to_string()],
             cpp_compiler: vec![zig.clone(), "c++".to_string()],
             archiver: vec![zig, "ar".to_string()],
@@ -64,6 +70,31 @@ impl Toolchain {
         }
 
         return command;
+    }
+
+    /// The program with its arguments. On Windows a command line has at most 32767 characters, the flags of
+    /// abseil are more: then the arguments go into the response file, which clang and llvm-ar read like
+    /// their command line. Quoted like for a shell: llvm-ar would take those of Windows.
+    pub fn command_with_arguments(&self, program: &[String], arguments: &[String], response_file: &Path) -> Result<Command, String> {
+        let length: usize = arguments.iter()
+            .map(|argument| argument.len() + 3)
+            .sum();
+
+        if !cfg!(windows) || length < 30000 {
+            let mut command = self.command(program);
+            command.args(arguments);
+            return Ok(command);
+        }
+
+        let quoted: Vec<String> = arguments.iter()
+            .map(|argument| format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect();
+        system::write_file(response_file, &quoted.join("\n"))?;
+
+        let mut command = self.command(program);
+        command.arg("--rsp-quoting=posix")
+            .arg(format!("@{}", response_file.display()));
+        return Ok(command);
     }
 
     /// What the compiler says to --version, empty when it does not start: compiling then tells why
@@ -86,10 +117,58 @@ impl Toolchain {
     }
 }
 
+/// The C compiler, the C++ compiler and the archiver of the system. Windows has no cc: there clang, with
+/// the ABI of MSVC, it links with the C library and the linker of Visual Studio.
+pub fn system_compilers() -> Result<[String; 3], String> {
+    if !cfg!(windows) {
+        return Ok(["cc", "c++", "ar"].map(String::from));
+    }
+
+    match clang_dir() {
+        Some(bin) => return Ok(["clang", "clang++", "llvm-ar"].map(|tool| bin.join(format!("{tool}.exe")).display().to_string())),
+        // the compilers CC and CXX name need none
+        None if std::env::var_os("CC").is_some() && std::env::var_os("CXX").is_some() => {
+            return Ok(["clang", "clang++", "llvm-ar"].map(String::from));
+        }
+        None => {
+            return Err("C and C++ build with clang on Windows: install LLVM, like with winget install LLVM.LLVM, or the C++ Clang tools of Visual Studio. CC and CXX name other compilers".into());
+        }
+    }
+}
+
+/// The directory of clang on Windows: of the PATH, of LLVM or of Visual Studio
+fn clang_dir() -> Option<PathBuf> {
+    if let Some(clang) = system::find_program("clang") {
+        return clang.parent().map(Path::to_path_buf);
+    }
+
+    let llvm = PathBuf::from(std::env::var_os("ProgramFiles")?).join(r"LLVM\bin");
+
+    if llvm.join("clang.exe").is_file() {
+        return Some(llvm);
+    }
+
+    // the C++ Clang tools of Visual Studio
+    let vswhere = PathBuf::from(std::env::var_os("ProgramFiles(x86)")?).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+    let architecture = if cfg!(target_arch = "aarch64") { "ARM64" } else { "x64" };
+    let output = Command::new(vswhere)
+        .args(["-latest", "-products", "*", "-find"])
+        .arg(format!(r"VC\Tools\Llvm\{architecture}\bin\clang.exe"))
+        .output()
+        .ok()?;
+    let clang = PathBuf::from(String::from_utf8_lossy(&output.stdout).lines().next()?.trim());
+
+    if !clang.is_file() {
+        return None;
+    }
+
+    return clang.parent().map(Path::to_path_buf);
+}
+
 /// zig from ziglang.org into <build home>/zig/<version>, checked against the SHA-256 of its index
 fn install_zig() -> Result<PathBuf, String> {
     let target = system::data_dir("zig").join(ZIG_VERSION);
-    let zig = target.join("zig");
+    let zig = target.join(format!("zig{}", std::env::consts::EXE_SUFFIX));
 
     return system::installing(|| {
         if zig.is_file() {
@@ -101,7 +180,8 @@ fn install_zig() -> Result<PathBuf, String> {
             (HostOperatingSystem::MacOs, HostArchitecture::X86_64) => "x86_64-macos",
             (HostOperatingSystem::Linux, HostArchitecture::Aarch64) => "aarch64-linux",
             (HostOperatingSystem::Linux, HostArchitecture::X86_64) => "x86_64-linux",
-            (HostOperatingSystem::Windows, _) => return Err("zig is not set up for Windows".into()),
+            (HostOperatingSystem::Windows, HostArchitecture::Aarch64) => "aarch64-windows",
+            (HostOperatingSystem::Windows, HostArchitecture::X86_64) => "x86_64-windows",
         };
 
         let (status, body) = system::http_get("https://ziglang.org/download/index.json", None)?;
@@ -121,7 +201,8 @@ fn install_zig() -> Result<PathBuf, String> {
 
         system::log_tool("zig", &format!("Installing zig {ZIG_VERSION}"));
         let unpacked = system::data_dir("zig").join(format!("{ZIG_VERSION}.unpacked"));
-        let archive = target.with_extension("tar.xz");
+        // a zip on Windows
+        let archive = target.with_extension(if cfg!(windows) { "zip" } else { "tar.xz" });
         system::download_and_extract(url, &archive, Some((256, sha256)), &unpacked)?;
 
         // the archive holds one directory, zig-<host>-<version>
@@ -132,6 +213,8 @@ fn install_zig() -> Result<PathBuf, String> {
             .ok_or("the zig archive is empty")?
             .path();
 
+        // what an interrupted install left
+        system::remove_dir(&target)?;
         fs::rename(&inner, &target)
             .map_err(|error| format!("could not move {}: {error}", inner.display()))?;
         system::remove_dir(&unpacked)?;
