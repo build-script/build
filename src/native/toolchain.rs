@@ -1,7 +1,6 @@
 // The compilers of C and C++ modules: those of the system, or zig, which brings clang, libc and
 // libc++ for every target in one download
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -193,24 +192,9 @@ fn install_zig() -> Result<PathBuf, String> {
         };
 
         system::log_tool("zig", &format!("Installing zig {ZIG_VERSION}"));
-        let unpacked = system::data_dir("zig").join(format!("{ZIG_VERSION}.unpacked"));
-        // a zip on Windows
+        // a zip on Windows, it holds one directory, zig-<host>-<version>
         let archive = target.with_extension(if cfg!(windows) { "zip" } else { "tar.xz" });
-        system::download_and_extract(url, &archive, Some((256, sha256)), &unpacked)?;
-
-        // the archive holds one directory, zig-<host>-<version>
-        let inner = fs::read_dir(&unpacked)
-            .map_err(|error| format!("could not read {}: {error}", unpacked.display()))?
-            .flatten()
-            .next()
-            .ok_or("the zig archive is empty")?
-            .path();
-
-        // what an interrupted install left
-        system::remove_dir(&target)?;
-        fs::rename(&inner, &target)
-            .map_err(|error| format!("could not move {}: {error}", inner.display()))?;
-        system::remove_dir(&unpacked)?;
+        system::install_archive(url, &archive, Some((256, sha256)), &target)?;
 
         return Ok(zig.clone());
     });

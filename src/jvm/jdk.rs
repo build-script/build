@@ -173,31 +173,15 @@ fn install_jdk(
             );
         }
 
-        // extracted completely before it is renamed: a half extracted jdk is never used
-        let unpacked = PathBuf::from(format!("{}.tmp", target.display()));
+        // installed completely before it is renamed: a half extracted jdk is never used
         let checksum = package.checksum.as_deref().map(|checksum| (256, checksum));
-        system::download_and_extract(
-            &package.url,
-            &jdks_dir.join(&package.filename),
-            checksum,
-            &unpacked,
-        )?;
+        system::install_archive(&package.url, &jdks_dir.join(&package.filename), checksum, &target)?;
 
-        let Some(home) = find_jdk_home(&unpacked, 0) else {
+        let Some(home) = find_jdk_home(&target, 0) else {
             return Err(format!("{} does not contain a JDK", package.filename));
         };
 
-        let relative_home = home.strip_prefix(&unpacked)
-            .unwrap_or(Path::new(""))
-            .to_path_buf();
-
-        system::remove_dir(&target)?;
-        fs::rename(&unpacked, &target)
-            .map_err(|error| format!("could not create {}: {error}", target.display()))?;
-
-        return Ok(Jdk {
-            home: target.join(relative_home),
-        });
+        return Ok(Jdk { home });
     });
 }
 

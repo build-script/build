@@ -1,7 +1,6 @@
 // Windows exports of a shared library only what __declspec(dllexport) marks: a .def file names every
 // function and variable its objects define, like WINDOWS_EXPORT_ALL_SYMBOLS of CMake
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
@@ -18,7 +17,7 @@ pub fn write_def_file(objects: &[PathBuf], def_file: &Path) -> Result<(), String
     let mut exports = BTreeMap::new();
 
     for object in objects {
-        let data = fs::read(object).map_err(|error| format!("could not read {}: {error}", object.display()))?;
+        let data = system::read_bytes(object)?;
         let file = object::File::parse(&*data).map_err(|error| format!("{}: {error}", object.display()))?;
 
         for symbol in file.symbols() {
@@ -45,6 +44,8 @@ pub fn write_def_file(objects: &[PathBuf], def_file: &Path) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use object::write::{self, StandardSection, Symbol, SymbolSection};
     use object::{Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope};
 

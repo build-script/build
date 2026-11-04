@@ -95,11 +95,8 @@ pub fn merge_jars(
                 continue;
             }
 
-            let content = fs::read(&file)
-                .map_err(|error| format!("could not read {}: {error}", file.display()))?;
-
-            let mut existing = fs::read(&target)
-                .map_err(|error| format!("could not read {}: {error}", target.display()))?;
+            let content = system::read_bytes(&file)?;
+            let mut existing = system::read_bytes(&target)?;
 
             if is_class {
                 if existing != content {

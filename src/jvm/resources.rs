@@ -142,8 +142,7 @@ impl JavaResources {
                     system::copy_file(&source, &file)?;
                     continue;
                 }
-                (ResourceContent::File(source), false) => fs::read(&source)
-                    .map_err(|error| format!("could not read {}: {error}", source.display()))?,
+                (ResourceContent::File(source), false) => system::read_bytes(&source)?,
                 (ResourceContent::Text(text), _) => text.into_bytes(),
             };
 

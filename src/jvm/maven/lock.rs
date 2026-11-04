@@ -1,7 +1,6 @@
 // project.lock next to the script, like Cargo.lock: the SHA-256 of every file the build took from a Maven
 // repository and the build each SNAPSHOT resolved to. The first build writes it, later ones take the same.
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -155,19 +154,13 @@ pub fn save() -> Result<(), String> {
         .map(|(path, value)| format!("{path} {value}\n"))
         .collect();
     let content = format!("{HEADER}{}", lines.concat());
-
-    if system::read_file(&lock.file).is_ok_and(|existing| existing == content) {
-        return Ok(());
-    }
-
-    let partial = system::partial_path(&lock.file);
-    system::write_file(&partial, &content)?;
-    return fs::rename(&partial, &lock.file)
-        .map_err(|error| format!("could not write {}: {error}", lock.file.display()));
+    return system::write_file_if_changed(&lock.file, &content);
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]

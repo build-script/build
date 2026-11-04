@@ -339,33 +339,10 @@ impl SdkCatalog {
             .ok_or_else(|| format!("invalid url {url}"))?;
 
         system::log_tool("android-sdk", &format!("Installing {package}"));
-        let unpacked = PathBuf::from(format!("{}.tmp", target.display()));
         let download = sdk_root.join(".downloads").join(file_name);
-        system::download_and_extract(
-            &format!("{}/{url}", self.base_url),
-            &download,
-            Some((bits, checksum.value.trim())),
-            &unpacked,
-        )?;
 
-        // the archives contain one directory with an arbitrary name
-        let entries: Vec<PathBuf> = fs::read_dir(&unpacked)
-            .map_err(|error| format!("could not read {}: {error}", unpacked.display()))?
-            .flatten()
-            .map(|entry| entry.path())
-            .collect();
-
-        let content = match entries.as_slice() {
-            [single] if single.is_dir() => single.clone(),
-            _ => unpacked.clone(),
-        };
-
-        system::remove_dir(target)?;
-        system::create_parent_dir(target)?;
-        fs::rename(&content, target)
-            .map_err(|error| format!("could not create {}: {error}", target.display()))?;
-
-        return system::remove_dir(&unpacked);
+        // the archives hold one directory with an arbitrary name
+        return system::install_archive(&format!("{}/{url}", self.base_url), &download, Some((bits, checksum.value.trim())), target);
     }
 
     /// Like sdkmanager: accepted licenses are hashes in <sdk>/licenses/<id>. `consent` gets

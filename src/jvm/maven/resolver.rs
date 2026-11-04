@@ -1,7 +1,6 @@
 // Dependency resolver: transitive dependencies via POMs and Gradle module metadata, the highest version wins
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -1017,21 +1016,14 @@ impl DependencyResolver {
                 let file_url = format!("{url}/{path_in_repository}");
 
                 // checked before it is in the cache, a file there is never downloaded again
-                let partial = system::partial_path(&file);
-                if !system::download(&file_url, &partial, false, credentials.as_ref())? {
+                let verify = |partial: &Path| {
+                    verify_checksum(&file_url, partial, credentials.as_ref())?;
+                    return lock::check(path_in_repository, partial, true);
+                };
+
+                if !system::download_checked(&file_url, &file, false, credentials.as_ref(), verify)? {
                     continue;
                 }
-
-                let checked = verify_checksum(&file_url, &partial, credentials.as_ref())
-                    .and_then(|()| lock::check(path_in_repository, &partial, true));
-
-                if let Err(error) = checked {
-                    let _ = fs::remove_file(&partial);
-                    return Err(error);
-                }
-
-                fs::rename(&partial, &file)
-                    .map_err(|error| format!("could not save {}: {error}", file.display()))?;
             }
 
             if let Some(build) = &build_path {

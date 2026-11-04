@@ -161,7 +161,7 @@ pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -
         jdk = escape(&jdk_name(&inputs.jdk)),
     );
 
-    return write_if_changed(&module_file(project_dir, &inputs.name), &file);
+    return system::write_file_if_changed(&module_file(project_dir, &inputs.name), &file);
 }
 
 /// IntelliJ's Kotlin plugin takes the compiler plugins from the facet, like Compose
@@ -233,7 +233,7 @@ pub fn write_project(project_dir: &Path, built: Option<&[Arc<BuiltModule>]>) -> 
             .to_string();
 
         if !built.iter().any(|module| absolute(&module.directory) == project) && !names.contains(&root) {
-            write_if_changed(&module_file(project_dir, &root), ROOT_MODULE)?;
+            system::write_file_if_changed(&module_file(project_dir, &root), ROOT_MODULE)?;
             names.push(root);
         }
 
@@ -264,7 +264,7 @@ pub fn write_project(project_dir: &Path, built: Option<&[Arc<BuiltModule>]>) -> 
 "#
     );
 
-    return write_if_changed(&project_dir.join(".idea/modules.xml"), &file);
+    return system::write_file_if_changed(&project_dir.join(".idea/modules.xml"), &file);
 }
 
 /// What the tests need besides the module's libraries, resolved like for running them:
@@ -366,14 +366,6 @@ fn absolute(path: &Path) -> PathBuf {
     }
 
     return normalized;
-}
-
-fn write_if_changed(file: &Path, content: &str) -> Result<(), String> {
-    if fs::read_to_string(file).is_ok_and(|existing| existing == content) {
-        return Ok(());
-    }
-
-    return system::write_file(file, content);
 }
 
 #[cfg(test)]

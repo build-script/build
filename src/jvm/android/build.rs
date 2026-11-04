@@ -733,32 +733,31 @@ impl AndroidBuild {
 
         if !dexed.is_dir() {
             system::recreate_dir(work_dir)?;
-            let partial = work_dir.join("partial");
 
-            let mut command = self
-                .inputs
-                .jdk
-                .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
+            system::produce_atomically(&dexed, |partial| {
+                let mut command = self
+                    .inputs
+                    .jdk
+                    .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
 
-            command.arg(self.dex_mode())
-                .arg("--min-api")
-                .arg(self.min_api().to_string())
-                .arg("--lib")
-                .arg(&self.sdk.android_jar)
-                .arg("--desugared-lib")
-                .arg(&library.config)
-                .arg("--output")
-                .arg(&partial);
+                command.arg(self.dex_mode())
+                    .arg("--min-api")
+                    .arg(self.min_api().to_string())
+                    .arg("--lib")
+                    .arg(&self.sdk.android_jar)
+                    .arg("--desugared-lib")
+                    .arg(&library.config)
+                    .arg("--output")
+                    .arg(partial);
 
-            if let Some(rules) = keep_rules {
-                command.arg("--pg-conf").arg(rules);
-            }
+                if let Some(rules) = keep_rules {
+                    command.arg("--pg-conf").arg(rules);
+                }
 
-            command.args(&library.jars);
-            system::create_dir(&partial)?;
-            system::run_command(&mut command, "L8")?;
-            fs::rename(&partial, &dexed)
-                .map_err(|error| format!("could not move {}: {error}", partial.display()))?;
+                command.args(&library.jars);
+                system::create_dir(partial)?;
+                return system::run_command(&mut command, "L8");
+            })?;
         }
 
         let mut next = system::files_with_extension(&[dex_dir.to_path_buf()], "dex").len() + 1;
@@ -846,21 +845,22 @@ impl AndroidBuild {
             return Ok(dex);
         }
 
-        // only those of the current libraries are kept, renamed once complete
+        // only those of the current libraries are kept
         system::recreate_dir(&dexed)?;
-        let partial = dexed.join("partial");
-        system::create_dir(&partial)?;
 
-        if !libraries.is_empty() {
-            system::log(
-                &self.inputs.name,
-                &format!("Dexing {} libraries, again only when they change", libraries.len()),
-            );
-            self.run_d8(libraries, &[], &partial, desugared)?;
-        }
+        system::produce_atomically(&dex, |partial| {
+            system::create_dir(partial)?;
 
-        fs::rename(&partial, &dex)
-            .map_err(|error| format!("could not move {}: {error}", partial.display()))?;
+            if !libraries.is_empty() {
+                system::log(
+                    &self.inputs.name,
+                    &format!("Dexing {} libraries, again only when they change", libraries.len()),
+                );
+                self.run_d8(libraries, &[], partial, desugared)?;
+            }
+
+            return Ok(());
+        })?;
 
         return Ok(dex);
     }
@@ -1536,21 +1536,16 @@ fn compiled_resources(
 }
 
 fn compile_resources(aapt2: &Path, res_dir: &Path, output: &Path) -> Result<(), String> {
-    system::create_parent_dir(output)?;
-    let partial = system::partial_path(output);
-    let mut command = Command::new(aapt2);
-    command.arg("compile")
-        .arg("--dir")
-        .arg(res_dir)
-        .arg("-o")
-        .arg(&partial);
-    system::run_command(
-        &mut command,
-        &format!("aapt2 compile of {}", res_dir.display()),
-    )?;
+    return system::produce_atomically(output, |partial| {
+        let mut command = Command::new(aapt2);
+        command.arg("compile")
+            .arg("--dir")
+            .arg(res_dir)
+            .arg("-o")
+            .arg(partial);
 
-    return fs::rename(&partial, output)
-        .map_err(|error| format!("could not save {}: {error}", output.display()));
+        return system::run_command(&mut command, &format!("aapt2 compile of {}", res_dir.display()));
+    });
 }
 
 /// `name` (jniLibs) of the main source set and of the build type's where it has files, lowest priority first

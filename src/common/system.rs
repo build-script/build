@@ -144,6 +144,40 @@ pub fn write_file(file: &Path, content: &str) -> Result<(), String> {
         .map_err(|error| format!("could not write {}: {error}", file.display()));
 }
 
+pub fn read_bytes(file: &Path) -> Result<Vec<u8>, String> {
+    return fs::read(file).map_err(|error| format!("could not read {}: {error}", file.display()));
+}
+
+/// Writes only what changed: a header written again would compile everything that includes it again.
+/// Renamed into place, nobody reads half of it.
+pub fn write_file_if_changed(file: &Path, content: &str) -> Result<(), String> {
+    if fs::read_to_string(file).is_ok_and(|existing| existing == content) {
+        return Ok(());
+    }
+
+    return produce_atomically(file, |partial| write_file(partial, content));
+}
+
+/// `produce` writes the file or directory at a partial path next to `target`, which is then renamed to it:
+/// a build that stops half way leaves nothing half written behind. A file replaces the one there, a
+/// directory another build finished meanwhile stays.
+pub fn produce_atomically(target: &Path, produce: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
+    create_parent_dir(target)?;
+    let partial = partial_path(target);
+
+    if let Err(error) = produce(&partial) {
+        let _ = fs::remove_file(&partial);
+        let _ = remove_dir(&partial);
+        return Err(error);
+    }
+
+    match fs::rename(&partial, target) {
+        Ok(()) => return Ok(()),
+        Err(_) if target.is_dir() => return remove_dir(&partial),
+        Err(error) => return Err(format!("could not move {} to {}: {error}", partial.display(), target.display())),
+    }
+}
+
 pub fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
     create_parent_dir(to)?;
     return fs::copy(from, to)
@@ -408,6 +442,17 @@ pub fn download(
     show_progress: bool,
     credentials: Option<&Credentials>,
 ) -> Result<bool, String> {
+    return download_checked(url, target, show_progress, credentials, |_| Ok(()));
+}
+
+/// Like download, `verify` checks the file before it is in place: one that does not pass never is
+pub fn download_checked(
+    url: &str,
+    target: &Path,
+    show_progress: bool,
+    credentials: Option<&Credentials>,
+    verify: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<bool, String> {
     create_parent_dir(target)?;
 
     let response = http_request(url, credentials)?;
@@ -421,8 +466,6 @@ pub fn download(
         _ => return Err(format!("download of {url} failed: HTTP {status}")),
     }
 
-    // renamed once complete, nothing half downloaded stays behind
-    let partial = partial_path(target);
     let body = response.into_body();
     let size = body.content_length();
     let name = target.file_name()
@@ -431,16 +474,15 @@ pub fn download(
         .to_string();
     let progress = (show_progress && std::io::stderr().is_terminal()).then_some(name);
 
+    // renamed once complete, nothing half downloaded stays behind
     let mut reader = body.into_reader();
-    let written = fs::File::create(&partial).and_then(|mut file| copy_with_progress(&mut reader, &mut file, size, progress));
+    produce_atomically(target, |partial| {
+        fs::File::create(partial)
+            .and_then(|mut file| copy_with_progress(&mut reader, &mut file, size, progress))
+            .map_err(|error| format!("download of {url} failed: {error}"))?;
 
-    if let Err(error) = written {
-        let _ = fs::remove_file(&partial);
-        return Err(format!("download of {url} failed: {error}"));
-    }
-
-    fs::rename(&partial, target)
-        .map_err(|error| format!("could not save {}: {error}", target.display()))?;
+        return verify(partial);
+    })?;
     println!("Download {url}");
 
     return Ok(true);
@@ -483,29 +525,27 @@ fn copy_with_progress(
     return Ok(());
 }
 
-/// `checksum`: the SHA bits (1 or 256) and the expected hex string. A file that does not match is deleted.
-pub fn download_verified(
+/// `checksum`: the SHA bits (1 or 256) and the expected hex string. A file that does not match is not kept.
+fn download_verified(
     url: &str,
     target: &Path,
     show_progress: bool,
     checksum: Option<(u32, &str)>,
 ) -> Result<bool, String> {
-    if !download(url, target, show_progress, None)? {
-        return Ok(false);
-    }
+    return download_checked(url, target, show_progress, None, |file| {
+        let Some((bits, expected)) = checksum else {
+            return Ok(());
+        };
 
-    if let Some((bits, expected)) = checksum {
         let expected = expected.trim().to_ascii_lowercase();
-        let actual = sha(target, bits)?;
-        if actual != expected {
-            let _ = fs::remove_file(target);
-            return Err(format!(
-                "checksum mismatch for {url} (expected {expected}, got {actual})"
-            ));
-        }
-    }
+        let actual = sha(file, bits)?;
 
-    return Ok(true);
+        if actual != expected {
+            return Err(format!("checksum mismatch for {url} (expected {expected}, got {actual})"));
+        }
+
+        return Ok(());
+    });
 }
 
 /// Downloads an archive and extracts it to `unpacked`, then deletes the archive
@@ -524,6 +564,31 @@ pub fn download_and_extract(
     let _ = fs::remove_file(archive);
 
     return Ok(());
+}
+
+/// Downloads an archive and installs what it holds into `target`: the one directory in it, or all of it
+/// when there are more. Unpacked completely next to `target` before it is renamed, a half installed tool
+/// is never used.
+pub fn install_archive(url: &str, archive: &Path, checksum: Option<(u32, &str)>, target: &Path) -> Result<(), String> {
+    let unpacked = PathBuf::from(format!("{}.unpacked", target.display()));
+    download_and_extract(url, archive, checksum, &unpacked)?;
+
+    let entries: Vec<PathBuf> = fs::read_dir(&unpacked)
+        .map_err(|error| format!("could not read {}: {error}", unpacked.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+
+    let content = match entries.as_slice() {
+        [single] if single.is_dir() => single.clone(),
+        _ => unpacked.clone(),
+    };
+
+    remove_dir(target)?;
+    fs::rename(&content, target)
+        .map_err(|error| format!("could not move {} to {}: {error}", content.display(), target.display()))?;
+
+    return remove_dir(&unpacked);
 }
 
 /// The HTTP status and the body, also for error statuses
@@ -727,31 +792,32 @@ pub fn add_to_zip(archive: &Path, files: &[(String, PathBuf)], stored: bool) -> 
 
     // renamed once complete, the entries already there copied as they are: appending would write a
     // central directory that differs from the headers aapt2 wrote, zipalign warns about that
-    let partial = partial_path(archive);
-    let mut zip = ZipWriter::new(fs::File::create(&partial).map_err(|error| failed(&error))?);
+    return produce_atomically(archive, |partial| {
+        let mut zip = ZipWriter::new(fs::File::create(partial).map_err(|error| failed(&error))?);
 
-    if archive.is_file() {
-        let mut existing = open_zip(archive)?;
+        if archive.is_file() {
+            let mut existing = open_zip(archive)?;
 
-        for index in 0..existing.len() {
-            let entry = existing.by_index_raw(index).map_err(|error| failed(&error))?;
-            zip.raw_copy_file(entry).map_err(|error| failed(&error))?;
+            for index in 0..existing.len() {
+                let entry = existing.by_index_raw(index).map_err(|error| failed(&error))?;
+                zip.raw_copy_file(entry).map_err(|error| failed(&error))?;
+            }
         }
-    }
 
-    let method = if stored { CompressionMethod::Stored } else { CompressionMethod::Deflated };
-    let options = SimpleFileOptions::default().compression_method(method);
+        let method = if stored { CompressionMethod::Stored } else { CompressionMethod::Deflated };
+        let options = SimpleFileOptions::default().compression_method(method);
 
-    for (name, file) in files {
-        zip.start_file(name, options).map_err(|error| failed(&error))?;
-        let mut input = fs::File::open(file)
-            .map_err(|error| format!("could not read {}: {error}", file.display()))?;
-        std::io::copy(&mut input, &mut zip).map_err(|error| failed(&error))?;
-    }
+        for (name, file) in files {
+            zip.start_file(name, options).map_err(|error| failed(&error))?;
+            let mut input = fs::File::open(file)
+                .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+            std::io::copy(&mut input, &mut zip).map_err(|error| failed(&error))?;
+        }
 
-    zip.finish().map_err(|error| failed(&error))?;
+        zip.finish().map_err(|error| failed(&error))?;
 
-    return fs::rename(&partial, archive).map_err(|error| failed(&error));
+        return Ok(());
+    });
 }
 
 /// The files below the directory by their paths relative to it with /, as an archive names them
@@ -789,25 +855,9 @@ pub fn kept_in_cache(
         return Ok(target);
     }
 
-    // renamed once complete, a build that stops half way leaves nothing behind
-    let partial = partial_path(&target);
-    remove_dir(&partial)?;
-    produce(&partial)?;
-    match fs::rename(&partial, &target) {
-        Ok(()) => return Ok(target),
-        // another build was faster
-        Err(_) if target.is_dir() => {
-            remove_dir(&partial)?;
-            return Ok(target);
-        }
-        Err(error) => {
-            return Err(format!(
-                "could not move {} to {}: {error}",
-                partial.display(),
-                target.display()
-            ));
-        }
-    }
+    // another build may be faster, its directory stays
+    produce_atomically(&target, produce)?;
+    return Ok(target);
 }
 
 /// Where `path` is written before it is complete and renamed. A new one each

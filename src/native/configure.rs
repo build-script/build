@@ -72,11 +72,8 @@ pub fn write_headers(
         headers.push((header, EXPORT_HEADER.replace("{NAME}", &name.to_ascii_uppercase())));
     }
 
-    // a header written again would compile everything that includes it again
     for (header, text) in headers {
-        if fs::read_to_string(&header).ok().as_deref() != Some(text.as_str()) {
-            system::write_file(&header, &text)?;
-        }
+        system::write_file_if_changed(&header, &text)?;
     }
 
     return Ok(());
