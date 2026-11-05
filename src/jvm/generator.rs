@@ -23,8 +23,8 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .required("tool", Type::list(Type::String))
             .required("repositories", Type::list(Type::String))
             .required("main_class", Type::String)
-            .with_default("args", Type::list(Type::String), Value::string_list(&[]))
-            .with_default("inputs", Type::list(Type::String), Value::string_list(&[]))
+            .strings("args")
+            .strings("inputs")
             .with_default(
                 "tool_sources",
                 Type::list(Type::String),

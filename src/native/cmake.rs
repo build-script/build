@@ -14,34 +14,28 @@ use crate::language::runtime::{
 use super::{NativeOutput, toolchain, vcpkg};
 
 pub fn build_cmake_signature() -> FunctionSignature {
-    let strings = || Type::list(Type::String);
-    let none = || Value::string_list(&[]);
-
     return FunctionParameters::new()
         .required("name", Type::String)
         // the directory with CMakeLists.txt, like git(...) + "/llvm"
         .required("source", Type::String)
         // -D of CMake: "LLVM_ENABLE_PROJECTS=clang;lld"
-        .with_default("options", strings(), none())
+        .strings("options")
         // what modules depending on it link, like "LLVMSupport", else every static library it installed
-        .with_default("libraries", strings(), none())
+        .strings("libraries")
         // a tool of the installation and its arguments, its output the flags: "bin/llvm-config", "--cxxflags"
-        .with_default("compile_flags_from", strings(), none())
-        .with_default("link_flags_from", strings(), none())
-        .with_default("link_flags", strings(), none())
+        .strings("compile_flags_from")
+        .strings("link_flags_from")
+        .strings("link_flags")
         .returns(Type::Module);
 }
 
 pub fn system_library_signature() -> FunctionSignature {
-    let strings = || Type::list(Type::String);
-    let none = || Value::string_list(&[]);
-
     return FunctionParameters::new()
         .required("name", Type::String)
         // a tool and its arguments, its output the flags: "llvm-config", "--cxxflags"
-        .required("compile_flags_from", strings())
-        .required("link_flags_from", strings())
-        .with_default("link_flags", strings(), none())
+        .required("compile_flags_from", Type::list(Type::String))
+        .required("link_flags_from", Type::list(Type::String))
+        .strings("link_flags")
         .returns(Type::Module);
 }
 

@@ -121,6 +121,15 @@ pub fn bind(
 
     let error = |variant| RuntimeError::new(variant, span);
 
+    // the value, when the parameter takes it
+    let checked = |parameter: &str, expected: &Type, value: Value, value_span: Span| {
+        if !expected.accepts(&value) {
+            return Err(RuntimeError::type_mismatch(function, parameter, expected, &value, value_span));
+        }
+
+        return Ok(value);
+    };
+
     for (index, argument) in arguments.into_iter().enumerate() {
         match argument {
             CallArgument::Positional(value, arg_span) => {
@@ -134,29 +143,9 @@ pub fn bind(
                 }
 
                 if let Some(param) = parameters.fixed.get(index) {
-                    if !param.param_type.accepts(&value) {
-                        return Err(RuntimeError::type_mismatch(
-                            function,
-                            &param.name,
-                            &param.param_type,
-                            &value,
-                            arg_span,
-                        ));
-                    }
-
-                    slots[index] = Some(value);
+                    slots[index] = Some(checked(&param.name, &param.param_type, value, arg_span)?);
                 } else if let Some(variadic) = &parameters.variadic {
-                    if !variadic.param_type.accepts(&value) {
-                        return Err(RuntimeError::type_mismatch(
-                            function,
-                            &variadic.name,
-                            &variadic.param_type,
-                            &value,
-                            arg_span,
-                        ));
-                    }
-
-                    rest.push(value);
+                    rest.push(checked(&variadic.name, &variadic.param_type, value, arg_span)?);
                 } else {
                     return Err(error(RuntimeErrorType::TooManyArguments {
                         function: function.to_string(),
@@ -187,17 +176,7 @@ pub fn bind(
                         return Err(duplicate());
                     }
 
-                    if !param.param_type.accepts(&value) {
-                        return Err(RuntimeError::type_mismatch(
-                            function,
-                            &param.name,
-                            &param.param_type,
-                            &value,
-                            arg_span,
-                        ));
-                    }
-
-                    slots[param_index] = Some(value);
+                    slots[param_index] = Some(checked(&param.name, &param.param_type, value, arg_span)?);
                     continue;
                 }
 
@@ -224,29 +203,11 @@ pub fn bind(
                     return Err(duplicate());
                 }
 
-                let list_type = Type::list(variadic.param_type.clone());
-
-                let Value::List(items) = value.clone() else {
-                    return Err(RuntimeError::type_mismatch(
-                        function,
-                        &variadic.name,
-                        &list_type,
-                        &value,
-                        arg_span,
-                    ));
-                };
-
-                if !list_type.accepts(&value) {
-                    return Err(RuntimeError::type_mismatch(
-                        function,
-                        &variadic.name,
-                        &list_type,
-                        &value,
-                        arg_span,
-                    ));
+                // a list type takes only lists
+                if let Value::List(items) = checked(&variadic.name, &Type::list(variadic.param_type.clone()), value, arg_span)? {
+                    rest = items;
                 }
 
-                rest = items;
                 rest_named = true;
             }
         }
@@ -302,6 +263,16 @@ impl FunctionParameters {
         );
 
         return self.param(name, param_type, ParameterDefault::Value(value));
+    }
+
+    /// A list of strings, empty when the call leaves it out
+    pub fn strings(self, name: &str) -> Self {
+        return self.with_default(name, Type::list(Type::String), Value::string_list(&[]));
+    }
+
+    /// A list of strings, `default` when the call leaves it out
+    pub fn strings_or(self, name: &str, default: &[&str]) -> Self {
+        return self.with_default(name, Type::list(Type::String), Value::string_list(default));
     }
 
     pub fn variadic(mut self, name: &str, param_type: Type) -> Self {

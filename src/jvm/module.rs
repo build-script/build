@@ -189,10 +189,10 @@ pub fn module_parameters(
     if kotlin {
         parameters = parameters
             // short names like "compose" or Maven coordinates of compiler plugins
-            .with_default("plugins", strings(), none())
+            .strings("plugins")
             // passed to the plugins as -P, like plugin:org.jetbrains.kotlin.allopen:annotation=com.example.Open
-            .with_default("plugin_options", strings(), none())
-            .with_default("kotlin_args", strings(), none());
+            .strings("plugin_options")
+            .strings("kotlin_args");
     }
 
     // like annotationProcessor in Gradle: javac processors for the Java sources
@@ -203,7 +203,7 @@ pub fn module_parameters(
             // like ksp in Gradle: Kotlin symbol processors, run before kotlinc
             .with_default("ksp", dependencies_type(), none())
             // "key=value" for the symbol processors
-            .with_default("ksp_options", strings(), none())
+            .strings("ksp_options")
             .with_default("ksp_version", Type::String, DEFAULT_KSP_VERSION)
             .with_default("kotlin_version", Type::String, DEFAULT_KOTLIN_VERSION);
     }
@@ -216,7 +216,7 @@ pub fn module_parameters(
             source_set_dirs(source_sets, source_kinds(sources)),
         )
         // output directories of generate_sources, compiled with the sources
-        .with_default("generated_sources", strings(), none())
+        .strings("generated_sources")
         // like sourceSets.main.resources.srcDirs in Gradle
         .with_default(
             "resource_dirs",
@@ -224,11 +224,11 @@ pub fn module_parameters(
             source_set_dirs(source_sets, &["resources"]),
         )
         // "path in the jar=file or directory", like from(...) in processResources
-        .with_default("resource_files", strings(), none())
+        .strings("resource_files")
         // "path in the jar=content", files the build writes
-        .with_default("resource_texts", strings(), none())
+        .strings("resource_texts")
         // "name=value": @name@ in text resources becomes value, like filter(ReplaceTokens)
-        .with_default("resource_tokens", strings(), none());
+        .strings("resource_tokens");
 }
 
 /// build/classes/<kind>/<source set>, like Gradle names them

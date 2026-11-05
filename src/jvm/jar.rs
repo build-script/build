@@ -46,7 +46,7 @@ fn jar_parameters(sources: Sources) -> FunctionSignature {
                 // one jar with the libraries inside, like the shadow plugin of Gradle
                 .with_default("fat_jar", Type::Bool, false)
                 // "from=to": packages of the libraries moved inside the fat jar
-                .with_default("relocate", Type::list(Type::String), Value::string_list(&[])),
+                .strings("relocate"),
             &["main"],
             sources,
         ),

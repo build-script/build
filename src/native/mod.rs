@@ -137,35 +137,35 @@ fn signature(language: Language) -> FunctionSignature {
         .with_default("toolchain", Type::String, "system")
         .with_default("c_standard", Type::String, "c17")
         // "NAME" or "NAME=value"
-        .with_default("defines", strings(), none())
+        .strings("defines")
         // also for the modules depending on it, like SPDLOG_COMPILED_LIB
-        .with_default("public_defines", strings(), none())
+        .strings("public_defines")
         // templates like "src/config.h.in", filled like configure_file of CMake into build/generated
-        .with_default("configured_headers", strings(), none())
+        .strings("configured_headers")
         // their values: "NAME=value", or "NAME", which is 1
-        .with_default("configured_values", strings(), none())
+        .strings("configured_values")
         // like generate_export_header of CMake: "cmark" writes cmark_export.h with CMARK_EXPORT
         .with_default("export_header", Type::String, "")
         // headers of TableGen: the tool, the .td file, the header and arguments, like
         // list("mlir-tblgen", "include/Ops.td", "Ops.h.inc", "-gen-op-decls")
         .with_default("tablegen", Type::list(strings()), none())
-        .with_default("flags", strings(), none())
+        .strings("flags")
         // like "-framework", "Cocoa", modules depending on the library link them too
-        .with_default("link_flags", strings(), none())
+        .strings("link_flags")
         .with_default("directory", Type::String, ".")
         // globs relative to the module, like "*.c" or "examples/simple.cpp"
-        .with_default("sources", strings(), Value::string_list(&[DEFAULT_SOURCES]))
+        .strings_or("sources", &[DEFAULT_SOURCES])
         // globs relative to the module, like "testes/**"
-        .with_default("exclude", strings(), none())
+        .strings("exclude")
         // the headers of modules depending on it, private headers stay among the sources
-        .with_default("include_dirs", strings(), Value::string_list(&["include"]))
+        .strings_or("include_dirs", &["include"])
         .with_default("test_dependencies", dependencies(), none())
-        .with_default("test_sources", strings(), Value::string_list(&[DEFAULT_TEST_SOURCES]))
-        .with_default("test_exclude", strings(), none())
+        .strings_or("test_sources", &[DEFAULT_TEST_SOURCES])
+        .strings("test_exclude")
         // test sources that are a program each, with the other test sources: "test/*-test.cc"
-        .with_default("test_programs", strings(), none())
+        .strings("test_programs")
         // like "--order", "decl" for Catch2
-        .with_default("test_arguments", strings(), none())
+        .strings("test_arguments")
         // seconds a test program may run
         .with_default("test_timeout", Type::Int, DEFAULT_TEST_TIMEOUT);
 

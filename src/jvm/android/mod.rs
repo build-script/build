@@ -86,7 +86,7 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .optional("license_report", Type::String)
             // only for build --release: R8 with these rules besides the libraries'
             .with_default("minify", Type::Bool, true)
-            .with_default("proguard_files", Type::list(Type::String), Value::string_list(&[]))
+            .strings("proguard_files")
             // release builds also build an app bundle for Google Play
             .with_default("app_bundle", Type::Bool, false)
             // the release key, its passwords from environment variables the script names
