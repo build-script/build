@@ -832,6 +832,7 @@ struct AndroidVirtualDevice {
 mod tests {
     use std::fs;
 
+    use crate::common::test_support::ScratchDir;
     use crate::jvm::android::sdk::tests::catalog;
 
     use super::*;
@@ -1019,8 +1020,7 @@ INSTRUMENTATION_CODE: -1";
 
     #[test]
     fn avds_are_written_and_listed() {
-        let home = std::env::temp_dir().join(format!("build-script-avd-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&home);
+        let home = ScratchDir::new("avd");
 
         let image = SystemImage {
             path: "system-images;android-36;google_apis_playstore;arm64-v8a".to_string(),
@@ -1062,6 +1062,5 @@ INSTRUMENTATION_CODE: -1";
                 display: "Android API 36 (Google Play, arm64-v8a)".to_string()
             }]
         );
-        fs::remove_dir_all(&home).unwrap();
     }
 }

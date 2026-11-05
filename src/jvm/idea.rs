@@ -371,6 +371,7 @@ fn absolute(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::test_support::ScratchDir;
     use crate::jvm::JvmOutput;
     use crate::language::runtime::ModuleOutput;
 
@@ -390,8 +391,7 @@ mod tests {
 
     #[test]
     fn modules_gone_from_the_script_lose_their_file_after_a_build_that_worked() {
-        let project = std::env::temp_dir().join(format!("build-script-idea-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&project);
+        let project = ScratchDir::new("idea");
 
         let modules_dir = project.join(".idea/modules");
         system::write_file(&modules_dir.join("gone.iml"), "<module/>").unwrap();
@@ -429,6 +429,5 @@ mod tests {
         // the script lives outside the modules
         assert!(modules_dir.join(format!("{root}.iml")).is_file());
 
-        fs::remove_dir_all(&project).unwrap();
     }
 }

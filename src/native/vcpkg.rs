@@ -477,6 +477,8 @@ fn linker_style(flag: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
@@ -515,8 +517,7 @@ mod tests {
 
     #[test]
     fn packages_link_before_what_they_require() {
-        let pc_dir = std::env::temp_dir().join(format!("build-script-pc-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&pc_dir);
+        let pc_dir = ScratchDir::new("pc");
 
         system::write_file(
             &pc_dir.join("fmt.pc"),
@@ -535,6 +536,5 @@ mod tests {
         assert_eq!(cflags, [format!("-I{}/../../include", pc_dir.display()), "-DSPDLOG_FMT_EXTERNAL".to_string()]);
         assert_eq!(libs, [lib_dir.clone(), "-lspdlog".to_string(), "-pthread".to_string(), "-ldl".to_string(), lib_dir, "-lfmt".to_string()]);
 
-        fs::remove_dir_all(&pc_dir).unwrap();
     }
 }

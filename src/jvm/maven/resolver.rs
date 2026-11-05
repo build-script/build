@@ -1120,10 +1120,10 @@ fn json_array(value: Option<&Json>) -> &[Json] {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::{Read, Write};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use crate::common::system;
+    use crate::common::test_support::{ScratchDir, serve_files};
     use crate::jvm::maven;
     use crate::jvm::module::DEFAULT_KOTLIN_VERSION;
 
@@ -1151,10 +1151,7 @@ mod tests {
 
     #[test]
     fn resolver_follows_poms_transitively() {
-        let repository: PathBuf =
-            std::env::temp_dir().join(format!("build-script-test-{}", std::process::id()));
-
-        let _ = fs::remove_dir_all(&repository);
+        let repository = ScratchDir::new("test");
         let e = "com.example";
 
         // parent with a property, dependencyManagement and an imported BOM
@@ -1227,7 +1224,7 @@ mod tests {
         }
 
         let mut resolver = maven::DependencyResolver::new(
-            vec![maven::MavenRepository::Local(repository.clone())],
+            vec![maven::MavenRepository::Local(repository.to_path_buf())],
             maven::TargetPlatform::Jvm,
         );
 
@@ -1261,15 +1258,11 @@ mod tests {
 
         assert!(missing.unwrap_err().contains("com.example:nope:1.0"));
 
-        fs::remove_dir_all(&repository).unwrap();
     }
 
     #[test]
     fn license_report_lists_what_the_poms_say() {
-        let repository: PathBuf =
-            std::env::temp_dir().join(format!("build-script-licenses-{}", std::process::id()));
-
-        let _ = fs::remove_dir_all(&repository);
+        let repository = ScratchDir::new("licenses");
         let e = "com.example";
 
         // licenses come from the parent, name and url only from the POM itself
@@ -1295,7 +1288,7 @@ mod tests {
         );
 
         let mut resolver = maven::DependencyResolver::new(
-            vec![maven::MavenRepository::Local(repository.clone())],
+            vec![maven::MavenRepository::Local(repository.to_path_buf())],
             maven::TargetPlatform::Jvm,
         );
 
@@ -1315,7 +1308,6 @@ mod tests {
             ),
         );
 
-        fs::remove_dir_all(&repository).unwrap();
     }
 
     #[test]
@@ -1341,10 +1333,7 @@ mod tests {
 
     #[test]
     fn resolver_follows_gradle_module_metadata_to_jvm_variants() {
-        let repository: PathBuf =
-            std::env::temp_dir().join(format!("build-script-kmp-{}", std::process::id()));
-
-        let _ = fs::remove_dir_all(&repository);
+        let repository = ScratchDir::new("kmp");
         let e = "com.example";
         let marker = "<!-- do_not_remove: published-with-gradle-metadata -->";
 
@@ -1441,7 +1430,7 @@ mod tests {
         }
 
         let mut resolver = maven::DependencyResolver::new(
-            vec![maven::MavenRepository::Local(repository.clone())],
+            vec![maven::MavenRepository::Local(repository.to_path_buf())],
             maven::TargetPlatform::Jvm,
         );
 
@@ -1476,15 +1465,11 @@ mod tests {
                 "shared-2.0.jar",
             ]
         );
-        fs::remove_dir_all(&repository).unwrap();
     }
 
     #[test]
     fn platforms_provide_versions_and_constraints() {
-        let repository: PathBuf =
-            std::env::temp_dir().join(format!("build-script-bom-{}", std::process::id()));
-
-        let _ = fs::remove_dir_all(&repository);
+        let repository = ScratchDir::new("bom");
         let e = "com.example";
 
         write(
@@ -1516,7 +1501,7 @@ mod tests {
         }
 
         let mut resolver = maven::DependencyResolver::new(
-            vec![maven::MavenRepository::Local(repository.clone())],
+            vec![maven::MavenRepository::Local(repository.to_path_buf())],
             maven::TargetPlatform::Jvm,
         );
 
@@ -1540,41 +1525,12 @@ mod tests {
 
         let error = resolver.resolve_with_platforms(&[ui], &[]).unwrap_err();
         assert!(error.contains("com.example:ui has no version"), "{error}");
-        fs::remove_dir_all(&repository).unwrap();
-    }
-
-    /// A repository on this machine with these files (path and content), every other path is missing
-    fn serve(files: Vec<(String, String)>) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut request = vec![0; 4096];
-                let read = stream.read(&mut request).unwrap();
-                let request = String::from_utf8_lossy(&request[..read]);
-                let path = request.split_whitespace()
-                    .nth(1)
-                    .unwrap_or_default();
-
-                let (status, content) = match files.iter().find(|(file, _)| file == path) {
-                    Some((_, content)) => ("200 OK", content.as_str()),
-                    None => ("404 Not Found", ""),
-                };
-                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{content}", content.len()).unwrap();
-            }
-        });
-
-        return format!("http://{address}");
     }
 
     #[test]
     fn downloads_that_do_not_match_their_checksum_stay_out_of_the_cache() {
-        let directory =
-            std::env::temp_dir().join(format!("build-script-checksums-{}", std::process::id()));
+        let directory = ScratchDir::new("checksums");
 
-        let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
 
         let sha1 = |content: &str| {
@@ -1584,7 +1540,7 @@ mod tests {
         };
 
         let lib = "/com/example/lib/1";
-        let url = serve(vec![
+        let url = serve_files(vec![
             (format!("{lib}/good.jar"), "good".to_string()),
             (format!("{lib}/good.jar.sha1"), format!("{}  good.jar\n", sha1("good"))),
             (format!("{lib}/upper.jar"), "upper".to_string()),
@@ -1616,7 +1572,6 @@ mod tests {
             .count();
         assert_eq!(cached, 3);
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     /// Needs network access: cargo test -- --ignored

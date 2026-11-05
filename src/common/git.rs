@@ -134,6 +134,8 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
@@ -146,8 +148,7 @@ mod tests {
 
     #[test]
     fn commits_are_checked_out_without_git_and_build_in_the_project() {
-        let dir = std::env::temp_dir().join(format!("build-script-git-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = ScratchDir::new("git");
         let repository = dir.join("library");
         system::write_file(&repository.join("include/library.h"), "#pragma once\n").unwrap();
 
@@ -182,6 +183,5 @@ mod tests {
             .push((checkout.clone(), dir.join("project/build/git/library")));
         let build_dir = project_build_dir(&checkout.join("examples/hello"));
         assert_eq!(build_dir, Some(dir.join("project/build/git/library/examples/hello/build")));
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -226,13 +226,13 @@ fn resource_path(target: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
-    fn project() -> PathBuf {
-        let directory =
-            std::env::temp_dir().join(format!("build-script-resources-{}", std::process::id()));
+    fn project() -> ScratchDir {
+        let directory = ScratchDir::new("resources");
 
-        let _ = fs::remove_dir_all(&directory);
         system::write_file(
             &directory.join("src/main/resources/version.properties"),
             "version=@version@\nkeep=@other@ and ${version}\n",
@@ -311,7 +311,6 @@ mod tests {
                 .unwrap_err()
                 .contains("does not exist")
         );
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

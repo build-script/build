@@ -273,6 +273,8 @@ impl<'a> SnapshotFile<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     const METADATA: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -356,10 +358,8 @@ mod tests {
 
     #[test]
     fn metadata_expires_and_missing_metadata_is_remembered() {
-        let directory =
-            std::env::temp_dir().join(format!("build-script-metadata-{}", std::process::id()));
+        let directory = ScratchDir::new("metadata");
         let cached = directory.join("maven-metadata.xml");
-        let _ = std::fs::remove_dir_all(&directory);
 
         assert!(is_expired(&cached));
 
@@ -376,19 +376,17 @@ mod tests {
         system::write_file(&missing_marker(&cached), "").unwrap();
         assert!(fetch_from(&cache, &repository, "dev/test/nothing").unwrap().is_none());
 
-        std::fs::remove_dir_all(&directory).unwrap();
 
         // local repositories have their own name for it
-        let local = std::env::temp_dir().join(format!("build-script-local-{}", std::process::id()));
+        let local = ScratchDir::new("local");
         system::write_file(
             &local.join("dev/test/lib/maven-metadata-local.xml"),
             "<metadata><versioning><versions><version>1.0</version><version>1.1</version></versions></versioning></metadata>",
         )
         .unwrap();
-        let metadata = fetch(&MavenRepository::Local(local.clone()), "dev/test/lib")
+        let metadata = fetch(&MavenRepository::Local(local.to_path_buf()), "dev/test/lib")
             .unwrap()
             .unwrap();
         assert_eq!(metadata.versions(), ["1.0", "1.1"]);
-        std::fs::remove_dir_all(&local).unwrap();
     }
 }

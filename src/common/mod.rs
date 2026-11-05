@@ -5,5 +5,7 @@ pub mod semaphore;
 pub mod settings;
 pub mod system;
 pub mod terminal;
+#[cfg(test)]
+pub mod test_support;
 pub mod up_to_date;
 pub mod xml;

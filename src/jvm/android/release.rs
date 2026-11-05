@@ -371,14 +371,14 @@ pub fn build_app_bundle(
 
 #[cfg(test)]
 mod tests {
+
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
     fn classes_of_service_files_keep_their_names() {
-        let name = format!("build-script-services-rules-{}", std::process::id());
-        let directory = std::env::temp_dir().join(name);
-
-        let _ = std::fs::remove_dir_all(&directory);
+        let directory = ScratchDir::new("services-rules");
 
         system::write_file(
             &directory.join("META-INF/services/com.example.Plugin"),
@@ -393,6 +393,5 @@ mod tests {
              -keep class com.example.Second { <init>(); }\n"
         );
 
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

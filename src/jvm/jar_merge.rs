@@ -240,6 +240,8 @@ fn relocated_class(name: &str, relocations: &[(String, String)]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     /// A jar of `files` (path and content)
@@ -258,10 +260,8 @@ mod tests {
 
     #[test]
     fn the_first_jar_wins_services_are_concatenated_signatures_left_out() {
-        let directory =
-            std::env::temp_dir().join(format!("build-script-merge-{}", std::process::id()));
+        let directory = ScratchDir::new("merge");
 
-        let _ = fs::remove_dir_all(&directory);
 
         let first = jar(
             &directory,
@@ -327,15 +327,12 @@ mod tests {
         assert!(!output.join("META-INF/versions").exists());
         assert!(output.join("META-INF/services/com.example.Service").is_file());
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
     fn service_files_are_relocated_by_name_and_content() {
-        let contents =
-            std::env::temp_dir().join(format!("build-script-services-{}", std::process::id()));
+        let contents = ScratchDir::new("services");
 
-        let _ = fs::remove_dir_all(&contents);
 
         system::write_file(
             &contents.join("META-INF/services/org.bstats.Service"),
@@ -353,6 +350,5 @@ mod tests {
         );
         assert!(!contents.join("META-INF/services/org.bstats.Service").exists());
 
-        fs::remove_dir_all(&contents).unwrap();
     }
 }

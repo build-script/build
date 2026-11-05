@@ -481,14 +481,14 @@ fn collect_bound_views(element: &XmlElement, views: &mut Vec<ViewBindingField>) 
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
     fn r_classes_get_the_ids_of_the_app() {
-        let directory =
-            std::env::temp_dir().join(format!("build-script-r-classes-{}", std::process::id()));
+        let directory = ScratchDir::new("r-classes");
 
-        let _ = fs::remove_dir_all(&directory);
         system::write_file(&directory.join("library.txt"), "int color accent 0x0\nint[] styleable Badge { 0x0, 0x0 }\nint styleable Badge_android_text 0\nint string gone 0x0\n").unwrap();
         system::write_file(&directory.join("app.txt"), "int color accent 0x7f050001\nint color other 0x7f050002\nint[] styleable Badge { 0x101014f, 0x7f040003 }\nint styleable Badge_android_text 0\n").unwrap();
         let library = SymbolTable::read(&directory.join("library.txt")).unwrap();
@@ -545,13 +545,11 @@ mod tests {
             fs::read_to_string(directory.join("R.txt")).unwrap(),
             "int[] styleable Badge { 0x0, 0x0 }\nint styleable Badge_android_text 1\nint styleable Badge_srcCompat 0\n"
         );
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
     fn view_bindings_are_generated_from_layouts() {
-        let res = std::env::temp_dir().join(format!("build-script-res-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&res);
+        let res = ScratchDir::new("res");
 
         let layout = |dir: &str, name: &str, content: &str| {
             fs::create_dir_all(res.join(dir)).unwrap();
@@ -594,7 +592,7 @@ mod tests {
             r#"<FrameLayout xmlns:tools="http://schemas.android.com/tools" tools:viewBindingIgnore="true"/>"#,
         );
 
-        let layouts = layouts_by_name(&[res.clone()]).unwrap();
+        let layouts = layouts_by_name(&[res.to_path_buf()]).unwrap();
         assert_eq!(
             layouts.keys().collect::<Vec<_>>(),
             ["activity_main", "ignored", "merged", "toolbar"]
@@ -657,7 +655,6 @@ mod tests {
             view_binding_source("com.app", "ignored", &layouts["ignored"], &layouts, &[]).is_none()
         );
 
-        fs::remove_dir_all(&res).unwrap();
     }
 
     #[test]

@@ -482,6 +482,8 @@ fn join_ksp_list(paths: &[PathBuf]) -> OsString {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
@@ -512,12 +514,11 @@ mod tests {
         );
         assert!(current.changes_since(&current).is_empty());
 
-        let file =
-            std::env::temp_dir().join(format!("build-script-ksp-snapshot-{}", std::process::id()));
+        let directory = ScratchDir::new("ksp-snapshot");
+        let file = directory.join("snapshot");
 
         current.write(&file).unwrap();
         assert_eq!(SymbolProcessingSnapshot::read(&file), Some(current));
-        fs::remove_file(&file).unwrap();
     }
 
     #[test]

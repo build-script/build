@@ -559,11 +559,13 @@ impl From<Arc<BuiltModule>> for Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
     fn junit_reports_are_summed() {
-        let dir = std::env::temp_dir().join(format!("build-script-reports-{}", std::process::id()));
+        let dir = ScratchDir::new("reports");
         system::recreate_dir(&dir).unwrap();
         assert_eq!(TestCounts::read_junit_reports(&dir), None);
 
@@ -607,8 +609,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_runs_count_their_own_reports_and_remember_passing() {
-        let dir =
-            std::env::temp_dir().join(format!("build-script-test-run-{}", std::process::id()));
+        let dir = ScratchDir::new("test-run");
 
         system::recreate_dir(&dir).unwrap();
         let fingerprint = dir.join("fingerprint");

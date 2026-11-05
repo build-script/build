@@ -178,6 +178,8 @@ pub fn content_hash(file: &Path) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     fn fingerprint_of(paths: &[PathBuf], file: &Path) -> InputFingerprint {
@@ -190,10 +192,8 @@ mod tests {
 
     #[test]
     fn changed_inputs_are_not_up_to_date() {
-        let root =
-            std::env::temp_dir().join(format!("build-script-up-to-date-{}", std::process::id()));
+        let root = ScratchDir::new("up-to-date");
 
-        let _ = fs::remove_dir_all(&root);
         let sources = root.join("src");
         let output = root.join("build/app.jar");
         let fingerprint_file = root.join("build/fingerprints/app");
@@ -224,12 +224,11 @@ mod tests {
         assert!(!fingerprint().is_up_to_date(&[&output]).unwrap());
         assert!(!fingerprint().is_up_to_date(&[&output]).unwrap());
 
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_file_is_hashed_once_for_every_module() {
-        let root = std::env::temp_dir().join(format!("build-script-content-hash-{}", std::process::id()));
+        let root = ScratchDir::new("content-hash");
         let jar = root.join("library.jar");
         system::write_file(&jar, "classes").unwrap();
 
@@ -243,6 +242,5 @@ mod tests {
         let key = (jar.clone(), metadata.len(), metadata.modified().ok());
         assert_eq!(CONTENT_HASHES.lock().unwrap().get(&key), Some(&hash));
 
-        fs::remove_dir_all(&root).unwrap();
     }
 }

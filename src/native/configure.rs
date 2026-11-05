@@ -152,6 +152,8 @@ fn substituted(line: &str, values: &HashMap<&str, &str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
@@ -177,15 +179,14 @@ mod tests {
 
     #[test]
     fn headers_keep_their_path_below_the_headers_of_the_module() {
-        let dir = std::env::temp_dir().join(format!("build-script-configure-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = ScratchDir::new("configure");
         system::write_file(&dir.join("port/port_config.h.in"), "#cmakedefine01 HAVE_FULLFSYNC\n").unwrap();
         system::write_file(&dir.join("src/version.h.in"), "@MAJOR@\n").unwrap();
 
         let templates = [dir.join("port/port_config.h.in"), dir.join("src/version.h.in")];
         let values = ["HAVE_FULLFSYNC".to_string(), "MAJOR=2".to_string()];
         let generated = dir.join("build/generated");
-        write_headers(&templates, &values, "my-lib", &[dir.clone(), dir.join("src")], &generated).unwrap();
+        write_headers(&templates, &values, "my-lib", &[dir.to_path_buf(), dir.join("src")], &generated).unwrap();
 
         assert_eq!(fs::read_to_string(generated.join("port/port_config.h")).unwrap(), "#define HAVE_FULLFSYNC 1\n");
         assert_eq!(fs::read_to_string(generated.join("version.h")).unwrap(), "2\n");
@@ -193,6 +194,5 @@ mod tests {
 
         let error = write_headers(&[dir.join("src/version.h.in").with_extension("")], &[], "", &[], &generated).unwrap_err();
         assert!(error.contains("version.h"), "{error}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

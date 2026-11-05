@@ -466,6 +466,8 @@ fn ask_in_terminal(id: &str, text: &str, text_file: &Path) -> Result<bool, Strin
 
 #[cfg(test)]
 pub mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     pub fn catalog(packages: &str) -> SdkCatalog {
@@ -517,8 +519,7 @@ pub mod tests {
 
     #[test]
     fn sdk_packages_need_an_accepted_license() {
-        let sdk = std::env::temp_dir().join(format!("build-script-sdk-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&sdk);
+        let sdk = ScratchDir::new("sdk");
         let catalog = catalog(r#"<license id="test-license" type="text">Be nice.</license>"#);
 
         // the license text is handed to whoever decides, and saved for reading
@@ -555,6 +556,5 @@ pub mod tests {
         )
             .unwrap();
 
-        fs::remove_dir_all(&sdk).unwrap();
     }
 }

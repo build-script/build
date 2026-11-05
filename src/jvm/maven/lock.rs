@@ -159,14 +159,13 @@ pub fn save() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use crate::common::test_support::ScratchDir;
 
     use super::*;
 
     #[test]
     fn the_lock_keeps_checksums_and_builds_and_forgets_old_versions() {
-        let directory = std::env::temp_dir().join(format!("build-script-lock-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
+        let directory = ScratchDir::new("lock");
 
         let jar = directory.join("library.jar");
         system::write_file(&jar, "library").unwrap();
@@ -204,6 +203,5 @@ mod tests {
         assert!(saved.contains(&format!("{snapshot} build={build}\n")), "{saved}");
 
         *LOCK.lock().unwrap() = None;
-        fs::remove_dir_all(&directory).unwrap();
     }
 }

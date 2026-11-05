@@ -49,6 +49,8 @@ mod tests {
     use object::write::{self, StandardSection, Symbol, SymbolSection};
     use object::{Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope};
 
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
@@ -83,7 +85,7 @@ mod tests {
             });
         }
 
-        let directory = std::env::temp_dir().join(format!("build-script-exports-{}", std::process::id()));
+        let directory = ScratchDir::new("exports");
         let object_file = directory.join("twice.c.o");
         system::create_dir(&directory).unwrap();
         fs::write(&object_file, object.write().unwrap()).unwrap();
@@ -92,6 +94,5 @@ mod tests {
         write_def_file(&[object_file], &def_file).unwrap();
 
         assert_eq!(system::read_file(&def_file).unwrap(), "EXPORTS\n    counter DATA\n    twice\n");
-        fs::remove_dir_all(&directory).unwrap();
     }
 }

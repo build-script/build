@@ -478,6 +478,8 @@ fn variable_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     /// what the developer would answer, without asking anyone
@@ -510,8 +512,7 @@ mod tests {
 
     #[test]
     fn clean_removes_only_what_build_script_built() {
-        let root = std::env::temp_dir().join(format!("build-script-clean-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = ScratchDir::new("clean");
         system::write_file(&root.join("project.build"), "use kotlin\n").unwrap();
         system::write_file(&root.join("app/build/fingerprints/app"), "0").unwrap();
         system::write_file(&root.join("app/build/libs/app.jar"), "").unwrap();
@@ -529,22 +530,19 @@ mod tests {
         // a repository with scripts in build/ keeps them
         system::write_file(&root.join("lib/build/fingerprints/lib"), "0").unwrap();
         system::write_file(&root.join("lib/build/cmake/setup.sh"), "").unwrap();
-        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(root.as_os_str()).args(args).output().unwrap();
         git(&["init", "--quiet"]);
         git(&["add", "lib/build/cmake/setup.sh"]);
 
         clean(&root.join("project.build")).unwrap();
         assert!(root.join("lib/build/cmake/setup.sh").is_file());
         assert!(!root.join("lib/build/fingerprints").exists());
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn new_projects_and_added_modules_are_written() {
-        let root =
-            std::env::temp_dir().join(format!("build-script-project-{}", std::process::id()));
+        let root = ScratchDir::new("project");
 
-        let _ = fs::remove_dir_all(&root);
 
         new_project("multi", &root.join("demo"), None, example).unwrap();
         let script = system::read_file(&root.join("demo/project.build")).unwrap();
@@ -664,13 +662,11 @@ mod tests {
         assert!(activity.contains("Greeting(\"hello-app\", Modifier.padding(innerPadding))"), "{activity}");
         assert!(root.join("hello-app/src/main/kotlin/org/acme/hello/ui/theme/Theme.kt").is_file());
         assert!(!root.join("hello-app/src/main/res").exists());
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn c_and_cpp_projects_need_no_domain_and_no_repositories() {
-        let root = std::env::temp_dir().join(format!("build-script-native-project-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = ScratchDir::new("native-project");
         let not_asked = || Err("not asked".to_string());
 
         new_project("cpp", &root.join("hello"), None, not_asked).unwrap();
@@ -694,6 +690,5 @@ mod tests {
         let script = system::read_file(&script_file).unwrap();
         assert!(script.starts_with("use cpp\nuse c\n"), "{script}");
         assert!(script.contains("codec = build_c(\n    \"codec\",\n"), "{script}");
-        fs::remove_dir_all(&root).unwrap();
     }
 }

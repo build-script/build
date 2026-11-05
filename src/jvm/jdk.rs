@@ -338,12 +338,13 @@ fn foojay_string(
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
     fn jdk_can_be_a_path_to_an_existing_jdk() {
-        let root = std::env::temp_dir().join(format!("build-script-jdk-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = ScratchDir::new("jdk");
 
         // layout of a macOS JDK archive
         let home = root.join("jdk-21.0.12+1/Contents/Home");
@@ -383,7 +384,6 @@ mod tests {
 
         assert!(error.contains("neither a java version"), "{error}");
 
-        fs::remove_dir_all(&root).unwrap();
     }
 
     /// Needs network access: cargo test -- --ignored

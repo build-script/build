@@ -95,14 +95,14 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::ScratchDir;
+
     use super::*;
 
     #[test]
     fn settings_are_read_changed_and_written() {
-        let file =
-            std::env::temp_dir().join(format!("build-script-settings-{}", std::process::id()));
-
-        let _ = std::fs::remove_file(&file);
+        let directory = ScratchDir::new("settings");
+        let file = directory.join("settings.toml");
 
         let mut settings = Settings::load_from(file.clone()).unwrap();
         assert_eq!(settings.get("domain"), None);
@@ -139,6 +139,5 @@ mod tests {
                 .ends_with(":1: expected name = value")
         );
 
-        std::fs::remove_file(&file).unwrap();
     }
 }

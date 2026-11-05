@@ -1009,19 +1009,19 @@ impl BuildHomeEnvironment {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::test_support::{ScratchDir, serve_statuses};
+
     use super::*;
 
     #[test]
     fn a_file_named_build_moves_the_build_directory() {
-        let dir = std::env::temp_dir().join(format!("build-script-build-dir-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = ScratchDir::new("build-dir");
         create_dir(&dir).unwrap();
         assert_eq!(build_dir(&dir), dir.join("build"));
 
         // BUILD of Bazel is build on macOS
         write_file(&dir.join("build"), "").unwrap();
         assert_eq!(build_dir(&dir), dir.join(".build"));
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -1124,15 +1124,9 @@ mod tests {
         assert!(run_command_within(&mut Command::new("false"), "tests", Duration::from_secs(5)).is_err());
     }
 
-    fn scratch_dir(name: &str) -> PathBuf {
-        let directory = std::env::temp_dir().join(format!("build-script-{name}-{}", std::process::id()));
-        recreate_dir(&directory).unwrap();
-        return directory;
-    }
-
     #[test]
     fn zip_archives_are_written_added_to_and_extracted() {
-        let directory = scratch_dir("zip");
+        let directory = ScratchDir::new("zip");
         write_file(&directory.join("content/a.txt"), "a").unwrap();
         write_file(&directory.join("content/lib/x86/libb.so"), "b").unwrap();
 
@@ -1151,7 +1145,6 @@ mod tests {
         assert!(directory.join("kept/lib/x86/libb.so").is_file());
         assert!(!directory.join("kept/a.txt").exists());
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     // permissions and links of unix
@@ -1160,7 +1153,7 @@ mod tests {
     fn extracted_executables_and_links_stay_what_they_were() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = scratch_dir("zip-tools");
+        let directory = ScratchDir::new("zip-tools");
         let archive = directory.join("tools.zip");
 
         let mut zip = ZipWriter::new(fs::File::create(&archive).unwrap());
@@ -1183,12 +1176,11 @@ mod tests {
         let error = extract(&escaping, &directory.join("escaped")).unwrap_err();
         assert!(error.contains("lib links to ../../outside"), "{error}");
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
     fn tar_archives_are_extracted_plain_and_compressed() {
-        let directory = scratch_dir("tar");
+        let directory = ScratchDir::new("tar");
 
         for (name, compressed) in [("plain.tar", false), ("compressed.tar.gz", true)] {
             let mut tar = tar::Builder::new(vec![]);
@@ -1213,12 +1205,11 @@ mod tests {
             assert_eq!(read_file(&directory.join(name).with_extension("extracted").join("dir/file.txt")).unwrap(), "inside");
         }
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
     fn partial_files_of_stopped_builds_are_removed() {
-        let directory = scratch_dir("partial");
+        let directory = ScratchDir::new("partial");
         let target = directory.join("library.jar");
         let abandoned = directory.join("library.jar.partial-1-0");
         let running = directory.join("library.jar.partial-2-0");
@@ -1243,12 +1234,11 @@ mod tests {
         assert!(running.exists());
         assert!(other.exists());
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
     fn sha_of_a_file_as_hex() {
-        let directory = scratch_dir("sha");
+        let directory = ScratchDir::new("sha");
         let file = directory.join("abc");
         write_file(&file, "abc").unwrap();
 
@@ -1256,33 +1246,12 @@ mod tests {
         assert_eq!(sha(&file, 256).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert!(sha(&file, 512).is_err());
 
-        fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// A server on this machine that answers one request after the other with these statuses, its
-    /// body is the request it got
-    fn serve(statuses: Vec<&'static str>) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-
-        std::thread::spawn(move || {
-            for status in statuses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = vec![0; 4096];
-                let read = stream.read(&mut request).unwrap();
-
-                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {read}\r\nConnection: close\r\n\r\n").unwrap();
-                stream.write_all(&request[..read]).unwrap();
-            }
-        });
-
-        return format!("http://{address}");
     }
 
     #[test]
     fn downloads_tell_missing_files_and_missing_credentials_apart() {
-        let directory = scratch_dir("download");
-        let url = serve(vec!["200 OK", "404 Not Found", "401 Unauthorized", "200 OK"]);
+        let directory = ScratchDir::new("download");
+        let url = serve_statuses(vec!["200 OK", "404 Not Found", "401 Unauthorized", "200 OK"]);
         let target = directory.join("file");
         let credentials = Credentials {
             username: "user".to_string(),
@@ -1301,6 +1270,5 @@ mod tests {
         assert_eq!(status, 200);
         assert!(body.starts_with("GET /index.json"));
 
-        fs::remove_dir_all(&directory).unwrap();
     }
 }
