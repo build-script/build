@@ -3,6 +3,7 @@
 // packs them like jniLibs. The module's own sources, headers and defines: vcpkg ports and the libraries of other modules
 // are built for this machine only.
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use crate::common::system::{self, HostOperatingSystem};
 use crate::common::up_to_date::InputFingerprint;
@@ -88,6 +89,7 @@ pub fn build(
             cpp_standard: &sources.cpp_standard,
             objects_dir: sources.build_dir.join("obj").join(name).join(format!("android-{abi}")).join(build_type),
             tests: false,
+            candidates: OnceLock::new(),
         };
 
         let (objects, _) = compilation.run()?;

@@ -445,14 +445,14 @@ fn visit_package(
     }
 
     // a package links before what it requires
-    cflags.extend(words("cflags").into_iter().filter_map(gnu_style));
-    libs.splice(0..0, [words("libs"), words("libs.private")].concat().into_iter().map(linker_style));
+    cflags.extend(words("cflags").into_iter().filter_map(|flag| gnu_style(flag, cfg!(windows))));
+    libs.splice(0..0, [words("libs"), words("libs.private")].concat().into_iter().map(|flag| linker_style(flag, cfg!(windows))));
 }
 
 /// A compile flag for clang. On Windows the .pc files of ports like abseil have those of MSVC: /D, /U and
 /// /I become -D, -U and -I, the others are of MSVC only, like /W3 and /wd4005.
-fn gnu_style(flag: String) -> Option<String> {
-    if !cfg!(windows) || !flag.starts_with('/') {
+fn gnu_style(flag: String, windows: bool) -> Option<String> {
+    if !windows || !flag.starts_with('/') {
         return Some(flag);
     }
 
@@ -464,11 +464,11 @@ fn gnu_style(flag: String) -> Option<String> {
 
 /// A link flag for clang. On Windows the .pc files of ports like abseil have options of link.exe, like
 /// -ignore:4221: they go to it through -Wl.
-fn linker_style(flag: String) -> String {
+fn linker_style(flag: String, windows: bool) -> String {
     let clang_flag = ["-l", "-L", "-W"].iter().any(|prefix| flag.starts_with(prefix));
     let linker_option = flag.starts_with('/') || (flag.starts_with('-') && flag.contains(':') && !clang_flag);
 
-    if !cfg!(windows) || !linker_option {
+    if !windows || !linker_option {
         return flag;
     }
 
@@ -493,26 +493,26 @@ mod tests {
     #[test]
     fn flags_of_msvc_become_those_of_clang_on_windows() {
         let flags = ["/DNOMINMAX", "/wd4005", "/bigobj", "-DSPDLOG_FMT_EXTERNAL"].map(String::from);
-        let converted: Vec<String> = flags.iter()
-            .cloned()
-            .filter_map(gnu_style)
-            .collect();
+        let compiled = |windows: bool| -> Vec<String> {
+            return flags.iter()
+                .cloned()
+                .filter_map(|flag| gnu_style(flag, windows))
+                .collect();
+        };
 
-        match cfg!(windows) {
-            true => assert_eq!(converted, ["-DNOMINMAX", "-DSPDLOG_FMT_EXTERNAL"]),
-            false => assert_eq!(converted, flags),
-        }
+        assert_eq!(compiled(true), ["-DNOMINMAX", "-DSPDLOG_FMT_EXTERNAL"]);
+        assert_eq!(compiled(false), flags);
 
         let libs = ["-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"].map(String::from);
-        let converted: Vec<String> = libs.iter()
-            .cloned()
-            .map(linker_style)
-            .collect();
+        let linked = |windows: bool| -> Vec<String> {
+            return libs.iter()
+                .cloned()
+                .map(|flag| linker_style(flag, windows))
+                .collect();
+        };
 
-        match cfg!(windows) {
-            true => assert_eq!(converted, ["-Wl,-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"]),
-            false => assert_eq!(converted, libs),
-        }
+        assert_eq!(linked(true), ["-Wl,-ignore:4221", "-LC:/vcpkg/lib", "-labsl_base", "C:/vcpkg/lib/fmt.lib"]);
+        assert_eq!(linked(false), libs);
     }
 
     #[test]

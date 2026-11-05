@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::common::semaphore::Semaphore;
 use crate::common::{system, terminal};
@@ -50,14 +50,17 @@ pub struct Compilation<'a> {
     pub objects_dir: PathBuf,
     /// for the log
     pub tests: bool,
+    /// the files below the roots of the patterns, searched once
+    pub candidates: OnceLock<Vec<PathBuf>>,
 }
 
 impl Compilation<'_> {
     /// The files `source_patterns` match, without those `exclude_patterns` match
     pub fn sources(&self) -> Vec<PathBuf> {
         return self.candidates()
-            .into_iter()
+            .iter()
             .filter(|file| self.matches_any(self.source_patterns, file) && !self.matches_any(self.exclude_patterns, file))
+            .cloned()
             .collect();
     }
 
@@ -75,8 +78,12 @@ impl Compilation<'_> {
         return self.source_patterns.iter().find(|pattern| !sources.iter().any(|source| matches_glob(pattern, source)));
     }
 
+    fn candidates(&self) -> &[PathBuf] {
+        return self.candidates.get_or_init(|| self.search_candidates());
+    }
+
     /// The sources below the roots of the patterns, but in build/ and hidden directories like .git
-    fn candidates(&self) -> Vec<PathBuf> {
+    fn search_candidates(&self) -> Vec<PathBuf> {
         let mut sources = vec![];
         let mut pending = source_roots(self.module_dir, self.source_patterns);
 
@@ -124,14 +131,12 @@ impl Compilation<'_> {
 
     /// The compiler with its arguments, without the depfile
     fn command_line(&self, source: &Path) -> Vec<String> {
-        let c_source = source.extension().is_some_and(|extension| extension == "c");
-
-        let (compiler, standard) = match c_source {
-            true => (&self.toolchain.c_compiler, format!("-std={}", self.c_standard)),
-            false => (&self.toolchain.cpp_compiler, format!("-std={}", self.cpp_standard)),
+        let standard = match source.extension().is_some_and(|extension| extension == "c") {
+            true => format!("-std={}", self.c_standard),
+            false => format!("-std={}", self.cpp_standard),
         };
 
-        let mut line = compiler.clone();
+        let mut line = self.compiler(source).to_vec();
         line.push(standard);
         line.extend(self.flags.iter().cloned());
         line.extend(["-c".to_string(), source.display().to_string()]);
@@ -143,10 +148,15 @@ impl Compilation<'_> {
     /// The command line after the version of its compiler, as the .o.line next to the object keeps it:
     /// after an update of Xcode or GCC every source is compiled again
     fn recorded_line(&self, source: &Path) -> Vec<String> {
-        let c_source = source.extension().is_some_and(|extension| extension == "c");
-        let compiler = if c_source { &self.toolchain.c_compiler } else { &self.toolchain.cpp_compiler };
+        return [vec![self.toolchain.version(self.compiler(source))], self.command_line(source)].concat();
+    }
 
-        return [vec![self.toolchain.version(compiler)], self.command_line(source)].concat();
+    /// The C compiler for .c files, the C++ compiler for the others
+    fn compiler(&self, source: &Path) -> &[String] {
+        match source.extension().is_some_and(|extension| extension == "c") {
+            true => return &self.toolchain.c_compiler,
+            false => return &self.toolchain.cpp_compiler,
+        }
     }
 
     /// The objects of all sources, and whether one had to be compiled
@@ -199,8 +209,7 @@ impl Compilation<'_> {
         let line = self.command_line(source);
         system::create_parent_dir(&object)?;
 
-        let c_source = source.extension().is_some_and(|extension| extension == "c");
-        let compiler = if c_source { &self.toolchain.c_compiler } else { &self.toolchain.cpp_compiler };
+        let compiler = self.compiler(source);
         let recorded = RecordedCommand::new(object.clone(), self.recorded_line(source));
         let mut arguments = line[compiler.len()..].to_vec();
         arguments.extend(["-MMD".to_string(), "-MF".to_string(), recorded.depfile.display().to_string()]);
@@ -385,18 +394,10 @@ pub fn link(
 ) -> Result<(), String> {
     system::create_parent_dir(program)?;
 
-    let is_library = |flag: &String| flag.starts_with("-l") || flag.ends_with(".a") || flag.ends_with(".lib");
-    let mut seen = HashSet::new();
-    let mut flags: Vec<&String> = link_flags.iter()
-        .rev()
-        .filter(|flag| !is_library(flag) || seen.insert(*flag))
-        .collect();
-    flags.reverse();
-
     let mut arguments: Vec<String> = objects.iter()
         .map(|object| object.display().to_string())
         .collect();
-    arguments.extend(flags.into_iter().cloned());
+    arguments.extend(linked_once(link_flags));
     arguments.extend(["-o".to_string(), program.display().to_string()]);
 
     if !cpp && toolchain.target.links_math_library() {
@@ -418,11 +419,32 @@ pub fn link(
     return system::run_command_in_one_piece(&mut command, "linking");
 }
 
+/// The flags, a library several modules need once, after the last that needs it: a linker takes static
+/// libraries in order
+fn linked_once(link_flags: &[String]) -> Vec<String> {
+    let is_library = |flag: &String| flag.starts_with("-l") || flag.ends_with(".a") || flag.ends_with(".lib");
+    let mut seen = HashSet::new();
+    let mut flags: Vec<String> = link_flags.iter()
+        .rev()
+        .filter(|flag| !is_library(flag) || seen.insert(*flag))
+        .cloned()
+        .collect();
+    flags.reverse();
+
+    return flags;
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{depfile_inputs, matches_glob, source_roots};
+    use super::{depfile_inputs, linked_once, matches_glob, source_roots};
+
+    #[test]
+    fn libraries_are_linked_once_after_the_last_that_needs_them() {
+        let flags = ["libapp.a", "-lfmt", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"].map(String::from);
+        assert_eq!(linked_once(&flags), ["libapp.a", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"]);
+    }
 
     #[test]
     fn patterns_are_searched_below_their_roots() {

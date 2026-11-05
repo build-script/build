@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::common::system;
@@ -300,6 +300,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         cpp_standard: &cpp_standard,
         objects_dir: objects_dir.clone(),
         tests: false,
+        candidates: OnceLock::new(),
     };
 
     // a module that names its sources names its tests too, modules may share a directory
@@ -323,6 +324,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         exclude_patterns: &test_exclude_patterns,
         objects_dir: objects_dir.join("test"),
         tests: true,
+        candidates: OnceLock::new(),
         ..compilation
     };
 
@@ -811,4 +813,30 @@ fn without_repeated_flags(mut flags: Vec<String>) -> Vec<String> {
 fn defines_main(source: &Path) -> bool {
     let text = fs::read_to_string(source).unwrap_or_default();
     return text.contains("int main(") || text.contains("int main (");
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::common::system;
+    use crate::common::test_support::ScratchDir;
+
+    use super::*;
+
+    #[test]
+    fn include_dirs_and_defines_are_passed_once() {
+        let flags = ["-Iinclude", "-DNDEBUG", "-O2", "-Iinclude", "-DNDEBUG", "-O2", "-Wall", "-Wall"].map(String::from);
+        assert_eq!(without_repeated_flags(flags.to_vec()), ["-Iinclude", "-DNDEBUG", "-O2", "-O2", "-Wall"]);
+    }
+
+    #[test]
+    fn test_sources_with_a_main_bring_their_own() {
+        let directory = ScratchDir::new("defines-main");
+        let with_main = directory.join("runner.cc");
+        let without = directory.join("cases.cc");
+        system::write_file(&with_main, "int main (int argc, char** argv) { return run(argc, argv); }").unwrap();
+        system::write_file(&without, "TEST(Math, Adds) { EXPECT_EQ(2, 1 + 1); }").unwrap();
+
+        assert!(defines_main(&with_main));
+        assert!(!defines_main(&without));
+    }
 }
