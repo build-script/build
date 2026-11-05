@@ -80,6 +80,16 @@ pub struct NativeOutput {
     pub cpp: bool,
 }
 
+/// What a module builds
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ModuleKind {
+    Program,
+    SharedLibrary,
+    StaticLibrary,
+    /// a library without sources: modules depending on it get its headers, nothing to link
+    HeaderOnly,
+}
+
 /// How the tests of a module are linked and run
 struct TestSetup<'a> {
     framework: Option<&'a TestFramework>,
@@ -338,6 +348,13 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         return Err(format!("{name} has no .{extensions} files, a program needs a main()"));
     }
 
+    let kind = match (program, header_only, shared) {
+        (true, ..) => ModuleKind::Program,
+        (false, true, _) => ModuleKind::HeaderOnly,
+        (false, false, true) => ModuleKind::SharedLibrary,
+        (false, false, false) => ModuleKind::StaticLibrary,
+    };
+
     // C modules link with the C compiler, unless C++ is among what they link
     let links_cpp = |modules: &[Arc<BuiltModule>]| {
         return BuiltModule::transitive(modules)
@@ -348,7 +365,6 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let test_cpp = cpp || links_cpp(&test_dependencies.modules);
 
     let target = toolchain.target;
-    let shared_name = target.shared_library(&name);
     let shared_dir = build_dir.join(target.shared_dir());
 
     // the shared libraries it loads lie next to its own in build/lib, on Windows next to the programs in
@@ -365,15 +381,15 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         _ => vec![],
     };
 
-    let artifact = match (program, header_only, shared) {
-        (true, ..) => build_dir.join("bin").join(target.executable(&name)),
-        (false, true, _) => include_dirs.first().cloned().unwrap_or(directory.clone()),
-        (false, false, true) => shared_dir.join(&shared_name),
-        (false, false, false) => build_dir.join("lib").join(target.static_library(&name)),
+    let artifact = match kind {
+        ModuleKind::Program => build_dir.join("bin").join(target.executable(&name)),
+        ModuleKind::HeaderOnly => include_dirs.first().cloned().unwrap_or(directory.clone()),
+        ModuleKind::SharedLibrary => shared_dir.join(target.shared_library(&name)),
+        ModuleKind::StaticLibrary => build_dir.join("lib").join(target.static_library(&name)),
     };
 
     // what links it, of a shared library on Windows its import library
-    let linked = match shared && target == NativeTarget::Windows {
+    let linked = match kind == ModuleKind::SharedLibrary && target == NativeTarget::Windows {
         true => build_dir.join("lib").join(target.static_library(&name)),
         false => artifact.clone(),
     };
@@ -394,79 +410,36 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     fingerprint.add_files(&[objects.clone(), module_artifacts].concat())?;
 
     // the headers need not be there: a module of only tests has none
-    let outputs: Vec<&Path> = match header_only {
-        true => vec![&compile_commands],
-        false => vec![&artifact, &linked, &compile_commands],
+    let outputs: Vec<&Path> = match kind {
+        ModuleKind::HeaderOnly => vec![&compile_commands],
+        _ => vec![&artifact, &linked, &compile_commands],
     };
 
     let up_to_date = !compiled && fingerprint.reports_up_to_date(&name, &outputs)?;
 
     if !up_to_date {
-        match (program, header_only, shared) {
-            (true, ..) => compile::link(&toolchain, cpp, &objects, &[link_flags.clone(), program_rpath.clone()].concat(), &artifact)?,
-            (false, true, _) => {}
-            (false, false, true) => {
-                // what loads it finds it by its rpath, it finds those it loads next to it. Windows exports
-                // what a .def file names, zig takes it like a source.
-                let mut shared_flags = vec!["-shared".to_string()];
-
-                match target {
-                    NativeTarget::MacOs => shared_flags.extend(["-install_name".to_string(), format!("@rpath/{shared_name}")]),
-                    NativeTarget::Windows => {
-                        let def_file = objects_dir.join(format!("{name}.def"));
-                        exports::write_def_file(&objects, &def_file)?;
-                        system::create_parent_dir(&linked)?;
-
-                        match toolchain.zig {
-                            true => shared_flags.extend([def_file.display().to_string(), format!("-Wl,--out-implib,{}", linked.display())]),
-                            false => shared_flags.extend([format!("-Wl,-def:{}", def_file.display()), format!("-Wl,-implib:{}", linked.display())]),
-                        }
-                    }
-                    _ => shared_flags.push(format!("-Wl,-soname,{shared_name}")),
-                }
-
-                if let Some(origin) = target.rpath_origin()
-                    && !shared_libraries.is_empty()
-                {
-                    shared_flags.push(format!("-Wl,-rpath,{origin}"));
-                }
-
-                compile::link(&toolchain, cpp, &objects, &[shared_flags, link_flags.clone()].concat(), &artifact)?;
+        match kind {
+            ModuleKind::Program => compile::link(&toolchain, cpp, &objects, &[link_flags.clone(), program_rpath.clone()].concat(), &artifact)?,
+            ModuleKind::HeaderOnly => {}
+            ModuleKind::SharedLibrary => {
+                let def_file = objects_dir.join(format!("{name}.def"));
+                link_shared_library(&toolchain, cpp, &objects, &link_flags, &artifact, &linked, &def_file, !shared_libraries.is_empty())?;
             }
-            (false, false, false) => compile::archive(&toolchain, &objects, &artifact)?,
+            ModuleKind::StaticLibrary => compile::archive(&toolchain, &objects, &artifact)?,
         }
 
-        // those of other modules in the directory stay
-        let own_objects = build_dir.join("obj").join(&name);
-        let mut commands: Vec<serde_json::Value> = fs::read_to_string(&compile_commands)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        commands.retain(|command| {
-            return !command["output"].as_str().is_some_and(|output| Path::new(output).starts_with(&own_objects));
-        });
-        commands.extend([compilation.compile_commands(), test_compilation.compile_commands()].concat());
-
-        let commands = serde_json::to_string_pretty(&commands).map_err(|error| error.to_string())?;
-        system::write_file(&compile_commands, &commands)?;
+        let commands = [compilation.compile_commands(), test_compilation.compile_commands()].concat();
+        update_compile_commands(&compile_commands, &build_dir.join("obj").join(&name), commands)?;
 
         fingerprint.store()?;
 
-        match header_only {
-            true => system::log(&name, "Done, only headers"),
-            false => system::log(&name, &format!("Done: {}", artifact.display())),
+        match kind {
+            ModuleKind::HeaderOnly => system::log(&name, "Done, only headers"),
+            _ => system::log(&name, &format!("Done: {}", artifact.display())),
         }
     }
 
-    for library in &shared_libraries {
-        let copy = shared_dir.join(library.file_name().unwrap_or_default());
-        let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
-
-        // modules in one directory share build/lib and build/bin
-        if copy != *library && modified(&copy) < modified(library) {
-            system::copy_file(library, &copy)?;
-        }
-    }
+    copy_shared_libraries(&shared_libraries, &shared_dir)?;
 
     // what Android apps build of it: its own sources, header-only modules are fine
     let links_modules = dependencies.modules.iter().any(|module| {
@@ -488,7 +461,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let mut tests = vec![];
 
     if context.tests.includes(&name) {
-        let library = (!program && !header_only).then_some(linked.as_path());
+        let library = matches!(kind, ModuleKind::SharedLibrary | ModuleKind::StaticLibrary).then_some(linked.as_path());
         let link_flags = [link_flags.clone(), test_link_flags, program_rpath].concat();
         let ports = &test_dependencies.ports;
         let framework = TEST_FRAMEWORKS.iter().find(|(port, ..)| ports.iter().any(|known| vcpkg::port_and_features(known).0 == *port));
@@ -520,10 +493,10 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     // modules depending on a library get its headers and link it before what it needs, a shared library
     // has what it needs inside
-    match (program || header_only, shared) {
-        (true, _) => {}
-        (false, true) => link_flags = vec![linked.display().to_string()],
-        (false, false) => link_flags.insert(0, linked.display().to_string()),
+    match kind {
+        ModuleKind::Program | ModuleKind::HeaderOnly => {}
+        ModuleKind::SharedLibrary => link_flags = vec![linked.display().to_string()],
+        ModuleKind::StaticLibrary => link_flags.insert(0, linked.display().to_string()),
     }
 
     return Ok(Value::from(Arc::new(BuiltModule {
@@ -534,14 +507,86 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         output: ModuleOutput::Native(NativeOutput {
             compile_flags: [public_flags, compile_flags].concat(),
             link_flags,
-            program: program.then_some(artifact.clone()),
+            program: (kind == ModuleKind::Program).then_some(artifact.clone()),
             tools_dir: None,
-            shared_library: (shared && !header_only).then_some(artifact),
+            shared_library: (kind == ModuleKind::SharedLibrary).then_some(artifact),
             android,
             cpp,
         }),
         tests,
     })));
+}
+
+/// What loads it finds it by its rpath, it finds the libraries it loads next to it. Windows exports what
+/// the .def file names, zig takes that like a source.
+fn link_shared_library(
+    toolchain: &Toolchain,
+    cpp: bool,
+    objects: &[PathBuf],
+    link_flags: &[String],
+    library: &Path,
+    linked: &Path,
+    def_file: &Path,
+    loads_shared_libraries: bool,
+) -> Result<(), String> {
+    let library_name = library.file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut flags = vec!["-shared".to_string()];
+
+    match toolchain.target {
+        NativeTarget::MacOs => flags.extend(["-install_name".to_string(), format!("@rpath/{library_name}")]),
+        NativeTarget::Windows => {
+            exports::write_def_file(objects, def_file)?;
+            system::create_parent_dir(linked)?;
+
+            match toolchain.zig {
+                true => flags.extend([def_file.display().to_string(), format!("-Wl,--out-implib,{}", linked.display())]),
+                false => flags.extend([format!("-Wl,-def:{}", def_file.display()), format!("-Wl,-implib:{}", linked.display())]),
+            }
+        }
+        _ => flags.push(format!("-Wl,-soname,{library_name}")),
+    }
+
+    if let Some(origin) = toolchain.target.rpath_origin()
+        && loads_shared_libraries
+    {
+        flags.push(format!("-Wl,-rpath,{origin}"));
+    }
+
+    flags.extend(link_flags.iter().cloned());
+    return compile::link(toolchain, cpp, objects, &flags, library);
+}
+
+/// For clangd, which finds build/compile_commands.json of the module from its sources. Modules in one
+/// directory share it, those of the others stay.
+fn update_compile_commands(file: &Path, own_objects: &Path, commands: Vec<serde_json::Value>) -> Result<(), String> {
+    let mut all: Vec<serde_json::Value> = fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    all.retain(|command| {
+        return !command["output"].as_str().is_some_and(|output| Path::new(output).starts_with(own_objects));
+    });
+    all.extend(commands);
+
+    let text = serde_json::to_string_pretty(&all).map_err(|error| error.to_string())?;
+    return system::write_file(file, &text);
+}
+
+/// Next to its own, unless they are there already: modules in one directory share build/lib and build/bin
+fn copy_shared_libraries(libraries: &[PathBuf], shared_dir: &Path) -> Result<(), String> {
+    let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+
+    for library in libraries {
+        let copy = shared_dir.join(library.file_name().unwrap_or_default());
+
+        if copy != *library && modified(&copy) < modified(library) {
+            system::copy_file(library, &copy)?;
+        }
+    }
+
+    return Ok(());
 }
 
 /// Returns the exit code. Programs start like jars, in the module's directory.
