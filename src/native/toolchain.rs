@@ -12,12 +12,93 @@ pub const ZIG_VERSION: &str = "0.17.0";
 /// What --version of each compiler said, asked once per build
 static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new());
 
+/// What CMake and Visual Studio link every program of Windows with
+const WINDOWS_LIBRARIES: &[&str] = &["kernel32", "user32", "gdi32", "winspool", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "advapi32"];
+
+/// What a toolchain builds for: the names of programs and libraries, and the flags that differ by system
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NativeTarget {
+    MacOs,
+    Linux,
+    Windows,
+    Android,
+}
+
+impl NativeTarget {
+    /// The system build-script runs on, the compilers of the system and zig build for it
+    pub fn host() -> Self {
+        match std::env::consts::OS {
+            "macos" => return NativeTarget::MacOs,
+            "windows" => return NativeTarget::Windows,
+            _ => return NativeTarget::Linux,
+        }
+    }
+
+    pub fn executable(self, name: &str) -> String {
+        match self {
+            NativeTarget::Windows => return format!("{name}.exe"),
+            _ => return name.to_string(),
+        }
+    }
+
+    /// On Windows also the import library that links a shared one
+    pub fn static_library(self, name: &str) -> String {
+        match self {
+            NativeTarget::Windows => return format!("{name}.lib"),
+            _ => return format!("lib{name}.a"),
+        }
+    }
+
+    pub fn shared_library(self, name: &str) -> String {
+        match self {
+            NativeTarget::MacOs => return format!("lib{name}.dylib"),
+            NativeTarget::Windows => return format!("{name}.dll"),
+            _ => return format!("lib{name}.so"),
+        }
+    }
+
+    /// Where in build/ shared libraries lie: Windows loads them from the directory of the program
+    pub fn shared_dir(self) -> &'static str {
+        match self {
+            NativeTarget::Windows => return "bin",
+            _ => return "lib",
+        }
+    }
+
+    /// How an rpath names the directory of the program or library, Windows has none
+    pub fn rpath_origin(self) -> Option<&'static str> {
+        match self {
+            NativeTarget::MacOs => return Some("@loader_path"),
+            NativeTarget::Windows => return None,
+            _ => return Some("$ORIGIN"),
+        }
+    }
+
+    /// Shared libraries of Linux link only position independent code, also that of the static ones in them
+    pub fn needs_position_independent_code(self) -> bool {
+        return matches!(self, NativeTarget::Linux | NativeTarget::Android);
+    }
+
+    /// C programs of glibc link the math library, the C++ standard library brings it along, on macOS
+    /// libSystem has it
+    pub fn links_math_library(self) -> bool {
+        return self == NativeTarget::Linux;
+    }
+
+    /// What every program links besides
+    pub fn system_libraries(self) -> &'static [&'static str] {
+        match self {
+            NativeTarget::Windows => return WINDOWS_LIBRARIES,
+            _ => return &[],
+        }
+    }
+}
+
 /// Compiler, archiver and what they need in their environment
 pub struct Toolchain {
     /// vcpkg builds the ports with zig too
     pub zig: bool,
-    /// builds for Windows: shared libraries export through a .def file, programs link its libraries
-    pub windows: bool,
+    pub target: NativeTarget,
     pub c_compiler: Vec<String>,
     pub cpp_compiler: Vec<String>,
     pub archiver: Vec<String>,
@@ -36,7 +117,7 @@ impl Toolchain {
 
             return Ok(Toolchain {
                 zig: false,
-                windows: cfg!(windows),
+                target: NativeTarget::host(),
                 c_compiler: from_environment("CC", &c_compiler),
                 cpp_compiler: from_environment("CXX", &cpp_compiler),
                 archiver: from_environment("AR", &archiver),
@@ -52,7 +133,7 @@ impl Toolchain {
 
         return Ok(Toolchain {
             zig: true,
-            windows: cfg!(windows),
+            target: NativeTarget::host(),
             c_compiler: vec![zig.clone(), "cc".to_string()],
             cpp_compiler: vec![zig.clone(), "c++".to_string()],
             archiver: vec![zig, "ar".to_string()],
@@ -198,4 +279,32 @@ fn install_zig() -> Result<PathBuf, String> {
 
         return Ok(zig.clone());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeTarget;
+
+    #[test]
+    fn every_target_names_its_programs_and_libraries() {
+        let names = |target: NativeTarget| {
+            return (target.executable("app"), target.static_library("core"), target.shared_library("core"), target.shared_dir());
+        };
+
+        assert_eq!(names(NativeTarget::MacOs), ("app".into(), "libcore.a".into(), "libcore.dylib".into(), "lib"));
+        assert_eq!(names(NativeTarget::Linux), ("app".into(), "libcore.a".into(), "libcore.so".into(), "lib"));
+        assert_eq!(names(NativeTarget::Android), ("app".into(), "libcore.a".into(), "libcore.so".into(), "lib"));
+        assert_eq!(names(NativeTarget::Windows), ("app.exe".into(), "core.lib".into(), "core.dll".into(), "bin"));
+
+        // Windows finds shared libraries next to the program, without an rpath
+        assert_eq!(NativeTarget::MacOs.rpath_origin(), Some("@loader_path"));
+        assert_eq!(NativeTarget::Windows.rpath_origin(), None);
+
+        // flags of the target, not of the host that builds for it
+        assert!(NativeTarget::Android.needs_position_independent_code());
+        assert!(!NativeTarget::MacOs.needs_position_independent_code());
+        assert!(NativeTarget::Linux.links_math_library());
+        assert!(!NativeTarget::Android.links_math_library());
+        assert_eq!(NativeTarget::Windows.system_libraries().first(), Some(&"kernel32"));
+    }
 }

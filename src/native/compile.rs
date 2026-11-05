@@ -9,15 +9,12 @@ use std::sync::{LazyLock, Mutex};
 use crate::common::semaphore::Semaphore;
 use crate::common::{system, terminal};
 
-use super::toolchain::Toolchain;
+use super::toolchain::{NativeTarget, Toolchain};
 
 static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
 
 /// Compilers running now, of all modules at most one per core: modules build at the same time
 static COMPILERS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*CORES));
-
-/// What CMake and Visual Studio link every program of Windows with
-const WINDOWS_LIBRARIES: &[&str] = &["kernel32", "user32", "gdi32", "winspool", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "advapi32"];
 
 /// What a module is written in: build_c takes .c files, build_cpp also .cc, .cpp and .cxx
 #[derive(Debug, Clone, Copy, PartialEq, Hash)]
@@ -402,18 +399,16 @@ pub fn link(
     arguments.extend(flags.into_iter().cloned());
     arguments.extend(["-o".to_string(), program.display().to_string()]);
 
-    // the C++ standard library brings the math library along, on macOS libSystem has it
-    if !cpp && cfg!(target_os = "linux") {
+    if !cpp && toolchain.target.links_math_library() {
         arguments.push("-lm".to_string());
     }
 
     // like CMake and Visual Studio every program links the libraries of Windows. link.exe takes a program
     // for the console only by a main() among the objects, that of gtest_main is in a library.
-    if toolchain.windows {
-        arguments.extend(WINDOWS_LIBRARIES.iter().map(|library| format!("-l{library}")));
-    }
+    arguments.extend(toolchain.target.system_libraries().iter().map(|library| format!("-l{library}")));
 
-    if toolchain.windows && !toolchain.zig && program.extension().is_some_and(|extension| extension == "exe") {
+    let windows_program = toolchain.target == NativeTarget::Windows && program.extension().is_some_and(|extension| extension == "exe");
+    if windows_program && !toolchain.zig {
         arguments.push("-Wl,-subsystem:console".to_string());
     }
 

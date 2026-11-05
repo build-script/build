@@ -9,7 +9,7 @@ use crate::common::up_to_date::InputFingerprint;
 use crate::jvm::android;
 
 use super::compile::{self, Compilation, Language};
-use super::toolchain::Toolchain;
+use super::toolchain::{NativeTarget, Toolchain};
 
 /// ABI and the target of clang without its API level
 const TARGETS: &[(&str, &str)] = &[
@@ -69,7 +69,7 @@ pub fn build(
         let tool = |name: &str| bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).display().to_string();
         let toolchain = Toolchain {
             zig: false,
-            windows: false,
+            target: NativeTarget::Android,
             c_compiler: vec![tool("clang"), target.clone()],
             cpp_compiler: vec![tool("clang++"), target],
             archiver: vec![tool("llvm-ar")],
