@@ -262,6 +262,22 @@ fn stty(args: &[&str]) -> Option<String> {
     return output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string());
 }
 
+/// A line of the build log: `[app] Compiling`, the module in orange
+pub fn log(module: &str, message: &str) {
+    println!("[{}] {message}", paint(module, Color::Primary));
+}
+
+/// A line about a tool build-script brings itself: `[vcpkg] Installing`, the tool in yellow
+pub fn log_tool(tool: &str, message: &str) {
+    println!("[{}] {message}", paint(tool, Color::Secondary));
+}
+
+/// Reads one answer from the terminal, trimmed and lowercase, empty at the end of the input
+pub fn prompt(question: &str) -> Result<String, String> {
+    let answer = read_line(question)?.unwrap_or_default();
+    return Ok(answer.to_ascii_lowercase());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
