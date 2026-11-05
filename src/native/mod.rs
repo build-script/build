@@ -101,19 +101,19 @@ struct Dependencies {
 
 fn c_builtins() -> Vec<(&'static str, Value)> {
     let build_c = builtin("build_c", signature(Language::C), |context, args| build_module(context, args, Language::C));
-    return [vec![("build_c", build_c)], library_builtins()].concat();
+    return [vec![build_c], library_builtins()].concat();
 }
 
 fn cpp_builtins() -> Vec<(&'static str, Value)> {
     let build_cpp = builtin("build_cpp", signature(Language::Cpp), |context, args| build_module(context, args, Language::Cpp));
-    return [vec![("build_cpp", build_cpp)], library_builtins()].concat();
+    return [vec![build_cpp], library_builtins()].concat();
 }
 
 /// Libraries outside vcpkg, for C and C++
 fn library_builtins() -> Vec<(&'static str, Value)> {
     return vec![
-        ("build_cmake", builtin("build_cmake", cmake::build_cmake_signature(), cmake::build_cmake)),
-        ("system_library", builtin("system_library", cmake::system_library_signature(), cmake::system_library)),
+        builtin("build_cmake", cmake::build_cmake_signature(), cmake::build_cmake),
+        builtin("system_library", cmake::system_library_signature(), cmake::system_library),
     ];
 }
 

@@ -21,24 +21,18 @@ use super::testing::{UnitTests, unit_test_parameters};
 
 /// `use kotlin`
 pub fn kotlin_builtins() -> Vec<(&'static str, Value)> {
-    return vec![(
+    return vec![builtin(
         "build_kotlin",
-        builtin(
-            "build_kotlin",
-            jar_parameters(Sources::KotlinAndJava),
-            |context, args| build_module(context, args, Sources::KotlinAndJava),
-        ),
+        jar_parameters(Sources::KotlinAndJava),
+        |context, args| build_module(context, args, Sources::KotlinAndJava),
     )];
 }
 
 /// `use java`: like the java plugin of Gradle, javac without Kotlin's compiler and standard library
 pub fn java_builtins() -> Vec<(&'static str, Value)> {
-    return vec![(
-        "build_java",
-        builtin("build_java", jar_parameters(Sources::Java), |context, args| {
-            build_module(context, args, Sources::Java)
-        }),
-    )];
+    return vec![builtin("build_java", jar_parameters(Sources::Java), |context, args| {
+        build_module(context, args, Sources::Java)
+    })];
 }
 
 fn jar_parameters(sources: Sources) -> FunctionSignature {

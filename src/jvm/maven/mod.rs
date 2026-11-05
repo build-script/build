@@ -72,65 +72,50 @@ type PomKey = (String, String, String);
 pub fn builtins() -> Vec<(&'static str, Value)> {
     let repository = || FunctionParameters::new().returns(Type::String);
     return vec![
-        (
-            "maven_central",
-            builtin("maven_central", repository(), |_, _| {
-                Ok(MAVEN_CENTRAL.into())
-            }),
-        ),
-        (
-            "maven_local",
-            builtin("maven_local", repository(), |_, _| {
-                let home = PathBuf::from(system::home_dir().unwrap_or_default());
-                Ok(format!("file://{}", home.join(".m2/repository").display()).into())
-            }),
-        ),
-        (
-            "google",
-            builtin("google", repository(), |_, _| Ok(GOOGLE.into())),
-        ),
+        builtin("maven_central", repository(), |_, _| {
+            Ok(MAVEN_CENTRAL.into())
+        }),
+        builtin("maven_local", repository(), |_, _| {
+            let home = PathBuf::from(system::home_dir().unwrap_or_default());
+            Ok(format!("file://{}", home.join(".m2/repository").display()).into())
+        }),
+        builtin("google", repository(), |_, _| Ok(GOOGLE.into())),
         // credentials come from environment variables, the script only names them
-        (
+        builtin(
             "maven",
-            builtin(
-                "maven",
-                FunctionParameters::new()
-                    .required("url", Type::String)
-                    .optional("username_env", Type::String)
-                    .optional("password_env", Type::String)
-                    .returns(Type::String),
-                |_, args| {
-                    let url: String = args.get("url")?;
+            FunctionParameters::new()
+                .required("url", Type::String)
+                .optional("username_env", Type::String)
+                .optional("password_env", Type::String)
+                .returns(Type::String),
+            |_, args| {
+                let url: String = args.get("url")?;
 
-                    match (args.get("username_env")?, args.get("password_env")?) {
-                        (None, None) => return Ok(url.into()),
-                        (Some(username_env), Some(password_env)) => {
-                            let credentials =
-                                RepositoryCredentials::new(username_env, password_env)?;
-                            let repository = format!("{url} {credentials}");
-                            MavenRepository::parse(&repository, Path::new(""))?;
+                match (args.get("username_env")?, args.get("password_env")?) {
+                    (None, None) => return Ok(url.into()),
+                    (Some(username_env), Some(password_env)) => {
+                        let credentials =
+                            RepositoryCredentials::new(username_env, password_env)?;
+                        let repository = format!("{url} {credentials}");
+                        MavenRepository::parse(&repository, Path::new(""))?;
 
-                            return Ok(repository.into());
-                        }
-                        _ => return Err("username_env and password_env go together".to_string()),
+                        return Ok(repository.into());
                     }
-                },
-            ),
+                    _ => return Err("username_env and password_env go together".to_string()),
+                }
+            },
         ),
         // a BOM whose versions apply to the other dependencies
-        (
+        builtin(
             "platform",
-            builtin(
-                "platform",
-                FunctionParameters::new()
-                    .required("bom", Type::String)
-                    .returns(Type::String),
-                |_, args| {
-                    let bom: String = args.get("bom")?;
-                    MavenCoordinate::parse(&bom)?;
-                    Ok(format!("platform({bom})").into())
-                },
-            ),
+            FunctionParameters::new()
+                .required("bom", Type::String)
+                .returns(Type::String),
+            |_, args| {
+                let bom: String = args.get("bom")?;
+                MavenCoordinate::parse(&bom)?;
+                Ok(format!("platform({bom})").into())
+            },
         ),
     ];
 }

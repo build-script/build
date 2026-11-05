@@ -849,121 +849,97 @@ pub fn default_jobs() -> usize {
 /// What every script has without `use`
 fn core_functions() -> Vec<(&'static str, Value)> {
     return vec![
-        (
+        builtin(
             "print",
-            builtin(
-                "print",
-                FunctionParameters::new()
-                    .variadic("values", Type::Any)
-                    .returns(Type::Unit),
-                |_, args| {
-                    let parts: Vec<String> = args
-                        .rest::<Value>()?
-                        .iter()
-                        .map(|value| value.to_string())
-                        .collect();
-                    println!("{}", parts.join(" "));
-                    Ok(Value::Unit)
-                },
-            ),
+            FunctionParameters::new()
+                .variadic("values", Type::Any)
+                .returns(Type::Unit),
+            |_, args| {
+                let parts: Vec<String> = args
+                    .rest::<Value>()?
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect();
+                println!("{}", parts.join(" "));
+                Ok(Value::Unit)
+            },
         ),
-        (
+        builtin(
             "type",
-            builtin(
-                "type",
-                FunctionParameters::new()
-                    .required("value", Type::Any)
-                    .returns(Type::String),
-                |_, args| Ok(args.get::<Value>("value")?.type_of().to_string().into()),
-            ),
+            FunctionParameters::new()
+                .required("value", Type::Any)
+                .returns(Type::String),
+            |_, args| Ok(args.get::<Value>("value")?.type_of().to_string().into()),
         ),
-        (
+        builtin(
             "env",
-            builtin(
-                "env",
-                FunctionParameters::new()
-                    .required("name", Type::String)
-                    .optional("default", Type::String)
-                    .returns(Type::String),
-                |_, args| {
-                    let name: String = args.get("name")?;
+            FunctionParameters::new()
+                .required("name", Type::String)
+                .optional("default", Type::String)
+                .returns(Type::String),
+            |_, args| {
+                let name: String = args.get("name")?;
 
-                    if let Ok(value) = std::env::var(&name) {
-                        return Ok(value.into());
-                    }
+                if let Ok(value) = std::env::var(&name) {
+                    return Ok(value.into());
+                }
 
-                    let default: Option<String> = args.get("default")?;
+                let default: Option<String> = args.get("default")?;
 
-                    return default.map(Value::from).ok_or_else(|| {
-                        format!(
-                            "the environment variable {name} is not set, a default = ... would be taken then"
-                        )
-                    });
-                },
-            ),
+                return default.map(Value::from).ok_or_else(|| {
+                    format!(
+                        "the environment variable {name} is not set, a default = ... would be taken then"
+                    )
+                });
+            },
         ),
-        (
+        builtin(
             "has_env",
-            builtin(
-                "has_env",
-                FunctionParameters::new()
-                    .required("name", Type::String)
-                    .returns(Type::Bool),
-                |_, args| {
-                    let name: String = args.get("name")?;
-                    Ok(Value::Bool(std::env::var_os(name).is_some()))
-                },
-            ),
+            FunctionParameters::new()
+                .required("name", Type::String)
+                .returns(Type::Bool),
+            |_, args| {
+                let name: String = args.get("name")?;
+                Ok(Value::Bool(std::env::var_os(name).is_some()))
+            },
         ),
-        (
+        builtin(
             "git",
-            builtin(
-                "git",
-                FunctionParameters::new()
-                    .required("url", Type::String)
-                    // a commit, better its whole hash, or a tag
-                    .required("commit", Type::String)
-                    .returns(Type::String),
-                |context, args| {
-                    let url: String = args.get("url")?;
-                    let commit: String = args.get("commit")?;
-                    let checkout = crate::common::git::checkout(&url, &commit, &context.project_dir)?;
-                    return Ok(checkout.display().to_string().into());
-                },
-            ),
+            FunctionParameters::new()
+                .required("url", Type::String)
+                // a commit, better its whole hash, or a tag
+                .required("commit", Type::String)
+                .returns(Type::String),
+            |context, args| {
+                let url: String = args.get("url")?;
+                let commit: String = args.get("commit")?;
+                let checkout = crate::common::git::checkout(&url, &commit, &context.project_dir)?;
+                return Ok(checkout.display().to_string().into());
+            },
         ),
-        (
+        builtin(
             "operating_system",
-            builtin(
-                "operating_system",
-                FunctionParameters::new().returns(Type::String),
-                // "macos", "linux" or "windows"
-                |_, _| Ok(std::env::consts::OS.into()),
-            ),
+            FunctionParameters::new().returns(Type::String),
+            // "macos", "linux" or "windows"
+            |_, _| Ok(std::env::consts::OS.into()),
         ),
-        (
+        builtin(
             "current_time_millis",
-            builtin(
-                "current_time_millis",
-                FunctionParameters::new().returns(Type::Int),
-                |_, _| {
-                    let millis = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|error| error.to_string())?
-                        .as_millis();
-                    Ok(Value::Int(millis as i64))
-                },
-            ),
+            FunctionParameters::new().returns(Type::Int),
+            |_, _| {
+                let millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|error| error.to_string())?
+                    .as_millis();
+                Ok(Value::Int(millis as i64))
+            },
         ),
-        (
+        builtin(
             "list",
-            builtin(
-                "list",
-                FunctionParameters::new()
-                    .variadic("items", Type::Any)
-                    .returns(Type::list(Type::Any)),
-                |_, args| Ok(Value::List(args.rest()?)),
-            ),
+            FunctionParameters::new()
+                .variadic("items", Type::Any)
+                .returns(Type::list(Type::Any)),
+            |_, args| Ok(Value::List(args.rest()?)),
         ),
     ];
 }
@@ -1102,7 +1078,8 @@ mod tests {
             .returns(Type::String);
 
         let mut runtime = Runtime::new(".");
-        runtime.define("f", builtin("f", signature, echo));
+        let (name, value) = builtin("f", signature, echo);
+        runtime.define(name, value);
 
         return runtime;
     }
@@ -1206,10 +1183,8 @@ mod tests {
     fn builtins_must_return_their_declared_type() {
         let mut runtime = Runtime::new(".");
         let signature = FunctionParameters::new().returns(Type::String);
-        runtime.define(
-            "bad",
-            builtin("bad", signature, |_, _| Ok(Value::Bool(true))),
-        );
+        let (name, value) = builtin("bad", signature, |_, _| Ok(Value::Bool(true)));
+        runtime.define(name, value);
 
         let RuntimeErrorType::BuiltinFailed { message, .. } =
             run_in(runtime, "bad()").err().unwrap().variant
@@ -1602,7 +1577,8 @@ mod tests {
                 .with_default("dependencies", Type::list(Type::Module), Value::List(vec![]))
                 .returns(Type::Module);
             let mut runtime = Runtime::new(".").with_jobs(2);
-            runtime.define("slow", builtin("slow", signature, slow));
+            let (name, value) = builtin("slow", signature, slow);
+            runtime.define(name, value);
 
             return runtime;
         };
@@ -1645,7 +1621,8 @@ mod tests {
             .required("name", Type::String)
             .returns(Type::Module);
 
-        runtime.define("library", builtin("library", signature, library));
+        let (name, value) = builtin("library", signature, library);
+        runtime.define(name, value);
         let runtime = run_in(runtime, "core = library(\"core\")\nlibrary(\"app\")").unwrap();
 
         let built = runtime.finish().unwrap();

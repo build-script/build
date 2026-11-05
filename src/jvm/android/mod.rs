@@ -113,14 +113,8 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
     );
 
     return vec![
-        (
-            "build_android",
-            builtin("build_android", app, build_android),
-        ),
-        (
-            "build_android_library",
-            builtin("build_android_library", library, build_android_library),
-        ),
+        builtin("build_android", app, build_android),
+        builtin("build_android_library", library, build_android_library),
     ];
 }
 

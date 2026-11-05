@@ -91,12 +91,14 @@ pub fn builtin(
     name: &'static str,
     signature: FunctionSignature,
     function: BuiltinFunction,
-) -> Value {
-    return Value::Builtin {
+) -> (&'static str, Value) {
+    let value = Value::Builtin {
         name,
         signature: Arc::new(signature),
         function,
     };
+
+    return (name, value);
 }
 
 /// Like Kotlin: positional arguments in order, named ones in any order, defaults for

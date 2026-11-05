@@ -21,16 +21,13 @@ pub struct Jdk {
 }
 
 pub fn builtins() -> Vec<(&'static str, Value)> {
-    return vec![(
+    return vec![builtin(
         "jdk",
-        builtin(
-            "jdk",
-            FunctionParameters::new()
-                .with_default("version", Type::String, DEFAULT_JAVA_VERSION)
-                .with_default("distribution", Type::String, DEFAULT_JDK_DISTRIBUTION)
-                .returns(Type::String),
-            jdk_directory,
-        ),
+        FunctionParameters::new()
+            .with_default("version", Type::String, DEFAULT_JAVA_VERSION)
+            .with_default("distribution", Type::String, DEFAULT_JDK_DISTRIBUTION)
+            .returns(Type::String),
+        jdk_directory,
     )];
 }
 

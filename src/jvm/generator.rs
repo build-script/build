@@ -16,27 +16,24 @@ use super::module::{compile_java, module_directory};
 const OUTPUT_PLACEHOLDER: &str = "{output}";
 
 pub fn builtins() -> Vec<(&'static str, Value)> {
-    return vec![(
+    return vec![builtin(
         "generate_sources",
-        builtin(
-            "generate_sources",
-            FunctionParameters::new()
-                .required("name", Type::String)
-                .required("tool", Type::list(Type::String))
-                .required("repositories", Type::list(Type::String))
-                .required("main_class", Type::String)
-                .with_default("args", Type::list(Type::String), Value::string_list(&[]))
-                .with_default("inputs", Type::list(Type::String), Value::string_list(&[]))
-                .with_default(
-                    "tool_sources",
-                    Type::list(Type::String),
-                    Value::string_list(&[]),
-                )
-                .with_default("jdk", Type::String, jdk::DEFAULT_JAVA_VERSION)
-                .with_default("directory", Type::String, ".")
-                .returns(Type::String),
-            generate_sources,
-        ),
+        FunctionParameters::new()
+            .required("name", Type::String)
+            .required("tool", Type::list(Type::String))
+            .required("repositories", Type::list(Type::String))
+            .required("main_class", Type::String)
+            .with_default("args", Type::list(Type::String), Value::string_list(&[]))
+            .with_default("inputs", Type::list(Type::String), Value::string_list(&[]))
+            .with_default(
+                "tool_sources",
+                Type::list(Type::String),
+                Value::string_list(&[]),
+            )
+            .with_default("jdk", Type::String, jdk::DEFAULT_JAVA_VERSION)
+            .with_default("directory", Type::String, ".")
+            .returns(Type::String),
+        generate_sources,
     )];
 }
 
