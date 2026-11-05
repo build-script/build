@@ -5,8 +5,9 @@ mod values;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
+use crate::common::semaphore::Semaphore;
 use crate::common::system;
 use crate::jvm;
 use crate::language::lexer::Span;
@@ -61,18 +62,9 @@ pub struct Runtime {
     context: BuildScriptContext,
     /// every module a builtin returned, in build order, maybe still building
     built: Vec<Arc<PendingModule>>,
-    jobs: Arc<Jobs>,
+    jobs: Arc<Semaphore>,
     call_depth: usize,
 }
-
-/// How many builds run at the same time, like the workers of Gradle
-struct Jobs {
-    free: Mutex<usize>,
-    released: Condvar,
-}
-
-/// One of the jobs, free again when it is dropped
-struct Job<'a>(&'a Jobs);
 
 /// The platforms of every language category
 const PLATFORMS: &[&[Platform]] = &[jvm::PLATFORMS, crate::native::PLATFORMS];
@@ -119,7 +111,7 @@ impl Runtime {
                 idea: false,
             },
             built: vec![],
-            jobs: Arc::new(Jobs::new(default_jobs())),
+            jobs: Arc::new(Semaphore::new(default_jobs())),
             call_depth: 0,
         };
 
@@ -154,7 +146,7 @@ impl Runtime {
     }
 
     pub fn with_jobs(mut self, jobs: usize) -> Self {
-        self.jobs = Arc::new(Jobs::new(jobs));
+        self.jobs = Arc::new(Semaphore::new(jobs));
         return self;
     }
 
@@ -743,7 +735,7 @@ impl Runtime {
                 return;
             }
 
-            let _job = jobs.take();
+            let _job = jobs.acquire();
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 function(&context, &args)
             }));
@@ -845,35 +837,6 @@ pub fn platforms() -> impl Iterator<Item = &'static Platform> {
 
 fn platform_names() -> Vec<&'static str> {
     return platforms().map(|platform| platform.name).collect();
-}
-
-impl Jobs {
-    fn new(count: usize) -> Self {
-        return Jobs {
-            free: Mutex::new(count.max(1)),
-            released: Condvar::new(),
-        };
-    }
-
-    /// Waits until one is free
-    fn take(&self) -> Job<'_> {
-        let mut free = self.free.lock().unwrap();
-
-        while *free == 0 {
-            free = self.released.wait(free).unwrap();
-        }
-
-        *free -= 1;
-
-        return Job(self);
-    }
-}
-
-impl Drop for Job<'_> {
-    fn drop(&mut self) {
-        *self.0.free.lock().unwrap() += 1;
-        self.0.released.notify_one();
-    }
 }
 
 /// Half the cores: kotlinc, javac and d8 use several threads each

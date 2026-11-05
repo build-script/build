@@ -1,6 +1,7 @@
 // What every language category uses: the host system, up-to-date checks, XML, sources from git, questions
 // in the terminal
 pub mod git;
+pub mod semaphore;
 pub mod settings;
 pub mod system;
 pub mod terminal;

@@ -4,16 +4,17 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 
+use crate::common::semaphore::Semaphore;
 use crate::common::{system, terminal};
 
 use super::toolchain::Toolchain;
 
-/// Compilers running now, of all modules at most one per core: modules build at the same time
-static RUNNING: Mutex<usize> = Mutex::new(0);
-static FINISHED: Condvar = Condvar::new();
 static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
+
+/// Compilers running now, of all modules at most one per core: modules build at the same time
+static COMPILERS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(*CORES));
 
 /// What CMake and Visual Studio link every program of Windows with
 const WINDOWS_LIBRARIES: &[&str] = &["kernel32", "user32", "gdi32", "winspool", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "advapi32"];
@@ -216,7 +217,7 @@ impl Compilation<'_> {
         let mut command = self.toolchain.command_with_arguments(compiler, &arguments, &object.with_extension("o.rsp"))?;
         command.current_dir(self.module_dir);
 
-        let _compiler = Compiler::start();
+        let _compiler = COMPILERS.acquire();
         system::run_command_in_one_piece(&mut command, &format!("compiling {}", source.display()))?;
 
         return recorded.record();
@@ -239,30 +240,6 @@ impl Compilation<'_> {
                 })
             })
             .collect();
-    }
-}
-
-/// One of the compilers running now, the next may start when it is dropped
-struct Compiler;
-
-impl Compiler {
-    /// Waits until fewer compilers than cores run
-    fn start() -> Self {
-        let mut running = RUNNING.lock().unwrap();
-
-        while *running >= *CORES {
-            running = FINISHED.wait(running).unwrap();
-        }
-
-        *running += 1;
-        return Compiler;
-    }
-}
-
-impl Drop for Compiler {
-    fn drop(&mut self) {
-        *RUNNING.lock().unwrap() -= 1;
-        FINISHED.notify_one();
     }
 }
 
