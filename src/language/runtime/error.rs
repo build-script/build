@@ -135,6 +135,11 @@ impl RuntimeError {
         );
     }
 
+    /// Of + - * / and the negation of numbers
+    pub fn invalid_arithmetic(operator: &impl fmt::Display, span: Span) -> Self {
+        return Self::new(RuntimeErrorType::InvalidArithmetic { operator: operator.to_string() }, span);
+    }
+
     pub fn builtin_failed(name: &str, message: String, span: Span) -> Self {
         return Self::new(
             RuntimeErrorType::BuiltinFailed {
@@ -163,23 +168,20 @@ impl fmt::Display for RuntimeError {
                 return write!(f, "variable '{name}' is not defined");
             }
             RuntimeErrorType::InvalidUnaryOperand { operator, operand } => {
-                return write!(f, "operator {operator:?} cannot be applied to {operand}");
+                return write!(f, "operator {operator} cannot be applied to {operand}");
             }
             RuntimeErrorType::InvalidBinaryOperands {
                 operator,
                 left,
                 right,
             } => {
-                return write!(
-                    f,
-                    "operator {operator:?} cannot be applied to {left} and {right}"
-                );
+                return write!(f, "operator {operator} cannot be applied to {left} and {right}");
             }
             RuntimeErrorType::NotCallable { value_type } => {
                 return write!(f, "{value_type} is not a function");
             }
             RuntimeErrorType::InvalidArithmetic { operator } => {
-                return write!(f, "{operator} overflows or divides by zero");
+                return write!(f, "operator {operator} overflows or divides by zero");
             }
             RuntimeErrorType::TooManyArguments { function, max, got } => {
                 return write!(f, "{function} takes at most {max} argument(s), got {got}");

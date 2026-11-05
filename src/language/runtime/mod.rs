@@ -273,25 +273,7 @@ impl Runtime {
                     });
             }
 
-            ExpressionType::Assignment { target, value } => {
-                let ExpressionType::Ident(name) = &target.variant else {
-                    unreachable!("parser only allows identifiers as assignment targets")
-                };
-
-                // a function is called by the name it is defined with in messages
-                let value = match &value.variant {
-                    ExpressionType::Function {
-                        params,
-                        returns,
-                        body,
-                    } => self.define_function(name, params, returns.as_ref(), body)?,
-                    _ => self.evaluate(value)?,
-                };
-
-                self.define(name, value);
-
-                return Ok(Value::Unit);
-            }
+            ExpressionType::Assignment { target, value } => return self.evaluate_assignment(target, value),
 
             ExpressionType::Function {
                 params,
@@ -347,31 +329,48 @@ impl Runtime {
                 };
             }
 
-            ExpressionType::FunctionCall { target, args } => {
-                let callee = self.evaluate(target)?;
+            ExpressionType::FunctionCall { target, args } => return self.evaluate_call(target, args, span),
+        }
+    }
 
-                let mut arguments = Vec::with_capacity(args.len());
+    /// A function is called by the name it is defined with in messages
+    fn evaluate_assignment(&mut self, target: &Expression, value: &Expression) -> Result<Value, RuntimeError> {
+        let ExpressionType::Ident(name) = &target.variant else {
+            unreachable!("parser only allows identifiers as assignment targets")
+        };
 
-                for arg in args {
-                    // `name = value` in an argument list is a named argument, not an assignment
-                    if let ExpressionType::Assignment { target, value } = &arg.variant {
-                        let ExpressionType::Ident(name) = &target.variant else {
-                            unreachable!("parser only allows identifiers as assignment targets")
-                        };
+        let value = match &value.variant {
+            ExpressionType::Function {
+                params,
+                returns,
+                body,
+            } => self.define_function(name, params, returns.as_ref(), body)?,
+            _ => self.evaluate(value)?,
+        };
 
-                        arguments.push(CallArgument::Named(
-                            name.clone(),
-                            self.evaluate(value)?,
-                            arg.span,
-                        ));
-                    } else {
-                        arguments.push(CallArgument::Positional(self.evaluate(arg)?, arg.span));
-                    }
-                }
+        self.define(name, value);
 
-                return self.call(callee, arguments, span);
+        return Ok(Value::Unit);
+    }
+
+    /// `name = value` in an argument list is a named argument, not an assignment
+    fn evaluate_call(&mut self, target: &Expression, args: &[Expression], span: Span) -> Result<Value, RuntimeError> {
+        let callee = self.evaluate(target)?;
+        let mut arguments = Vec::with_capacity(args.len());
+
+        for arg in args {
+            if let ExpressionType::Assignment { target, value } = &arg.variant {
+                let ExpressionType::Ident(name) = &target.variant else {
+                    unreachable!("parser only allows identifiers as assignment targets")
+                };
+
+                arguments.push(CallArgument::Named(name.clone(), self.evaluate(value)?, arg.span));
+            } else {
+                arguments.push(CallArgument::Positional(self.evaluate(arg)?, arg.span));
             }
         }
+
+        return self.call(callee, arguments, span);
     }
 
     fn evaluate_bool(
@@ -421,14 +420,7 @@ impl Runtime {
             (UnaryOperator::Neg, Value::Int(int)) => {
                 return int.checked_neg()
                     .map(Value::Int)
-                    .ok_or_else(|| {
-                        RuntimeError::new(
-                            RuntimeErrorType::InvalidArithmetic {
-                                operator: format!("{operator:?}"),
-                            },
-                            span,
-                        )
-                    });
+                    .ok_or_else(|| RuntimeError::invalid_arithmetic(operator, span));
             }
             _ => {
                 let variant = RuntimeErrorType::InvalidUnaryOperand {
@@ -474,14 +466,7 @@ impl Runtime {
                     BinaryOperator::Mul => l.checked_mul(*r),
                     _ => l.checked_div(*r),
                 };
-                return result.map(Value::Int).ok_or_else(|| {
-                    RuntimeError::new(
-                        RuntimeErrorType::InvalidArithmetic {
-                            operator: format!("{operator:?}"),
-                        },
-                        span,
-                    )
-                });
+                return result.map(Value::Int).ok_or_else(|| RuntimeError::invalid_arithmetic(operator, span));
             }
 
             (

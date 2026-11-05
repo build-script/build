@@ -107,6 +107,39 @@ pub enum BinaryOperator {
     Or,
 }
 
+/// As the script writes them, for messages
+impl fmt::Display for UnaryOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let symbol = match self {
+            UnaryOperator::Neg => "-",
+            UnaryOperator::Not => "!",
+        };
+
+        return write!(f, "{symbol}");
+    }
+}
+
+impl fmt::Display for BinaryOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let symbol = match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Sub => "-",
+            BinaryOperator::Mul => "*",
+            BinaryOperator::Div => "/",
+            BinaryOperator::Eq => "==",
+            BinaryOperator::NotEq => "!=",
+            BinaryOperator::Less => "<",
+            BinaryOperator::LessEq => "<=",
+            BinaryOperator::Greater => ">",
+            BinaryOperator::GreaterEq => ">=",
+            BinaryOperator::And => "&&",
+            BinaryOperator::Or => "||",
+        };
+
+        return write!(f, "{symbol}");
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ExpressionType {
     Ident(String),
