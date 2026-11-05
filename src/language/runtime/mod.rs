@@ -1,7 +1,9 @@
 // Runtime: evaluates build scripts, `use` loads the build functions of a platform
 mod error;
 mod functions;
+mod modules;
 mod prelude;
+mod testing;
 mod values;
 
 use std::collections::HashMap;
@@ -24,10 +26,9 @@ pub use error::{RuntimeError, RuntimeErrorType};
 pub use functions::{
     Arguments, FromValue, FunctionParameters, FunctionSignature, ParameterDefault, builtin,
 };
-pub use values::{
-    BuildFailure, BuiltModule, ModuleOutput, ModuleTests, PendingModule, TestCounts, TestOutcome,
-    TestRun, TestRunner, TestSuite, Type, Value, launch,
-};
+pub use modules::{BuildFailure, BuiltModule, ModuleOutput, PendingModule, launch};
+pub use testing::{ModuleTests, TestCounts, TestOutcome, TestRun, TestRunner, TestSuite};
+pub use values::{Type, Value};
 
 /// The build functions a script loads with `use <name>`
 pub struct Platform {

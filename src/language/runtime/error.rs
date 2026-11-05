@@ -4,7 +4,7 @@ use std::fmt;
 use crate::language::lexer::Span;
 use crate::language::parser::{BinaryOperator, UnaryOperator};
 
-use super::values::{Type, Value};
+use super::{Type, Value};
 use super::{builtin_names, platform_names};
 
 #[derive(Debug)]

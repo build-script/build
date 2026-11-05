@@ -549,6 +549,14 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     })));
 }
 
+/// Returns the exit code. Programs start like jars, in the module's directory.
+pub fn launch(module: &BuiltModule, output: &NativeOutput, args: &[String]) -> Result<i32, String> {
+    let program = output.program.as_ref()
+        .ok_or(format!("{} is a library, only programs can be run", module.name))?;
+
+    return system::run_interactive(Command::new(program).args(args).current_dir(&module.directory));
+}
+
 impl Dependencies {
     fn read(args: &Arguments, name: &str) -> Result<Self, String> {
         let mut dependencies = Dependencies::default();

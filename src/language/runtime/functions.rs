@@ -6,7 +6,7 @@ use crate::language::lexer::Span;
 use crate::language::parser::Expression;
 
 use super::error::{RuntimeError, RuntimeErrorType, snake_case};
-use super::values::{BuiltModule, PendingModule, Type, Value};
+use super::{BuiltModule, PendingModule, Type, Value};
 use super::{BuildScriptContext, SharedScope};
 
 pub type BuiltinFunction = fn(&BuildScriptContext, &Arguments) -> Result<Value, String>;
