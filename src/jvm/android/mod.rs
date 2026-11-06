@@ -250,7 +250,8 @@ fn build_android(context: &BuildScriptContext, args: &Arguments) -> Result<Value
             let merged_manifest = xml::parse(&system::read_file(&manifest)?)?;
             (inputs, android_sdk(args)?, merged_manifest)
         } else {
-            let build = AndroidBuild::prepare(inputs, args, build_type)?;
+            let native_library_dirs = native_library_dirs(&inputs, args, build_type)?;
+            let build = AndroidBuild::prepare(inputs, args, build_type, native_library_dirs)?;
 
             // before compiling: IntelliJ sees new libraries even while the code does not compile
             if context.idea {
@@ -324,13 +325,15 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
         .join("libs")
         .join(format!("{}.jar", inputs.name));
 
+    let native_library_dirs = native_library_dirs(&inputs, args, build_type)?;
+
     let android = AndroidResources {
         namespace: namespace.clone(),
         res_dirs: existing_dirs(&inputs, args, "res_dirs", build_type)?,
         manifest: source_manifest.clone(),
         symbols: Some(system::build_dir(&inputs.directory).join(LIBRARY_SYMBOL_FILE)),
         asset_dirs: existing_dirs(&inputs, args, "asset_dirs", build_type)?,
-        native_library_dirs: native_library_dirs(&inputs, args, build_type)?,
+        native_library_dirs: native_library_dirs.clone(),
         view_binding: args.get("view_binding")?,
         consumer_proguard_files,
     };
@@ -355,7 +358,7 @@ fn build_android_library(context: &BuildScriptContext, args: &Arguments) -> Resu
         };
         (inputs, sdk)
     } else {
-        let build = AndroidBuild::prepare(inputs, args, build_type)?;
+        let build = AndroidBuild::prepare(inputs, args, build_type, native_library_dirs)?;
 
         if context.idea {
             build.write_idea_module(&context.project_dir, args)?;
@@ -511,27 +514,78 @@ impl ApkSettings {
     }
 }
 
+/// The files the steps of an apk pass on to each other, below build/intermediates
+struct Intermediates {
+    dir: PathBuf,
+    /// R.txt of the linked resources, the R classes come from it
+    symbols: PathBuf,
+    linked: PathBuf,
+    /// the resources of an app bundle, in protobuf format
+    proto_resources: PathBuf,
+    proguard_dir: PathBuf,
+    /// what the manifest and the layouts name by class name: R8 keeps it
+    aapt2_rules: PathBuf,
+    /// below API 21 what starts the app has to be in the first dex file
+    main_dex_rules: Option<PathBuf>,
+    java_resources: PathBuf,
+    dex_dir: PathBuf,
+    native_libraries: PathBuf,
+}
+
+impl Intermediates {
+    fn of(build: &AndroidBuild) -> Self {
+        let dir = build.build_dir.join("intermediates");
+        let proguard_dir = dir.join("proguard");
+
+        return Intermediates {
+            symbols: dir.join("R.txt"),
+            linked: dir.join("apk/resources.ap_"),
+            proto_resources: dir.join("bundle/resources.zip"),
+            aapt2_rules: proguard_dir.join("aapt2.pro"),
+            main_dex_rules: (build.min_sdk < 21).then(|| proguard_dir.join("main-dex.pro")),
+            java_resources: dir.join("java-resources"),
+            dex_dir: dir.join("dex"),
+            native_libraries: dir.join("native-libraries"),
+            proguard_dir,
+            dir,
+        };
+    }
+}
+
 impl Apk<'_> {
     /// Resources linked with aapt2, R and BuildConfig, Kotlin and Java, dex with d8 or R8,
     /// packaged with the Java resources and native libraries, the app bundle too with `bundle`.
     /// Returns the merged manifest.
     fn build(&self, build: &AndroidBuild) -> Result<XmlElement, String> {
-        let settings = self.settings;
-        let target_sdk = settings.target_sdk.unwrap_or(build.compile_sdk);
-        let intermediates = build.build_dir.join("intermediates");
+        let paths = Intermediates::of(build);
+        let shrinks = build.build_type == BuildType::Release && self.settings.minify;
 
         let merged_manifest = build.write_manifest(
             self.source_manifest,
             self.test_manifest,
-            &settings.application_id,
+            &self.settings.application_id,
             true,
             self.manifest,
         )?;
 
+        self.link_app_resources(build, &paths, shrinks)?;
+        let (own_jars, generated_resources) = self.compile_app_classes(build, &paths)?;
+        build.build_native_libraries()?;
+
+        self.merge_java_resources(build, &paths, &own_jars, &generated_resources)?;
+        self.dex_app(build, &paths, &own_jars, shrinks)?;
+        self.package_outputs(build, &paths, shrinks)?;
+
+        return Ok(merged_manifest);
+    }
+
+    /// The resources with the assets for the apk, in protobuf format for the bundle too
+    fn link_app_resources(&self, build: &AndroidBuild, paths: &Intermediates, shrinks: bool) -> Result<(), String> {
+        let settings = self.settings;
+        let target_sdk = settings.target_sdk.unwrap_or(build.compile_sdk);
+
         system::log(&build.inputs.name, "Linking resources");
         let own_resources = build.compile_own_resources()?;
-        let symbols = intermediates.join("R.txt");
-        let linked = intermediates.join("apk/resources.ap_");
 
         let mut extra = vec![
             "--target-sdk-version".to_string(),
@@ -547,19 +601,11 @@ impl Apk<'_> {
             extra.push("--debug-mode".to_string());
         }
 
-        let shrinks = build.build_type == BuildType::Release && settings.minify;
-        let proguard_dir = intermediates.join("proguard");
-        let aapt2_rules = proguard_dir.join("aapt2.pro");
-        let main_dex_rules = proguard_dir.join("main-dex.pro");
-        // below API 21 what starts the app has to be in the first dex file
-        let needs_main_dex = build.min_sdk < 21;
-
-        // what the manifest and the layouts name by class name has to stay
         if shrinks {
-            system::create_dir(&proguard_dir)?;
-            extra.extend(["--proguard".to_string(), aapt2_rules.display().to_string()]);
+            system::create_dir(&paths.proguard_dir)?;
+            extra.extend(["--proguard".to_string(), paths.aapt2_rules.display().to_string()]);
 
-            if needs_main_dex {
+            if let Some(main_dex_rules) = &paths.main_dex_rules {
                 extra.extend([
                     "--proguard-main-dex".to_string(),
                     main_dex_rules.display().to_string(),
@@ -578,7 +624,7 @@ impl Apk<'_> {
 
         if let Some(name) = &settings.license_report {
             // like the Gradle license plugin with copyJsonReportToAssets
-            let generated = intermediates.join("generated/assets");
+            let generated = paths.dir.join("generated/assets");
             system::write_file(
                 &generated.join(name),
                 &build.inputs.license_report(TargetPlatform::Android)?,
@@ -594,77 +640,99 @@ impl Apk<'_> {
             self.manifest,
             &own_resources,
             LinkedResources::App,
-            &linked,
-            &symbols,
+            &paths.linked,
+            &paths.symbols,
             &extra,
         )?;
 
-        // an app bundle has its resources in protobuf format
-        let proto_resources = intermediates.join("bundle/resources.zip");
-
         if self.bundle.is_some() {
-            let mut proto_extra = extra.clone();
-            proto_extra.push("--proto-format".to_string());
+            extra.push("--proto-format".to_string());
 
             build.link(
                 self.manifest,
                 &own_resources,
                 LinkedResources::App,
-                &proto_resources,
-                &intermediates.join("bundle/R.txt"),
-                &proto_extra,
+                &paths.proto_resources,
+                &paths.dir.join("bundle/R.txt"),
+                &extra,
             )?;
         }
 
+        return Ok(());
+    }
+
+    /// The R classes, BuildConfig and the sources compiled into jars. Returns the jars and
+    /// the resource directories of the symbol processors.
+    fn compile_app_classes(
+        &self,
+        build: &AndroidBuild,
+        paths: &Intermediates,
+    ) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
         // the app generates the final R classes of all libraries
         let mut generated_sources = build.write_r_classes(
-            &symbols,
-            Some(&SymbolTable::read(&symbols)?),
-            &intermediates.join("generated/r"),
+            &paths.symbols,
+            Some(&SymbolTable::read(&paths.symbols)?),
+            &paths.dir.join("generated/r"),
         )?;
 
-        generated_sources.push(build.write_build_config(&settings.build_config)?);
-        let generated = intermediates.join("classes/generated");
+        generated_sources.push(build.write_build_config(&self.settings.build_config)?);
+        let generated = paths.dir.join("classes/generated");
         build.compile_generated_java(
             &generated_sources,
             &build.android_classpath(&[]),
             &generated,
         )?;
 
-        let classes = intermediates.join("classes/kotlin");
+        let classes = paths.dir.join("classes/kotlin");
         let generated_resources = build.compile_sources(&[generated.clone()], &classes)?;
-        build.build_native_libraries()?;
 
         let own_jars = vec![
-            build.jar(&classes, &intermediates.join("jars/classes.jar"))?,
-            build.jar(&generated, &intermediates.join("jars/generated.jar"))?,
+            build.jar(&classes, &paths.dir.join("jars/classes.jar"))?,
+            build.jar(&generated, &paths.dir.join("jars/generated.jar"))?,
         ];
 
+        return Ok((own_jars, generated_resources));
+    }
+
+    /// The Java resources of the module, its jars and the libraries
+    fn merge_java_resources(
+        &self,
+        build: &AndroidBuild,
+        paths: &Intermediates,
+        own_jars: &[PathBuf],
+        generated_resources: &[PathBuf],
+    ) -> Result<(), String> {
         // the app's own Java resources come first, the first jar wins
-        let module_resources = intermediates.join("java-resources-module");
+        let module_resources = paths.dir.join("java-resources-module");
         build
             .inputs
             .resources
-            .process(&generated_resources, &module_resources)?;
+            .process(generated_resources, &module_resources)?;
 
         let mut resource_jars =
-            vec![build.jar(&module_resources, &intermediates.join("jars/resources.jar"))?];
+            vec![build.jar(&module_resources, &paths.dir.join("jars/resources.jar"))?];
 
         resource_jars.extend(own_jars.iter().chain(&build.jars).cloned());
-        let java_resources = intermediates.join("java-resources");
         merge_jars(
             &resource_jars,
             JarContents::JavaResources,
-            &java_resources,
-            &intermediates.join("java-resources.tmp"),
+            &paths.java_resources,
+            &paths.dir.join("java-resources.tmp"),
         )?;
 
-        let dex_dir = intermediates.join("dex");
+        return Ok(());
+    }
 
-        let desugared = match &settings.core_library_desugaring {
-            Some(version) => {
-                Some(build.desugared_library(version, &intermediates.join("desugar"))?)
-            }
+    /// With d8, or shrunk with R8 in release builds with minify, the desugared library besides
+    fn dex_app(
+        &self,
+        build: &AndroidBuild,
+        paths: &Intermediates,
+        own_jars: &[PathBuf],
+        shrinks: bool,
+    ) -> Result<(), String> {
+        let desugared = match &self.settings.core_library_desugaring {
+            Some(version) => Some(build.desugared_library(version, &paths.dir.join("desugar"))?),
             None => None,
         };
 
@@ -674,65 +742,69 @@ impl Apk<'_> {
             system::log(&build.inputs.name, "Shrinking and dexing with R8");
             let rules = release::proguard_rule_files(
                 build,
-                &settings.proguard_files,
-                &aapt2_rules,
-                &java_resources,
-                &proguard_dir,
+                &self.settings.proguard_files,
+                &paths.aapt2_rules,
+                &paths.java_resources,
+                &paths.proguard_dir,
             )?;
 
             library_keep_rules = release::shrink_with_r8(
                 build,
-                &own_jars,
+                own_jars,
                 &rules,
-                Some(main_dex_rules.as_path()).filter(|_| needs_main_dex),
+                paths.main_dex_rules.as_deref(),
                 desugared.as_ref(),
-                &dex_dir,
+                &paths.dex_dir,
             )?;
         } else {
             system::log(&build.inputs.name, "Dexing");
-            build.dex(&own_jars, &dex_dir, desugared.as_ref())?;
+            build.dex(own_jars, &paths.dex_dir, desugared.as_ref())?;
         }
 
         if let Some(desugared) = &desugared {
             build.dex_desugared_library(
                 desugared,
                 library_keep_rules.as_deref(),
-                &dex_dir,
-                &intermediates.join("desugar/dex"),
+                &paths.dex_dir,
+                &paths.dir.join("desugar/dex"),
             )?;
         }
 
+        return Ok(());
+    }
+
+    /// The signed apk, and the app bundle with `bundle`
+    fn package_outputs(&self, build: &AndroidBuild, paths: &Intermediates, shrinks: bool) -> Result<(), String> {
         system::log(&build.inputs.name, "Packaging");
-        let native_libraries = intermediates.join("native-libraries");
-        build.merge_native_libraries(&native_libraries)?;
+        build.merge_native_libraries(&paths.native_libraries)?;
 
         build.package(
-            &linked,
-            &dex_dir,
-            &java_resources,
-            &native_libraries,
-            &intermediates.join("apk"),
+            &paths.linked,
+            &paths.dex_dir,
+            &paths.java_resources,
+            &paths.native_libraries,
+            &paths.dir.join("apk"),
             self.signature,
             self.output,
         )?;
 
-        if let Some(bundle) = self.bundle {
-            system::log(&build.inputs.name, "Building the app bundle");
-            let mapping = build.build_dir.join("outputs/mapping/release/mapping.txt");
+        let Some(bundle) = self.bundle else {
+            return Ok(());
+        };
 
-            release::build_app_bundle(
-                build,
-                &proto_resources,
-                &dex_dir,
-                &java_resources,
-                &native_libraries,
-                Some(mapping.as_path()).filter(|_| shrinks),
-                self.signature,
-                bundle,
-            )?;
-        }
+        system::log(&build.inputs.name, "Building the app bundle");
+        let mapping = build.build_dir.join("outputs/mapping/release/mapping.txt");
 
-        return Ok(merged_manifest);
+        return release::build_app_bundle(
+            build,
+            &paths.proto_resources,
+            &paths.dex_dir,
+            &paths.java_resources,
+            &paths.native_libraries,
+            Some(mapping.as_path()).filter(|_| shrinks),
+            self.signature,
+            bundle,
+        );
     }
 }
 

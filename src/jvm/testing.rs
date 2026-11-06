@@ -227,7 +227,7 @@ impl UnitTests<'_> {
         let reports_dir = build_dir.join("test-results");
 
         // the shared C and C++ libraries of the module and of the tests
-        let library_dirs = [inputs.dependencies.native_library_dirs(), test_dependencies.native_library_dirs()].concat();
+        let library_dirs = [inputs.dependencies.host_library_dirs(), test_dependencies.host_library_dirs()].concat();
         let java_options = match library_dirs.is_empty() {
             true => vec![],
             false => vec![format!("-Djava.library.path={}", join_classpath(&library_dirs)?.to_string_lossy())],

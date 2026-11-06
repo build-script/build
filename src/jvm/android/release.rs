@@ -222,20 +222,11 @@ pub fn shrink_with_r8(
     system::recreate_dir(&mapping_dir)?;
     system::recreate_dir(output)?;
 
-    let mut command = build
-        .inputs
-        .jdk
-        .java_command(&[], &[build.sdk.d8.clone()], "com.android.tools.r8.R8")?;
+    let mut command = build.r8_command("R8", output)?;
 
     command.arg("--release")
         // the Java resources are packaged apart, as they are
         .arg("--no-data-resources")
-        .arg("--min-api")
-        .arg(build.min_api().to_string())
-        .arg("--lib")
-        .arg(&build.sdk.android_jar)
-        .arg("--output")
-        .arg(output)
         .arg("--pg-map-output")
         .arg(mapping_dir.join("mapping.txt"))
         .arg("--pg-conf-output")

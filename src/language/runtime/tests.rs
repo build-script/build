@@ -107,7 +107,7 @@ fn library_output() -> ModuleOutput {
         platforms: vec![],
         android: None,
         launch: None,
-        native_library_dirs: vec![],
+        host_library_dirs: vec![],
     });
 }
 

@@ -1,5 +1,6 @@
 // Android builds: resources with aapt2, Kotlin and Java against android.jar, native libraries with CMake, dex with d8, a signed apk
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -245,13 +246,15 @@ pub fn android_input_paths(
 }
 
 impl AndroidBuild {
+    /// `native_library_dirs` as native_library_dirs() returns them, a library has them already
     pub fn prepare(
         inputs: ModuleBuildInputs,
         args: &Arguments,
         build_type: BuildType,
+        native_library_dirs: Vec<PathBuf>,
     ) -> Result<Self, String> {
         let build_dir = system::build_dir(&inputs.directory);
-        return Self::prepare_variant(inputs, args, build_type, build_type.name(), build_dir);
+        return Self::prepare_variant(inputs, args, build_type, build_type.name(), build_dir, native_library_dirs);
     }
 
     /// The module with its instrumented tests, built apart from the module: the
@@ -261,8 +264,15 @@ impl AndroidBuild {
         args: &Arguments,
     ) -> Result<Self, String> {
         let build_dir = system::build_dir(&inputs.directory).join("androidTest");
-        let mut build =
-            Self::prepare_variant(inputs, args, BuildType::Debug, "debugAndroidTest", build_dir)?;
+        let native_library_dirs = native_library_dirs(&inputs, args, BuildType::Debug)?;
+        let mut build = Self::prepare_variant(
+            inputs,
+            args,
+            BuildType::Debug,
+            "debugAndroidTest",
+            build_dir,
+            native_library_dirs,
+        )?;
         let test_dir = build.inputs.directory.join("src/androidTest");
         build.res_dirs.extend(
             [test_dir.join("res")].into_iter()
@@ -282,6 +292,7 @@ impl AndroidBuild {
         build_type: BuildType,
         variant: &'static str,
         build_dir: PathBuf,
+        native_library_dirs: Vec<PathBuf>,
     ) -> Result<Self, String> {
         let compile_sdk: i64 = args.get("compile_sdk")?;
         let build_tools: String = args.get("build_tools")?;
@@ -342,7 +353,7 @@ impl AndroidBuild {
             module_jars: unpacked.module_jars,
             compile_only: unpacked.compile_only,
             libraries: unpacked.libraries,
-            native_library_dirs: native_library_dirs(&inputs, args, build_type)?,
+            native_library_dirs,
             cmake_lists: args.get::<Option<String>>("cmake")?
                 .map(|cmake| inputs.directory.join(cmake)),
             ndk_version: args.get("ndk_version")?,
@@ -715,45 +726,26 @@ impl AndroidBuild {
             None => String::new(),
         };
 
-        let key = up_to_date::hash_hex((
-            &self.sdk.d8,
-            &self.sdk.android_jar,
-            self.min_api(),
-            self.build_type.name(),
+        let inputs = (
             up_to_date::files_hash(&library.jars)?,
             system::read_file(&library.config)?,
             keep_rules_content,
-        ));
-        let dexed = work_dir.join(key);
+        );
 
-        if !dexed.is_dir() {
-            system::recreate_dir(work_dir)?;
+        let dexed = self.cached_dex(work_dir, inputs, |partial| {
+            let mut command = self.r8_command("L8", partial)?;
 
-            system::produce_atomically(&dexed, |partial| {
-                let mut command = self
-                    .inputs
-                    .jdk
-                    .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.L8")?;
+            command.arg(self.dex_mode())
+                .arg("--desugared-lib")
+                .arg(&library.config);
 
-                command.arg(self.dex_mode())
-                    .arg("--min-api")
-                    .arg(self.min_api().to_string())
-                    .arg("--lib")
-                    .arg(&self.sdk.android_jar)
-                    .arg("--desugared-lib")
-                    .arg(&library.config)
-                    .arg("--output")
-                    .arg(partial);
+            if let Some(rules) = keep_rules {
+                command.arg("--pg-conf").arg(rules);
+            }
 
-                if let Some(rules) = keep_rules {
-                    command.arg("--pg-conf").arg(rules);
-                }
-
-                command.args(&library.jars);
-                system::create_dir(partial)?;
-                return system::run_command(&mut command, "L8");
-            })?;
-        }
+            command.args(&library.jars);
+            return system::run_command(&mut command, "L8");
+        })?;
 
         let mut next = system::files_with_extension(&[dex_dir.to_path_buf()], "dex").len() + 1;
         for dex in dex_files(&dexed) {
@@ -819,41 +811,75 @@ impl AndroidBuild {
         desugared: Option<&DesugaredLibrary>,
     ) -> Result<PathBuf, String> {
         let desugared_config = desugared.map(|desugared| system::read_file(&desugared.config)).transpose()?;
+        let inputs = (up_to_date::files_hash(libraries)?, desugared_config);
+        let mut dexed_now = false;
+
+        let dex = self.cached_dex(&self.build_dir.join("intermediates/dex-libraries"), inputs, |partial| {
+            dexed_now = true;
+
+            if libraries.is_empty() {
+                return Ok(());
+            }
+
+            system::log(
+                &self.inputs.name,
+                &format!("Dexing {} libraries, again only when they change", libraries.len()),
+            );
+
+            return self.run_d8(libraries, &[], partial, desugared);
+        })?;
+
+        if !dexed_now {
+            system::log(&self.inputs.name, "Libraries dexed before");
+        }
+
+        return Ok(dex);
+    }
+
+    /// What `dex` writes, in `directory`/<hash of `inputs` and of how d8 runs>. Kept until
+    /// one of them changes, only that of the current inputs stays.
+    fn cached_dex(
+        &self,
+        directory: &Path,
+        inputs: impl Hash,
+        dex: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
         let key = up_to_date::hash_hex((
             &self.sdk.d8,
             &self.sdk.android_jar,
             self.min_api(),
             self.build_type.name(),
-            up_to_date::files_hash(libraries)?,
-            desugared_config,
+            inputs,
         ));
+        let dexed = directory.join(key);
 
-        let dexed = self.build_dir.join("intermediates/dex-libraries");
-        let dex = dexed.join(key);
-
-        if dex.is_dir() {
-            system::log(&self.inputs.name, "Libraries dexed before");
-            return Ok(dex);
+        if dexed.is_dir() {
+            return Ok(dexed);
         }
 
-        // only those of the current libraries are kept
-        system::recreate_dir(&dexed)?;
+        system::recreate_dir(directory)?;
 
-        system::produce_atomically(&dex, |partial| {
+        system::produce_atomically(&dexed, |partial| {
             system::create_dir(partial)?;
-
-            if !libraries.is_empty() {
-                system::log(
-                    &self.inputs.name,
-                    &format!("Dexing {} libraries, again only when they change", libraries.len()),
-                );
-                self.run_d8(libraries, &[], partial, desugared)?;
-            }
-
-            return Ok(());
+            return dex(partial);
         })?;
 
-        return Ok(dex);
+        return Ok(dexed);
+    }
+
+    /// D8, L8 or R8 of the build tools, against android.jar into `output`
+    pub fn r8_command(&self, tool: &str, output: &Path) -> Result<Command, String> {
+        let main_class = format!("com.android.tools.r8.{tool}");
+        let mut command = self.inputs.jdk.java_command(&[], &[self.sdk.d8.clone()], &main_class)?;
+
+        command.arg("--min-api")
+            .arg(self.min_api().to_string())
+            .arg("--lib")
+            .arg(&self.sdk.android_jar)
+            .arg("--output")
+            .arg(output);
+
+        return Ok(command);
     }
 
     /// `classpath` only to desugar against, like the libraries for the own classes
@@ -864,18 +890,8 @@ impl AndroidBuild {
         output: &Path,
         desugared: Option<&DesugaredLibrary>,
     ) -> Result<(), String> {
-        let mut command = self
-            .inputs
-            .jdk
-            .java_command(&[], &[self.sdk.d8.clone()], "com.android.tools.r8.D8")?;
-
-        command.arg(self.dex_mode())
-            .arg("--min-api")
-            .arg(self.min_api().to_string())
-            .arg("--lib")
-            .arg(&self.sdk.android_jar)
-            .arg("--output")
-            .arg(output);
+        let mut command = self.r8_command("D8", output)?;
+        command.arg(self.dex_mode());
 
         for jar in classpath {
             command.arg("--classpath").arg(jar);
@@ -948,7 +964,14 @@ impl AndroidBuild {
         // stored and page aligned, so they load from the apk and extractNativeLibs="false" works
         system::add_to_zip(&unaligned, &system::relative_files(native_libraries), true)?;
 
-        let _ = fs::remove_file(&aligned);
+        self.zipalign(&unaligned, &aligned)?;
+        system::create_parent_dir(apk)?;
+
+        return self.sign(&aligned, signature, apk);
+    }
+
+    fn zipalign(&self, unaligned: &Path, aligned: &Path) -> Result<(), String> {
+        let _ = fs::remove_file(aligned);
         let mut zipalign = Command::new(&self.sdk.zipalign);
 
         // 16 KB pages like Android 15 devices may have, older zipaligns only know 4 KB
@@ -961,19 +984,21 @@ impl AndroidBuild {
         };
 
         zipalign.args(["-f", "4"])
-            .arg(&unaligned)
-            .arg(&aligned);
-        system::run_command(&mut zipalign, "zipalign")?;
+            .arg(unaligned)
+            .arg(aligned);
 
-        system::create_parent_dir(apk)?;
+        return system::run_command(&mut zipalign, "zipalign");
+    }
 
+    /// With the debug key, the release key or not at all, verified after
+    fn sign(&self, aligned: &Path, signature: &Signature, apk: &Path) -> Result<(), String> {
         let mut sign = Command::new(self.inputs.jdk.tool_path("java"));
         sign.arg("-jar")
             .arg(&self.sdk.apksigner)
             .arg("sign");
 
         match signature {
-            Signature::Unsigned => return system::copy_file(&aligned, apk),
+            Signature::Unsigned => return system::copy_file(aligned, apk),
             Signature::Debug => {
                 sign.arg("--ks")
                     .arg(debug_keystore(&self.inputs.jdk)?)
@@ -1004,7 +1029,7 @@ impl AndroidBuild {
             .arg(self.min_sdk.to_string())
             .arg("--out")
             .arg(apk)
-            .arg(&aligned);
+            .arg(aligned);
         system::run_command(&mut sign, "apksigner sign")?;
 
         // a sanity check, its warnings about META-INF files outside the v2/v3 signature are expected

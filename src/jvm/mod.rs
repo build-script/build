@@ -54,7 +54,7 @@ pub struct JvmOutput {
     /// None if it cannot be started
     pub launch: Option<JvmLaunch>,
     /// of the shared C and C++ libraries below, java.library.path of `run` and the tests
-    pub native_library_dirs: Vec<PathBuf>,
+    pub host_library_dirs: Vec<PathBuf>,
 }
 
 /// How `build run` starts a JVM module
@@ -87,8 +87,8 @@ pub fn launch(module: &BuiltModule, output: &JvmOutput, args: &[String]) -> Resu
         Some(JvmLaunch::Jar { java }) => {
             let mut command = Command::new(java);
 
-            if !output.native_library_dirs.is_empty() {
-                command.arg(format!("-Djava.library.path={}", jdk::join_classpath(&output.native_library_dirs)?.to_string_lossy()));
+            if !output.host_library_dirs.is_empty() {
+                command.arg(format!("-Djava.library.path={}", jdk::join_classpath(&output.host_library_dirs)?.to_string_lossy()));
             }
 
             command.arg("-jar")

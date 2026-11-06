@@ -615,7 +615,7 @@ impl ModuleBuildInputs {
                 platforms: self.dependencies.platforms.clone(),
                 android,
                 launch,
-                native_library_dirs: self.dependencies.native_library_dirs(),
+                host_library_dirs: self.dependencies.host_library_dirs(),
             }),
             tests,
         });
@@ -668,9 +668,9 @@ impl Dependencies {
     }
 
     /// java.library.path: the directories of the shared libraries, also those of the modules
-    pub fn native_library_dirs(&self) -> Vec<PathBuf> {
+    pub fn host_library_dirs(&self) -> Vec<PathBuf> {
         let mut dirs: Vec<PathBuf> = self.modules.iter()
-            .flat_map(|module| module.jvm().native_library_dirs.clone())
+            .flat_map(|module| module.jvm().host_library_dirs.clone())
             .collect();
 
         for module in &self.native {
