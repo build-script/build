@@ -93,7 +93,7 @@ fn java_version(jdk: &str) -> Option<u32> {
 /// The Java version the classes of a jar were compiled for, from a few classes
 /// outside META-INF, where multi release jars keep those for newer versions
 fn class_java_version(jar: &Path) -> Result<Option<u32>, String> {
-    // what unzip cannot read, the build will complain about
+    // a jar that is no zip, the build will complain about
     let Ok(entries) = system::zip_entries(jar) else {
         return Ok(None);
     };
@@ -101,8 +101,6 @@ fn class_java_version(jar: &Path) -> Result<Option<u32>, String> {
     let classes = entries.iter()
         .filter(|entry| entry.ends_with(".class") && !entry.starts_with("META-INF/"))
         .filter(|entry| !entry.ends_with("module-info.class"))
-        // unzip reads them as patterns
-        .filter(|entry| !entry.contains(['$', '*', '?', '[', '\\']))
         .take(3);
 
     let mut version = None;

@@ -648,7 +648,7 @@ impl AndroidBuild {
 
         return Compilation {
             inputs: &self.inputs,
-            tools: &self.resolved,
+            tools: &self.resolved.tools,
             variant: self.variant,
             source_dirs: &source_dirs,
             classpath: &self.android_classpath(generated),

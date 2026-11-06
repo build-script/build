@@ -111,11 +111,7 @@ pub struct Dependencies {
 }
 
 pub struct ResolvedDependencies {
-    /// jars of kotlin-compiler-embeddable
-    pub compiler: Vec<PathBuf>,
-    /// jars of the compiler plugins, and their options
-    pub plugins: Vec<PathBuf>,
-    pub plugin_options: Vec<String>,
+    pub tools: KotlinTools,
     /// Maven artifacts: jars and, for Android, aars
     pub libraries: Vec<PathBuf>,
     /// jars and aars only to compile against
@@ -125,6 +121,16 @@ pub struct ResolvedDependencies {
     /// jars of the javac processors and what they need
     pub annotation_processor_path: Vec<PathBuf>,
     pub symbol_processors: Option<ResolvedSymbolProcessors>,
+}
+
+/// The compiler of Kotlin and its plugins, none for Java: javac comes with the JDK
+#[derive(Debug, Default)]
+pub struct KotlinTools {
+    /// jars of kotlin-compiler-embeddable
+    pub compiler: Vec<PathBuf>,
+    /// jars of the compiler plugins, and their options
+    pub plugins: Vec<PathBuf>,
+    pub plugin_options: Vec<String>,
 }
 
 /// A Kotlin compiler plugin, like kotlin("plugin.serialization") in Gradle
@@ -143,7 +149,7 @@ pub struct KotlinCompilerPlugin {
 pub struct Compilation<'a> {
     pub inputs: &'a ModuleBuildInputs,
     /// the compiler and its plugins
-    pub tools: &'a ResolvedDependencies,
+    pub tools: &'a KotlinTools,
     /// main, test or debug: names the directories the generated sources go to
     pub variant: &'a str,
     pub source_dirs: &'a [PathBuf],
@@ -433,49 +439,12 @@ impl ModuleBuildInputs {
         // JVM, whatever the module targets: Dagger needs Guava's jre variant
         let mut tools = DependencyResolver::new(self.repositories.clone(), TargetPlatform::Jvm);
 
-        let (compiler_modules, compiler) = match self.sources {
-            Sources::KotlinAndJava => {
-                system::log(
-                    &self.name,
-                    &format!("Resolving dependencies (Kotlin {})", self.kotlin_version),
-                );
-                let compiler = MavenCoordinate::new(
-                    "org.jetbrains.kotlin",
-                    "kotlin-compiler-embeddable",
-                    &self.kotlin_version,
-                );
-
-                let compiler_modules = tools.resolve_graph(&[compiler], &[])?;
-                let compiler = tools.artifacts(&compiler_modules)?;
-                (compiler_modules, compiler)
-            }
-            // javac comes with the JDK
-            Sources::Java => {
-                system::log(&self.name, "Resolving dependencies");
-                (vec![], vec![])
-            }
-        };
-
-        let mut plugins = vec![];
-        let mut plugin_options = vec![];
-
-        for plugin in &self.plugins {
-            // the plugin and what it needs besides the compiler, which is there already
-            let own_modules: Vec<MavenCoordinate> = tools.resolve_graph(&[plugin.coordinate.clone()], &[])?
-                .into_iter()
-                .filter(|module| {
-                    !compiler_modules.iter().any(|known| {
-                        known.group == module.group && known.artifact == module.artifact
-                    })
-                })
-                .collect();
-
-            plugins.extend(tools.artifacts(&own_modules)?);
-            plugin_options.extend(plugin.options.iter().cloned());
+        match self.sources {
+            Sources::KotlinAndJava => system::log(&self.name, &format!("Resolving dependencies (Kotlin {})", self.kotlin_version)),
+            Sources::Java => system::log(&self.name, "Resolving dependencies"),
         }
 
-        plugin_options.extend(self.plugin_options.iter().cloned());
-
+        let kotlin_tools = self.resolve_tools(&mut tools)?;
         let (roots, platforms) = self.runtime_dependencies();
         let libraries = resolver.resolve_with_platforms(&roots, &platforms)?;
 
@@ -490,9 +459,7 @@ impl ModuleBuildInputs {
         }
 
         return Ok(ResolvedDependencies {
-            compiler,
-            plugins,
-            plugin_options,
+            tools: kotlin_tools,
             libraries,
             compile_only,
             modules: BuiltModule::transitive(&self.dependencies.modules),
@@ -504,6 +471,38 @@ impl ModuleBuildInputs {
                 .symbol_processors
                 .resolve(&mut tools, &self.kotlin_version)?,
         });
+    }
+
+    /// The compiler and its plugins, without the libraries: tests compile with the tools of the module
+    pub fn resolve_tools(&self, tools: &mut DependencyResolver) -> Result<KotlinTools, String> {
+        if self.sources == Sources::Java {
+            return Ok(KotlinTools::default());
+        }
+
+        let compiler = MavenCoordinate::new("org.jetbrains.kotlin", "kotlin-compiler-embeddable", &self.kotlin_version);
+        let compiler_modules = tools.resolve_graph(&[compiler], &[])?;
+        let mut resolved = KotlinTools {
+            compiler: tools.artifacts(&compiler_modules)?,
+            ..KotlinTools::default()
+        };
+
+        for plugin in &self.plugins {
+            // the plugin and what it needs besides the compiler, which is there already
+            let own_modules: Vec<MavenCoordinate> = tools.resolve_graph(&[plugin.coordinate.clone()], &[])?
+                .into_iter()
+                .filter(|module| {
+                    !compiler_modules.iter().any(|known| {
+                        known.group == module.group && known.artifact == module.artifact
+                    })
+                })
+                .collect();
+
+            resolved.plugins.extend(tools.artifacts(&own_modules)?);
+            resolved.plugin_options.extend(plugin.options.iter().cloned());
+        }
+
+        resolved.plugin_options.extend(self.plugin_options.iter().cloned());
+        return Ok(resolved);
     }
 
     /// Maven roots and platforms of the runtime classpath: this module's, those
@@ -830,43 +829,7 @@ impl Compilation<'_> {
                 &format!("Compiling {} Kotlin {files}", kotlin_sources.len()),
             );
 
-            let mut command = self
-                .inputs
-                .jdk
-                .java_command(&[], &self.tools.compiler, KOTLIN_COMPILER_MAIN_CLASS)?;
-
-            command
-                // the standard library is already on the classpath
-                .args(["-no-stdlib", "-no-reflect"])
-                .arg("-module-name")
-                .arg(&module_name)
-                .arg("-classpath")
-                .arg(join_classpath(self.classpath)?)
-                .arg("-d")
-                .arg(self.output)
-                .arg("-jvm-target")
-                .arg(&jvm_target);
-
-            if self.target == TargetPlatform::Android {
-                command.arg("-no-jdk");
-            }
-
-            for plugin in &self.tools.plugins {
-                command.arg(format!("-Xplugin={}", plugin.display()));
-            }
-
-            for option in &self.tools.plugin_options {
-                command.arg("-P").arg(option);
-            }
-
-            for friend in self.friends {
-                command.arg(format!("-Xfriend-paths={}", friend.display()));
-            }
-
-            command.args(&self.inputs.kotlin_args)
-                .args(&kotlin_sources)
-                .args(&java_sources);
-            system::run_command(&mut command, "compilation")?;
+            self.compile_kotlin(&module_name, &jvm_target, &kotlin_sources, &java_sources)?;
         }
 
         if !java_sources.is_empty() {
@@ -893,6 +856,51 @@ impl Compilation<'_> {
         }
 
         return Ok(resource_dirs);
+    }
+
+    /// kotlinc compiles the Kotlin sources against the Java sources next to them, javac compiles those then
+    fn compile_kotlin(
+        &self,
+        module_name: &str,
+        jvm_target: &str,
+        kotlin_sources: &[PathBuf],
+        java_sources: &[PathBuf],
+    ) -> Result<(), String> {
+        let mut command = self.inputs.jdk.java_command(&[], &self.tools.compiler, KOTLIN_COMPILER_MAIN_CLASS)?;
+
+        command
+            // the standard library is already on the classpath
+            .args(["-no-stdlib", "-no-reflect"])
+            .arg("-module-name")
+            .arg(module_name)
+            .arg("-classpath")
+            .arg(join_classpath(self.classpath)?)
+            .arg("-d")
+            .arg(self.output)
+            .arg("-jvm-target")
+            .arg(jvm_target);
+
+        if self.target == TargetPlatform::Android {
+            command.arg("-no-jdk");
+        }
+
+        for plugin in &self.tools.plugins {
+            command.arg(format!("-Xplugin={}", plugin.display()));
+        }
+
+        for option in &self.tools.plugin_options {
+            command.arg("-P").arg(option);
+        }
+
+        for friend in self.friends {
+            command.arg(format!("-Xfriend-paths={}", friend.display()));
+        }
+
+        command.args(&self.inputs.kotlin_args)
+            .args(kotlin_sources)
+            .args(java_sources);
+
+        return system::run_command(&mut command, "compilation");
     }
 }
 

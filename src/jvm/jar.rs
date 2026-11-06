@@ -204,7 +204,7 @@ fn build_jar(
 
     let generated_resources = Compilation {
         inputs,
-        tools: &resolved,
+        tools: &resolved.tools,
         variant: "main",
         source_dirs: &inputs.source_dirs,
         classpath: &compile_classpath,

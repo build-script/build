@@ -174,14 +174,14 @@ fn kotlin_facet(project_dir: &Path, module: &IdeaModule, jvm_target: &str) -> St
     let version = version.join(".");
     let mut plugins = String::new();
 
-    if !module.resolved.plugins.is_empty() {
+    if !module.resolved.tools.plugins.is_empty() {
         let args = |values: Vec<String>| -> String {
             return values.iter()
                 .map(|value| format!("                <arg>{}</arg>\n", escape(value)))
                 .collect();
         };
 
-        let classpath = module.resolved.plugins.iter().map(|jar| idea_path(project_dir, jar));
+        let classpath = module.resolved.tools.plugins.iter().map(|jar| idea_path(project_dir, jar));
 
         plugins = format!(
             r#"          <arrayArguments>
@@ -196,7 +196,7 @@ fn kotlin_facet(project_dir: &Path, module: &IdeaModule, jvm_target: &str) -> St
           </arrayArguments>
 "#,
             args(classpath.collect()),
-            args(module.resolved.plugin_options.clone()),
+            args(module.resolved.tools.plugin_options.clone()),
         );
     }
 

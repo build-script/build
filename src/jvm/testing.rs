@@ -167,7 +167,8 @@ impl UnitTests<'_> {
             return Ok(ModuleTests::Known(TestOutcome::UpToDate));
         }
 
-        let resolved = inputs.resolve(self.platform)?;
+        // the compiler and the plugins of the module, its libraries come with the classes
+        let tools = inputs.resolve_tools(&mut DependencyResolver::new(inputs.repositories.clone(), TargetPlatform::Jvm))?;
         let on_junit_platform = test_main_class.is_none();
 
         let test_libraries = resolve_test_libraries(
@@ -201,7 +202,7 @@ impl UnitTests<'_> {
 
         let generated_resources = Compilation {
             inputs,
-            tools: &resolved,
+            tools: &tools,
             variant: "test",
             source_dirs: &test_source_dirs,
             classpath: &compile_classpath,
