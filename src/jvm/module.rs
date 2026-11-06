@@ -27,6 +27,12 @@ pub const DEFAULT_KOTLIN_VERSION: &str = "2.4.21";
 const KOTLIN_COMPILER_MAIN_CLASS: &str = "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler";
 /// bytecode level handed to d8, the default of current Android Gradle plugins
 pub const ANDROID_JVM_TARGET: &str = "17";
+
+/// Below build/, what KSP generates, per variant: main or test. IntelliJ shows it among the sources.
+pub const KSP_SOURCES_DIR: &str = "generated/ksp";
+
+/// Below build/, what the annotation processors of javac generate, per variant
+pub const ANNOTATION_PROCESSOR_SOURCES_DIR: &str = "generated/sources/annotationProcessor/java";
 /// Short names for plugins of Kotlin itself: artifact of org.jetbrains.kotlin, runtime library, options
 const KOTLIN_COMPILER_PLUGINS: &[(&str, &str, Option<&str>, &[&str])] = &[
     (
@@ -806,7 +812,7 @@ impl Compilation<'_> {
                 // java.* comes from android.jar among the libraries
                 jdk_home: (self.target == TargetPlatform::Jvm)
                     .then_some(self.inputs.jdk.home.as_path()),
-                output_dir: build_dir.join("generated/ksp").join(self.variant),
+                output_dir: build_dir.join(KSP_SOURCES_DIR).join(self.variant),
                 caches_dir: build_dir.join("ksp-caches").join(self.variant),
             }
             .run()?;
@@ -869,8 +875,7 @@ impl Compilation<'_> {
                 &format!("Compiling {} Java {files}", java_sources.len()),
             );
 
-            let generated_dir = build_dir.join("generated/sources/annotationProcessor/java")
-                .join(self.variant);
+            let generated_dir = build_dir.join(ANNOTATION_PROCESSOR_SOURCES_DIR).join(self.variant);
 
             let processing = AnnotationProcessing {
                 processor_path: self.annotation_processors,

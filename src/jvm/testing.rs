@@ -18,6 +18,9 @@ use super::module::{
 
 /// JUnit when the tests do not decide: the last JUnit 5 runs on every JDK from
 /// 8 on, and its vintage engine for JUnit 4 is not deprecated yet
+
+/// The resources of the tests, next to their sources
+pub const TEST_RESOURCES_DIR: &str = "src/test/resources";
 const DEFAULT_JUNIT_VERSION: &str = "5.14.4";
 const CONSOLE_LAUNCHER_MAIN_CLASS: &str = "org.junit.platform.console.ConsoleLauncher";
 
@@ -129,7 +132,7 @@ impl UnitTests<'_> {
             .map(|dir| inputs.directory.join(dir))
             .collect();
 
-        let test_resources_dir = inputs.directory.join("src/test/resources");
+        let test_resources_dir = inputs.directory.join(TEST_RESOURCES_DIR);
         let (kotlin_tests, java_tests) = kotlin_and_java_sources(&test_source_dirs);
 
         if kotlin_tests.is_empty() && java_tests.is_empty() {

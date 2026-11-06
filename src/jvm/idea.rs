@@ -13,9 +13,10 @@ use super::jdk::Jdk;
 use super::ksp::SymbolProcessors;
 use super::maven::TargetPlatform;
 use super::module::{
-    ANDROID_JVM_TARGET, Dependencies, ModuleBuildInputs, ResolvedDependencies, Sources,
+    ANDROID_JVM_TARGET, ANNOTATION_PROCESSOR_SOURCES_DIR, KSP_SOURCES_DIR, Dependencies, ModuleBuildInputs,
+    ResolvedDependencies, Sources,
 };
-use super::testing::resolve_test_libraries;
+use super::testing::{TEST_RESOURCES_DIR, resolve_test_libraries};
 
 /// Relative to the script: build-script keeps the module files current
 pub const MARKER: &str = ".idea/build-script";
@@ -58,8 +59,8 @@ pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -
 
     // where KSP and the javac processors write their sources
     let processors = |variant: &str| {
-        let ksp = build_dir.join("generated/ksp").join(variant);
-        let javac = build_dir.join("generated/sources/annotationProcessor/java");
+        let ksp = build_dir.join(KSP_SOURCES_DIR).join(variant);
+        let javac = build_dir.join(ANNOTATION_PROCESSOR_SOURCES_DIR);
         return vec![ksp.join("kotlin"), ksp.join("java"), javac.join(variant)];
     };
 
@@ -82,7 +83,7 @@ pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -
         (&test_dirs, r#"isTestSource="true""#),
         (&processors("test"), r#"isTestSource="true" generated="true""#),
         (&inputs.resources.dirs, r#"type="java-resource""#),
-        (&vec![inputs.directory.join("src/test/resources")], r#"type="java-test-resource""#),
+        (&vec![inputs.directory.join(TEST_RESOURCES_DIR)], r#"type="java-test-resource""#),
     ];
 
     let mut content = String::new();
