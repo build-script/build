@@ -2,7 +2,7 @@
 use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::common::system::{self, HostArchitecture};
@@ -53,27 +53,45 @@ pub fn install_and_start(
     };
 
     let adb = AndroidSdk::adb(sdk_root)?;
-    let device = target_device(&adb, sdk_root, min_sdk)?;
-    println!("Installing {} on {device}", apk.display());
-    let mut install = Command::new(&adb);
-    install.args(["-s", &device, "install", "-r", "-t"])
-        .arg(apk);
-    system::run_command(&mut install, "adb install")?;
+    let device = Adb::of(&adb, target_device(&adb, sdk_root, min_sdk)?);
+    println!("Installing {} on {}", apk.display(), device.serial);
+    system::run_command(&mut device.install(apk), "adb install")?;
 
     println!("Starting {application_id}/{activity}");
-    let mut start = Command::new(&adb);
-    start.args([
-        "-s",
-        &device,
-        "shell",
-        "am",
-        "start",
-        "-W",
-        "-n",
-        &format!("{application_id}/{activity}"),
-    ]);
+    let component = format!("{application_id}/{activity}");
 
-    return system::run_command(&mut start, "adb shell am start");
+    return system::run_command(&mut device.shell(&["am", "start", "-W", "-n", &component]), "adb shell am start");
+}
+
+/// adb for one device, `adb -s <serial>`
+struct Adb<'a> {
+    adb: &'a Path,
+    serial: String,
+}
+
+impl<'a> Adb<'a> {
+    fn of(adb: &'a Path, serial: String) -> Self {
+        return Adb { adb, serial };
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(self.adb);
+        command.arg("-s").arg(&self.serial);
+        return command;
+    }
+
+    /// Replaces an installed version, test apks included
+    fn install(&self, apk: &Path) -> Command {
+        let mut command = self.command();
+        command.args(["install", "-r", "-t"]).arg(apk);
+        return command;
+    }
+
+    fn shell(&self, arguments: &[&str]) -> Command {
+        let mut command = self.command();
+        command.arg("shell").args(arguments);
+        return command;
+    }
 }
 
 impl TestRunner for InstrumentedTests {
@@ -89,34 +107,31 @@ impl TestRunner for InstrumentedTests {
 impl InstrumentedTests {
     fn install_and_instrument(&self, module: &str) -> Result<TestOutcome, String> {
         let adb = AndroidSdk::adb(&self.sdk_root)?;
-        let device = target_device(&adb, &self.sdk_root, self.min_sdk)?;
+        let device = Adb::of(&adb, target_device(&adb, &self.sdk_root, self.min_sdk)?);
         system::recreate_dir(&self.reports_dir)?;
         system::log(
             module,
-            &format!("Installing {} on {device}", self.apk.display()),
+            &format!("Installing {} on {}", self.apk.display(), device.serial),
         );
-        let mut install = Command::new(&adb);
-        install.args(["-s", &device, "install", "-r", "-t"])
-            .arg(&self.apk);
-        system::run_command_quietly(&mut install, "adb install")?;
+        system::run_command_quietly(&mut device.install(&self.apk), "adb install")?;
 
         system::log(
             module,
             &format!(
-                "Running instrumented tests with {} on {device}",
-                self.runner
+                "Running instrumented tests with {} on {}",
+                self.runner,
+                device.serial
             ),
         );
-        let instrumentation =
-            instrument(&adb, &device, &format!("{}/{}", self.package, self.runner));
+        let instrumentation = instrument(&device, &format!("{}/{}", self.package, self.runner));
 
-        let mut uninstall = Command::new(&adb);
-        uninstall.args(["-s", &device, "uninstall", &self.package]);
+        let mut uninstall = device.command();
+        uninstall.args(["uninstall", &self.package]);
         let uninstalled = system::run_command_quietly(&mut uninstall, "adb uninstall");
         let instrumentation = instrumentation?;
         uninstalled?;
 
-        let report = instrumentation.junit_report(&format!("{module} on {device}"));
+        let report = instrumentation.junit_report(&format!("{module} on {}", device.serial));
         system::write_file(
             &self.reports_dir.join(format!("TEST-{}.xml", self.package)),
             &xml::write(&report, &|_| false),
@@ -132,22 +147,12 @@ impl InstrumentedTests {
 }
 
 /// `am instrument -r` with its results read while the tests run, each test shown once it finished
-fn instrument(adb: &Path, device: &str, component: &str) -> Result<Instrumentation, String> {
-    let mut child = Command::new(adb)
-        .args([
-            "-s",
-            device,
-            "shell",
-            "am",
-            "instrument",
-            "-w",
-            "-r",
-            component,
-        ])
+fn instrument(device: &Adb, component: &str) -> Result<Instrumentation, String> {
+    let mut child = device.shell(&["am", "instrument", "-w", "-r", component])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("could not start {}: {error}", adb.display()))?;
+        .map_err(|error| format!("could not start {}: {error}", device.adb.display()))?;
 
     let mut instrumentation = Instrumentation::default();
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -172,8 +177,15 @@ fn instrument(adb: &Path, device: &str, component: &str) -> Result<Instrumentati
 /// The device adb works with: the one ANDROID_SERIAL names, the only one connected,
 /// or an emulator when none is
 fn target_device(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result<String, String> {
-    let attached = adb_devices(adb)?;
+    match choose_device(adb_devices(adb)?, std::env::var("ANDROID_SERIAL").ok())? {
+        Some(serial) => return Ok(serial),
+        None => return start_or_set_up_emulator(adb, sdk_root, min_sdk),
+    }
+}
 
+/// Of the serials and states of `adb devices`: the device `serial` (ANDROID_SERIAL) names,
+/// or the only one connected. None when no device is connected.
+fn choose_device(attached: Vec<(String, String)>, serial: Option<String>) -> Result<Option<String>, String> {
     if let Some((serial, _)) = attached.iter().find(|(_, state)| state == "unauthorized") {
         return Err(format!(
             "{serial} does not allow USB debugging yet, confirm the prompt on the device and run again"
@@ -186,11 +198,10 @@ fn target_device(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result<String, St
         .collect();
 
     // adb picks the device from ANDROID_SERIAL itself
-    let serial = std::env::var("ANDROID_SERIAL").ok();
     match (devices.as_slice(), serial) {
-        ([], _) => return start_or_set_up_emulator(adb, sdk_root, min_sdk),
-        (_, Some(serial)) => return Ok(serial),
-        ([device], None) => return Ok(device.clone()),
+        ([], _) => return Ok(None),
+        (_, Some(serial)) => return Ok(Some(serial)),
+        ([device], None) => return Ok(Some(device.clone())),
         (_, None) => {
             return Err(format!(
                 "several devices are connected ({}), choose one with ANDROID_SERIAL",
@@ -198,6 +209,19 @@ fn target_device(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result<String, St
             ));
         }
     }
+}
+
+/// The index of what the user chose of `count` numbered entries, the first without an answer
+fn choose(answer: &str, count: usize) -> Result<usize, String> {
+    if answer.is_empty() {
+        return Ok(0);
+    }
+
+    return answer.parse::<usize>()
+        .ok()
+        .filter(|number| (1..=count).contains(number))
+        .map(|number| number - 1)
+        .ok_or_else(|| "cancelled".to_string());
 }
 
 /// When no device is connected: an emulator build-script set up, or a new one
@@ -223,15 +247,8 @@ fn start_or_set_up_emulator(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result
         println!("  n) Set up a new emulator");
 
         match system::prompt("Choose [1]: ")?.as_str() {
-            "" => avds[0].name.clone(),
             "n" => set_up_virtual_device(sdk_root, &home, min_sdk)?,
-            answer => {
-                let index: usize = answer.parse().map_err(|_| "cancelled".to_string())?;
-                avds.get(index.wrapping_sub(1))
-                    .ok_or_else(|| "cancelled".to_string())?
-                    .name
-                    .clone()
-            }
+            answer => avds[choose(answer, avds.len())?].name.clone(),
         }
     };
 
@@ -249,7 +266,44 @@ fn set_up_virtual_device(sdk_root: &Path, home: &Path, min_sdk: i64) -> Result<S
         _ => "x86_64",
     };
     println!("Loading the list of system images ...");
+    let (catalogs, images) = offered_images(abi, min_sdk)?;
 
+    println!("\nSystem images for {abi} (the app needs API {min_sdk} or newer):");
+    let source_width = IMAGE_SOURCES.iter()
+        .map(|(_, label)| label.len())
+        .max()
+        .unwrap_or(0);
+
+    for (number, (catalog_index, image)) in images.iter().enumerate() {
+        let source = IMAGE_SOURCES[*catalog_index].1;
+        println!(
+            "  {}) API {:<6} {:<source_width$} {}",
+            number + 1,
+            image.version,
+            source,
+            system::format_size(image.size)
+        );
+    }
+
+    let chosen = choose(&system::prompt("Choose [1]: ")?, images.len())?;
+    let (catalog_index, mut image) = images[chosen].clone();
+
+    image.tag_display = IMAGE_SOURCES[catalog_index].1.to_string();
+
+    let main_catalog = SdkCatalog::load()?;
+    confirm_download(sdk_root, &main_catalog, &image)?;
+
+    main_catalog.install(sdk_root, "emulator", false)?;
+    catalogs[catalog_index].install(sdk_root, &image.path, false)?;
+
+    let name = create_virtual_device(home, &image)?;
+    println!("Created emulator {name}");
+
+    return Ok(name);
+}
+
+/// The newest images of every source with the index of their catalog, and the catalogs
+fn offered_images(abi: &str, min_sdk: i64) -> Result<(Vec<SdkCatalog>, Vec<(usize, SystemImage)>), String> {
     let mut catalogs = vec![];
 
     for (source, _) in IMAGE_SOURCES {
@@ -275,69 +329,37 @@ fn set_up_virtual_device(sdk_root: &Path, home: &Path, min_sdk: i64) -> Result<S
         ));
     }
 
-    println!("\nSystem images for {abi} (the app needs API {min_sdk} or newer):");
-    let source_width = IMAGE_SOURCES.iter()
-        .map(|(_, label)| label.len())
-        .max()
-        .unwrap_or(0);
+    return Ok((catalogs, images));
+}
 
-    for (number, (catalog_index, image)) in images.iter().enumerate() {
-        let source = IMAGE_SOURCES[*catalog_index].1;
-        println!(
-            "  {}) API {:<6} {:<source_width$} {}",
-            number + 1,
-            image.version,
-            source,
-            system::format_size(image.size)
-        );
-    }
-
-    let answer = system::prompt("Choose [1]: ")?;
-    let number: usize = if answer.is_empty() {
-        1
-    } else {
-        answer.parse().map_err(|_| "cancelled".to_string())?
-    };
-
-    let (catalog_index, mut image) = images.get(number.wrapping_sub(1))
-        .ok_or_else(|| "cancelled".to_string())?
-        .clone();
-
-    image.tag_display = IMAGE_SOURCES[catalog_index].1.to_string();
-
-    let main_catalog = SdkCatalog::load()?;
-    let emulator_dir = sdk_root.join("emulator");
-    let image_dir = sdk_root.join(image.directory());
-
-    let emulator_size = if emulator_dir.is_dir() {
+/// Asks before the emulator and the image are downloaded, unless both are there
+fn confirm_download(sdk_root: &Path, main_catalog: &SdkCatalog, image: &SystemImage) -> Result<(), String> {
+    let emulator_size = if sdk_root.join("emulator").is_dir() {
         0
     } else {
         main_catalog.size("emulator").unwrap_or(0)
     };
 
-    let image_size = if image_dir.is_dir() { 0 } else { image.size };
+    let image_size = if sdk_root.join(image.directory()).is_dir() { 0 } else { image.size };
 
-    if emulator_size + image_size > 0 {
-        println!(
-            "\nThis downloads {} to {}",
-            system::format_size(emulator_size + image_size),
-            sdk_root.display()
-        );
-        if !matches!(
-            system::prompt("Continue? (Y/n): ")?.as_str(),
-            "" | "y" | "yes"
-        ) {
-            return Err("cancelled".to_string());
-        }
+    if emulator_size + image_size == 0 {
+        return Ok(());
     }
 
-    main_catalog.install(sdk_root, "emulator", false)?;
-    catalogs[catalog_index].install(sdk_root, &image.path, false)?;
+    println!(
+        "\nThis downloads {} to {}",
+        system::format_size(emulator_size + image_size),
+        sdk_root.display()
+    );
 
-    let name = create_virtual_device(home, &image)?;
-    println!("Created emulator {name}");
+    if !matches!(
+        system::prompt("Continue? (Y/n): ")?.as_str(),
+        "" | "y" | "yes"
+    ) {
+        return Err("cancelled".to_string());
+    }
 
-    return Ok(name);
+    return Ok(());
 }
 
 /// Starts the emulator in the background, it keeps running after build-script
@@ -359,7 +381,8 @@ fn start_emulator(
         .find(|port| !used.contains(&format!("emulator-{port}")))
         .ok_or("all emulator ports are in use")?;
 
-    let serial = format!("emulator-{port}");
+    let device = Adb::of(adb, format!("emulator-{port}"));
+    let serial = &device.serial;
 
     let log_path = home.join(format!("{name}.log"));
 
@@ -394,7 +417,7 @@ fn start_emulator(
         command.process_group(0);
     }
 
-    let mut child = command.spawn()
+    let child = command.spawn()
         .map_err(|error| format!("could not start {}: {error}", emulator.display()))?;
 
     println!(
@@ -402,6 +425,14 @@ fn start_emulator(
         log_path.display()
     );
 
+    wait_for_boot(&device, child, &log_path)?;
+
+    return Ok(device.serial);
+}
+
+/// Until Android on the emulator `child` reports it booted, or it stopped
+fn wait_for_boot(device: &Adb, mut child: Child, log_path: &Path) -> Result<(), String> {
+    let serial = &device.serial;
     let started = Instant::now();
     let mut reported = 0;
     loop {
@@ -412,12 +443,12 @@ fn start_emulator(
             ));
         }
 
-        let booted = system::command_output(Command::new(adb).args(["-s", &serial, "shell", "getprop", "sys.boot_completed"]), "adb getprop")
+        let booted = system::command_output(&mut device.shell(&["getprop", "sys.boot_completed"]), "adb getprop")
             .is_ok_and(|output| output.trim() == "1");
 
         if booted {
             println!("{serial} booted after {}s", started.elapsed().as_secs());
-            return Ok(serial);
+            return Ok(());
         }
 
         let elapsed = started.elapsed();
@@ -827,6 +858,37 @@ mod tests {
     use crate::jvm::android::sdk::tests::catalog;
 
     use super::*;
+
+    #[test]
+    fn the_named_or_only_connected_device_is_chosen() {
+        let attached = |devices: &[(&str, &str)]| -> Vec<(String, String)> {
+            return devices.iter()
+                .map(|(serial, state)| (serial.to_string(), state.to_string()))
+                .collect();
+        };
+
+        let one = attached(&[("emulator-5580", "device"), ("emulator-5582", "offline")]);
+        assert_eq!(choose_device(one, None).unwrap(), Some("emulator-5580".to_string()));
+
+        let several = attached(&[("emulator-5580", "device"), ("R58M", "device")]);
+        assert!(choose_device(several.clone(), None).unwrap_err().contains("ANDROID_SERIAL"));
+        assert_eq!(choose_device(several, Some("R58M".to_string())).unwrap(), Some("R58M".to_string()));
+
+        // without a connected device an emulator starts, ANDROID_SERIAL or not
+        assert_eq!(choose_device(attached(&[("emulator-5582", "offline")]), Some("R58M".to_string())).unwrap(), None);
+
+        let unauthorized = attached(&[("emulator-5580", "device"), ("R58M", "unauthorized")]);
+        assert!(choose_device(unauthorized, None).unwrap_err().contains("R58M"));
+    }
+
+    #[test]
+    fn a_choice_is_one_of_the_numbers_shown() {
+        assert_eq!(choose("", 3), Ok(0));
+        assert_eq!(choose("3", 3), Ok(2));
+        assert!(choose("0", 3).is_err());
+        assert!(choose("4", 3).is_err());
+        assert!(choose("x", 3).is_err());
+    }
 
     #[test]
     fn instrumentation_output_becomes_tests_and_a_report() {
