@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use common::settings::Settings;
 use common::terminal::{self, Color};
+use language::lexer::line_column;
 use language::parser::Parser;
 use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection};
 
@@ -802,15 +803,6 @@ fn exit_on_error<T>(result: Result<T, String>) -> T {
     }
 }
 
-/// Line and column of a byte offset in the script, both counted from 1
-fn line_column(source: &str, offset: usize) -> (usize, usize) {
-    let before = source.get(..offset).unwrap_or(source);
-    let line = before.matches('\n').count() + 1;
-    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-
-    return (line, column);
-}
-
 /// Starts a module the script built and returns the exit code for the process
 fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -> i32 {
     let module = match name {
@@ -1353,13 +1345,5 @@ mod tests {
             ))
         );
         assert!(take_build_options(&args(&["test", "--jobs", "0"])).is_err());
-    }
-
-    #[test]
-    fn errors_point_at_line_and_column() {
-        let source = "use kotlin\nx = list(\n    y)";
-        assert_eq!(line_column(source, 0), (1, 1));
-        assert_eq!(line_column(source, 11), (2, 1));
-        assert_eq!(line_column(source, source.len() - 2), (3, 5));
     }
 }

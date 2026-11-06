@@ -15,8 +15,8 @@ use crate::common::system;
 use crate::jvm;
 use crate::language::lexer::Span;
 use crate::language::parser::{
-    BinaryOperator, Expression, ExpressionType, Parameter, Script, Statement, StatementType,
-    TypeExpression, TypeExpressionType, UnaryOperator, UseTarget,
+    BinaryOperator, Expression, ExpressionType, Identifier, Parameter, Script, Statement, StatementType,
+    TypeExpression, TypeExpressionType, UnaryOperator,
 };
 
 use prelude::core_functions;
@@ -231,13 +231,7 @@ impl Runtime {
                 self.evaluate(expression)?;
                 return Ok(());
             }
-            StatementType::Use(UseTarget::Ident(platform)) => {
-                return self.load_platform(&platform.name, statement.span);
-            }
-            StatementType::Use(UseTarget::FilePath { path, span }) => {
-                let feature = format!("use with a file path (\"{path}\")");
-                return Err(RuntimeError::new(RuntimeErrorType::Unsupported { feature }, *span));
-            }
+            StatementType::Use(platform) => return self.load_platform(&platform.name, statement.span),
         }
     }
 
@@ -335,10 +329,8 @@ impl Runtime {
     }
 
     /// A function is called by the name it is defined with in messages
-    fn evaluate_assignment(&mut self, target: &Expression, value: &Expression) -> Result<Value, RuntimeError> {
-        let ExpressionType::Ident(name) = &target.variant else {
-            unreachable!("parser only allows identifiers as assignment targets")
-        };
+    fn evaluate_assignment(&mut self, target: &Identifier, value: &Expression) -> Result<Value, RuntimeError> {
+        let name = &target.name;
 
         let value = match &value.variant {
             ExpressionType::Function {
@@ -361,11 +353,7 @@ impl Runtime {
 
         for arg in args {
             if let ExpressionType::Assignment { target, value } = &arg.variant {
-                let ExpressionType::Ident(name) = &target.variant else {
-                    unreachable!("parser only allows identifiers as assignment targets")
-                };
-
-                arguments.push(CallArgument::Named(name.clone(), self.evaluate(value)?, arg.span));
+                arguments.push(CallArgument::Named(target.name.clone(), self.evaluate(value)?, arg.span));
             } else {
                 arguments.push(CallArgument::Positional(self.evaluate(arg)?, arg.span));
             }

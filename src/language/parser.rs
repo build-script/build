@@ -2,43 +2,12 @@ use std::fmt;
 
 use crate::language::lexer::{Span, Token, TokenStream, TokenType};
 
-macro_rules! expect_token {
-    ($parser: expr, $pattern: pat => $out: expr) => {{
-        let token = $parser.token_stream.peek();
-        match token.variant {
-            $pattern => {
-                $parser.token_stream.current_pos = token.span.end;
-                Ok(($out, token.span))
-            }
-            _ => Err(ParseError::unexpected_token(
-                vec![stringify!($pattern).to_string()],
-                Some(token.clone()),
-                token.span,
-            )),
-        }
-    }};
-
-    ($parser: expr, $pattern: pat) => {{
-        let token = $parser.token_stream.peek();
-        if matches!(token.variant, $pattern) {
-            $parser.token_stream.current_pos = token.span.end;
-            Ok(token)
-        } else {
-            Err(ParseError::unexpected_token(
-                vec![stringify!($pattern).to_string()],
-                Some(token.clone()),
-                token.span,
-            ))
-        }
-    }};
-}
-
 #[derive(Debug)]
 pub enum ParseErrorType {
     UnexpectedToken {
-        /// alternatives
-        expected: Vec<String>,
-        got: Option<Token>,
+        /// as a message says it: ')', a name
+        expected: String,
+        got: Token,
     },
     InvalidAssignmentTarget,
 }
@@ -50,9 +19,11 @@ pub struct ParseError {
 }
 
 impl ParseError {
-    fn unexpected_token(expected: Vec<String>, got: Option<Token>, span: Span) -> Self {
+    fn unexpected_token(expected: &str, got: Token) -> Self {
+        let span = got.span;
+
         return ParseError {
-            variant: ParseErrorType::UnexpectedToken { expected, got },
+            variant: ParseErrorType::UnexpectedToken { expected: expected.to_string(), got },
             span,
         };
     }
@@ -62,17 +33,14 @@ impl fmt::Display for ParseErrorType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ParseErrorType::UnexpectedToken { expected, got } => {
-                let expected: Vec<&str> = expected.iter()
-                    .map(|name| name.trim_start_matches("TokenType::"))
-                    .collect();
-
-                let got = match got.as_ref().map(|token| &token.variant) {
-                    None | Some(TokenType::EOF) => "the end of the script".to_string(),
-                    Some(TokenType::String(text)) => format!("\"{text}\""),
-                    Some(other) => format!("'{}'", other.to_string()),
+                // an unclosed string runs to the end
+                let got = match &got.variant {
+                    TokenType::EOF | TokenType::UnclosedString => "the end of the script".to_string(),
+                    TokenType::String(text) => format!("\"{text}\""),
+                    other => format!("'{}'", other.to_string()),
                 };
 
-                return write!(f, "expected {}, got {got}", expected.join(" or "));
+                return write!(f, "expected {expected}, got {got}");
             }
             ParseErrorType::InvalidAssignmentTarget => {
                 return write!(f, "only variables can be assigned to");
@@ -154,7 +122,7 @@ pub enum ExpressionType {
         right: Box<Expression>,
     },
     Assignment {
-        target: Box<Expression>,
+        target: Identifier,
         value: Box<Expression>,
     },
     FunctionCall {
@@ -217,16 +185,10 @@ pub struct Parameter {
     pub default: Option<Expression>,
 }
 
-/// `use kotlin`, or a script: `use "other.build"`
-#[derive(Debug)]
-pub enum UseTarget {
-    Ident(Identifier),
-    FilePath { path: String, span: Span },
-}
-
 #[derive(Debug)]
 pub enum StatementType {
-    Use(UseTarget),
+    /// `use kotlin`
+    Use(Identifier),
     Expression(Expression),
 }
 
@@ -293,32 +255,59 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_use_statement(&mut self) -> Result<Statement, ParseError> {
-        let use_token = expect_token!(self, TokenType::Use)?;
-
-        let token = self.token_stream.next();
-
-        let target = match token.variant {
-            TokenType::Ident(name) => UseTarget::Ident(Identifier {
-                name,
-                span: token.span,
-            }),
-            TokenType::String(path) => UseTarget::FilePath {
-                path,
-                span: token.span,
-            },
-            other => {
-                return Err(ParseError::unexpected_token(
-                    vec!["Ident".to_string(), "String".to_string()],
-                    Some(Token::new(other, token.span)),
-                    token.span,
-                ));
-            }
-        };
+        let use_token = self.expect(TokenType::Use)?;
+        let platform = self.expect_identifier("a platform like kotlin")?;
+        let span = use_token.span.till(platform.span);
 
         return Ok(Statement {
-            variant: StatementType::Use(target),
-            span: use_token.span.till(token.span),
+            variant: StatementType::Use(platform),
+            span,
         });
+    }
+
+    /// The next token, which has to be `expected`
+    fn expect(&mut self, expected: TokenType) -> Result<Token, ParseError> {
+        let token = self.token_stream.next();
+
+        if token.variant != expected {
+            return Err(ParseError::unexpected_token(&format!("'{}'", expected.to_string()), token));
+        }
+
+        return Ok(token);
+    }
+
+    /// The next token, which has to be a name. `what` says which for the message.
+    fn expect_identifier(&mut self, what: &str) -> Result<Identifier, ParseError> {
+        let token = self.token_stream.next();
+
+        let TokenType::Ident(name) = token.variant else {
+            return Err(ParseError::unexpected_token(what, token));
+        };
+
+        return Ok(Identifier { name, span: token.span });
+    }
+
+    /// Items up to the closing ')', separated by commas, one after the last allowed.
+    /// Returns the span of the ')' too.
+    fn comma_separated<T>(
+        &mut self,
+        mut item: impl FnMut(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<(Vec<T>, Span), ParseError> {
+        let mut items = vec![];
+
+        while self.token_stream.peek().variant != TokenType::RightParen {
+            items.push(item(self)?);
+
+            if self.token_stream.peek().variant != TokenType::Comma {
+                break;
+            }
+
+            self.token_stream.next();
+        }
+
+        let close = self.expect(TokenType::RightParen)?;
+
+        return Ok((items, close.span));
     }
 
     fn parse_expression(&mut self, min_precedence: u8) -> Result<Expression, ParseError> {
@@ -373,7 +362,7 @@ impl<'src> Parser<'src> {
                 });
             }
             TokenType::UnclosedString => {
-                return Err(ParseError::unexpected_token(vec!["\" to close the string".to_string()], None, span));
+                return Err(ParseError::unexpected_token("\" to close the string", Token::new(TokenType::UnclosedString, span)));
             }
             TokenType::Fn => return self.parse_function(span),
             TokenType::If => return self.parse_if(span),
@@ -381,55 +370,39 @@ impl<'src> Parser<'src> {
             TokenType::Bang => return self.parse_unary_expression(UnaryOperator::Not, span),
             TokenType::LeftParen => {
                 let inner = self.parse_expression(0)?;
-                let close = expect_token!(self, TokenType::RightParen)?;
+                let close = self.expect(TokenType::RightParen)?;
 
                 return Ok(Expression {
                     variant: inner.variant,
                     span: span.till(close.span),
                 });
             }
-            other => {
-                return Err(ParseError::unexpected_token(
-                    vec!["Expression".to_string()],
-                    Some(Token::new(other, span)),
-                    span,
-                ));
-            }
+            other => return Err(ParseError::unexpected_token("an expression", Token::new(other, span))),
         }
     }
 
     fn parse_function(&mut self, fn_span: Span) -> Result<Expression, ParseError> {
-        expect_token!(self, TokenType::LeftParen)?;
-        let mut params = vec![];
+        self.expect(TokenType::LeftParen)?;
 
-        while self.token_stream.peek().variant != TokenType::RightParen {
-            let (name, span) = expect_token!(self, TokenType::Ident(name) => name)?;
-            let name = Identifier { name, span };
-            expect_token!(self, TokenType::Colon)?;
-            let param_type = self.parse_type()?;
+        let (params, _) = self.comma_separated(|parser| {
+            let name = parser.expect_identifier("a parameter name")?;
+            parser.expect(TokenType::Colon)?;
+            let param_type = parser.parse_type()?;
 
-            let default = match self.token_stream.peek().variant {
+            let default = match parser.token_stream.peek().variant {
                 TokenType::Eq => {
-                    self.token_stream.next();
-                    Some(self.parse_expression(NO_ASSIGNMENT_PRECEDENCE)?)
+                    parser.token_stream.next();
+                    Some(parser.parse_expression(NO_ASSIGNMENT_PRECEDENCE)?)
                 }
                 _ => None,
             };
 
-            params.push(Parameter {
+            return Ok(Parameter {
                 name,
                 param_type,
                 default,
             });
-
-            if self.token_stream.peek().variant != TokenType::Comma {
-                break;
-            }
-
-            self.token_stream.next();
-        }
-
-        expect_token!(self, TokenType::RightParen)?;
+        })?;
 
         let returns = match self.token_stream.peek().variant {
             TokenType::Arrow => {
@@ -486,7 +459,7 @@ impl<'src> Parser<'src> {
 
     /// `{ expressions }`, with the span of the closing brace
     fn parse_block(&mut self) -> Result<(Vec<Expression>, Span), ParseError> {
-        expect_token!(self, TokenType::LeftBrace)?;
+        self.expect(TokenType::LeftBrace)?;
         let mut body = vec![];
 
         while !matches!(
@@ -496,7 +469,7 @@ impl<'src> Parser<'src> {
             body.push(self.parse_expression(0)?);
         }
 
-        let close = expect_token!(self, TokenType::RightBrace)?;
+        let close = self.expect(TokenType::RightBrace)?;
 
         return Ok((body, close.span));
     }
@@ -528,9 +501,9 @@ impl<'src> Parser<'src> {
         let token = self.token_stream.next();
         match token.variant {
             TokenType::Ident(name) if name == "list" => {
-                expect_token!(self, TokenType::Less)?;
+                self.expect(TokenType::Less)?;
                 let element = self.parse_type()?;
-                let close = expect_token!(self, TokenType::Greater)?;
+                let close = self.expect(TokenType::Greater)?;
 
                 return Ok(TypeExpression {
                     variant: TypeExpressionType::List(Box::new(element)),
@@ -544,20 +517,9 @@ impl<'src> Parser<'src> {
                 });
             }
             TokenType::Fn => {
-                expect_token!(self, TokenType::LeftParen)?;
-                let mut params = vec![];
-
-                while self.token_stream.peek().variant != TokenType::RightParen {
-                    params.push(self.parse_type()?);
-                    if self.token_stream.peek().variant != TokenType::Comma {
-                        break;
-                    }
-
-                    self.token_stream.next();
-                }
-
-                expect_token!(self, TokenType::RightParen)?;
-                expect_token!(self, TokenType::Arrow)?;
+                self.expect(TokenType::LeftParen)?;
+                let (params, _) = self.comma_separated(|parser| parser.parse_type())?;
+                self.expect(TokenType::Arrow)?;
                 let returns = self.parse_single_type()?;
                 let span = token.span.till(returns.span);
 
@@ -569,13 +531,7 @@ impl<'src> Parser<'src> {
                     span,
                 });
             }
-            other => {
-                return Err(ParseError::unexpected_token(
-                    vec!["Type".to_string()],
-                    Some(Token::new(other, token.span)),
-                    token.span,
-                ));
-            }
+            other => return Err(ParseError::unexpected_token("a type", Token::new(other, token.span))),
         }
     }
 
@@ -597,28 +553,9 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_function_call(&mut self, target: Expression) -> Result<Expression, ParseError> {
-        expect_token!(self, TokenType::LeftParen)?;
-
-        let mut args = vec![];
-
-        if self.token_stream.peek().variant != TokenType::RightParen {
-            loop {
-                args.push(self.parse_expression(0)?);
-                if self.token_stream.peek().variant != TokenType::Comma {
-                    break;
-                }
-
-                self.token_stream.next();
-
-                // allows a comma after the last argument
-                if self.token_stream.peek().variant == TokenType::RightParen {
-                    break;
-                }
-            }
-        }
-
-        let close = expect_token!(self, TokenType::RightParen)?;
-        let span = target.span.till(close.span);
+        self.expect(TokenType::LeftParen)?;
+        let (args, close) = self.comma_separated(|parser| parser.parse_expression(0))?;
+        let span = target.span.till(close);
 
         return Ok(Expression {
             variant: ExpressionType::FunctionCall {
@@ -638,16 +575,16 @@ impl<'src> Parser<'src> {
 
         let operator = match operator_token.variant {
             TokenType::Eq => {
-                if !matches!(left.variant, ExpressionType::Ident(_)) {
+                let ExpressionType::Ident(name) = left.variant else {
                     return Err(ParseError {
                         variant: ParseErrorType::InvalidAssignmentTarget,
                         span: left.span,
                     });
-                }
+                };
 
                 return Ok(Expression {
                     variant: ExpressionType::Assignment {
-                        target: Box::new(left),
+                        target: Identifier { name, span: left.span },
                         value: Box::new(right),
                     },
                     span,
@@ -676,5 +613,95 @@ impl<'src> Parser<'src> {
             },
             span,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: &str) -> Result<Script, ParseError> {
+        return Parser::new(input).parse_script();
+    }
+
+    fn error(input: &str) -> String {
+        return parse(input).unwrap_err().variant.to_string();
+    }
+
+    /// The expression of the only statement, with parentheses for how it binds
+    fn grouped(input: &str) -> String {
+        fn show(expression: &Expression) -> String {
+            match &expression.variant {
+                ExpressionType::Ident(name) => return name.clone(),
+                ExpressionType::String(text) => return format!("\"{text}\""),
+                ExpressionType::Unary { operator, target } => return format!("({operator}{})", show(target)),
+                ExpressionType::Binary { left, operator, right } => {
+                    return format!("({} {operator} {})", show(left), show(right));
+                }
+                ExpressionType::Assignment { target, value } => return format!("({} = {})", target.name, show(value)),
+                ExpressionType::FunctionCall { target, args } => {
+                    let args: Vec<String> = args.iter().map(show).collect();
+                    return format!("{}({})", show(target), args.join(", "));
+                }
+                other => return format!("{other:?}"),
+            }
+        }
+
+        let script = parse(input).unwrap();
+        let [Statement { variant: StatementType::Expression(expression), .. }] = script.statements.as_slice() else {
+            panic!("one expression expected");
+        };
+
+        return show(expression);
+    }
+
+    #[test]
+    fn operators_bind_by_precedence() {
+        assert_eq!(grouped("a = b || c && d == e + f * -g"), "(a = (b || (c && (d == (e + (f * (-g)))))))");
+        assert_eq!(grouped("!f(x)(y) < z"), "((!f(x)(y)) < z)");
+        assert_eq!(grouped("(a + b) * c"), "((a + b) * c)");
+    }
+
+    #[test]
+    fn arguments_may_end_with_a_comma_and_be_named() {
+        assert_eq!(grouped("build(\"app\", main = true,)"), "build(\"app\", (main = true))");
+        assert_eq!(grouped("build()"), "build()");
+    }
+
+    #[test]
+    fn errors_name_the_tokens_as_the_script_writes_them() {
+        assert_eq!(error("f(a"), "expected ')', got the end of the script");
+        assert_eq!(error("fn(a str) { a }"), "expected ':', got 'str'");
+        assert_eq!(error("fn(\"a\": str) { a }"), "expected a parameter name, got \"a\"");
+        assert_eq!(error("use \"other.build\""), "expected a platform like kotlin, got \"other.build\"");
+        assert_eq!(error("x = )"), "expected an expression, got ')'");
+        assert_eq!(error("f(x) = 1"), "only variables can be assigned to");
+    }
+
+    #[test]
+    fn functions_have_typed_parameters_with_defaults() {
+        let script = parse("greet = fn(name: str | list<str>, count: int = 1, call: fn(str) -> bool) -> str { name }").unwrap();
+        let [Statement { variant: StatementType::Expression(expression), .. }] = script.statements.as_slice() else {
+            panic!("one expression expected");
+        };
+
+        let ExpressionType::Assignment { value, .. } = &expression.variant else {
+            panic!("an assignment expected");
+        };
+
+        let ExpressionType::Function { params, returns, body } = &value.variant else {
+            panic!("a function expected");
+        };
+
+        let names: Vec<&str> = params.iter()
+            .map(|param| param.name.name.as_str())
+            .collect();
+
+        assert_eq!(names, ["name", "count", "call"]);
+        assert!(matches!(params[0].param_type.variant, TypeExpressionType::Union(ref members) if members.len() == 2));
+        assert!(params[1].default.is_some());
+        assert!(matches!(params[2].param_type.variant, TypeExpressionType::Function { ref params, .. } if params.len() == 1));
+        assert!(matches!(returns, Some(TypeExpression { variant: TypeExpressionType::Named(name), .. }) if name == "str"));
+        assert_eq!(body.len(), 1);
     }
 }

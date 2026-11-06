@@ -14,6 +14,15 @@ impl Span {
     }
 }
 
+/// Line and column of a byte offset in the script, both counted from 1
+pub fn line_column(source: &str, offset: usize) -> (usize, usize) {
+    let before = source.get(..offset).unwrap_or(source);
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+
+    return (line, column);
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub variant: TokenType,
@@ -284,5 +293,80 @@ impl<'src> TokenStream<'src> {
         }
 
         return None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens(input: &str) -> Vec<TokenType> {
+        let mut stream = TokenStream::new(input);
+        let mut tokens = vec![];
+
+        loop {
+            let token = stream.next();
+
+            if token.variant == TokenType::EOF {
+                return tokens;
+            }
+
+            tokens.push(token.variant);
+        }
+    }
+
+    #[test]
+    fn longer_symbols_win_and_keywords_are_whole_words() {
+        assert_eq!(
+            tokens("fn(a: str) -> list<int> { a <= b && !c }"),
+            vec![
+                TokenType::Fn,
+                TokenType::LeftParen,
+                TokenType::Ident("a".to_string()),
+                TokenType::Colon,
+                TokenType::Ident("str".to_string()),
+                TokenType::RightParen,
+                TokenType::Arrow,
+                TokenType::Ident("list".to_string()),
+                TokenType::Less,
+                TokenType::Ident("int".to_string()),
+                TokenType::Greater,
+                TokenType::LeftBrace,
+                TokenType::Ident("a".to_string()),
+                TokenType::LessEq,
+                TokenType::Ident("b".to_string()),
+                TokenType::AmpAmp,
+                TokenType::Bang,
+                TokenType::Ident("c".to_string()),
+                TokenType::RightBrace,
+            ]
+        );
+
+        assert_eq!(tokens("useful iffy"), vec![TokenType::Ident("useful".to_string()), TokenType::Ident("iffy".to_string())]);
+    }
+
+    #[test]
+    fn strings_unescape_and_comments_are_skipped() {
+        assert_eq!(
+            tokens("// a comment\n\"say \\\"hi\\\"\\n\" /* another */ \"C:\\dir\""),
+            vec![
+                TokenType::String("say \"hi\"\n".to_string()),
+                TokenType::String("C:\\dir".to_string()),
+            ]
+        );
+
+        assert_eq!(tokens("x = \"open"), vec![
+            TokenType::Ident("x".to_string()),
+            TokenType::Eq,
+            TokenType::UnclosedString,
+        ]);
+    }
+
+    #[test]
+    fn errors_point_at_line_and_column() {
+        let source = "use kotlin\nx = list(\n    y)";
+        assert_eq!(line_column(source, 0), (1, 1));
+        assert_eq!(line_column(source, 11), (2, 1));
+        assert_eq!(line_column(source, source.len() - 2), (3, 5));
     }
 }

@@ -3,7 +3,8 @@
 // else stays as it is written.
 use std::sync::Arc;
 
-use crate::language::parser::{Expression, ExpressionType, Parser, Script, StatementType, UseTarget};
+use crate::language::lexer::line_column;
+use crate::language::parser::{Expression, ExpressionType, Parser, Script, StatementType};
 use crate::language::runtime::{self, FunctionSignature, Type, Value};
 
 use super::{ModuleTemplate, NewModule};
@@ -17,7 +18,7 @@ pub fn with_module(
     template: &ModuleTemplate,
 ) -> Result<String, String> {
     let script = Parser::new(source).parse_script().map_err(|error| {
-        let line = source[..error.span.start.min(source.len())].matches('\n').count() + 1;
+        let (line, _) = line_column(source, error.span.start);
         format!("line {line}: {}", error.variant)
     })?;
 
@@ -29,17 +30,16 @@ pub fn with_module(
 
     for statement in &script.statements {
         let expression = match &statement.variant {
-            StatementType::Use(UseTarget::Ident(platform)) => {
+            StatementType::Use(platform) => {
                 uses.push((platform.name.as_str(), statement.span.end));
                 continue;
             }
-            StatementType::Use(_) => continue,
             StatementType::Expression(expression) => expression,
         };
 
         let value = match &expression.variant {
             ExpressionType::Assignment { target, value } => {
-                let name = identifier(target).unwrap_or_default();
+                let name = target.name.as_str();
                 variables.push(name);
                 if name == "repositories" {
                     repositories = Some((value, statement.span.start));
@@ -59,7 +59,7 @@ pub fn with_module(
                     .any(|arg| argument_name(arg) == Some("main_class"))
                 || args.iter().any(|arg| match &arg.variant {
                     ExpressionType::Assignment { target, value } => {
-                        identifier(target) == Some("program") && identifier(value) == Some("true")
+                        target.name == "program" && identifier(value) == Some("true")
                     }
                     _ => false,
                 });
@@ -257,7 +257,7 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
 
     for statement in &script.statements {
         let expression = match &statement.variant {
-            StatementType::Use(UseTarget::Ident(name)) => {
+            StatementType::Use(name) => {
                 let platform = runtime::platforms().find(|platform| platform.name == name.name);
 
                 if let Some(platform) = platform {
@@ -271,12 +271,11 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
                 }
                 continue;
             }
-            StatementType::Use(_) => continue,
             StatementType::Expression(expression) => expression,
         };
 
         let (variable, value) = match &expression.variant {
-            ExpressionType::Assignment { target, value } => (identifier(target), value.as_ref()),
+            ExpressionType::Assignment { target, value } => (Some(target.name.as_str()), value.as_ref()),
             _ => (None, expression),
         };
 
@@ -294,7 +293,7 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
             .enumerate()
             .filter_map(|(index, argument)| match &argument.variant {
                 ExpressionType::Assignment { target, value } => {
-                    Some((identifier(target)?.to_string(), value.as_ref()))
+                    Some((target.name.clone(), value.as_ref()))
                 }
                 _ => Some((signature.parameters.fixed.get(index)?.name.clone(), argument)),
             })
@@ -441,7 +440,7 @@ fn last_assignment<'a>(
             StatementType::Expression(Expression {
                 variant: ExpressionType::Assignment { target, value },
                 ..
-            }) if identifier(target) == Some(variable) => Some(value.as_ref()),
+            }) if target.name == variable => Some(value.as_ref()),
             _ => None,
         })
         .last();
@@ -546,7 +545,7 @@ fn argument_name(argument: &Expression) -> Option<&str> {
     let ExpressionType::Assignment { target, .. } = &argument.variant else {
         return None;
     };
-    return identifier(target);
+    return Some(&target.name);
 }
 
 fn start_of_line(source: &str, offset: usize) -> usize {

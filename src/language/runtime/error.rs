@@ -85,9 +85,6 @@ pub enum RuntimeErrorType {
         what: &'static str,
         got: Type,
     },
-    Unsupported {
-        feature: String,
-    },
 }
 
 #[derive(Debug)]
@@ -233,9 +230,6 @@ impl fmt::Display for RuntimeError {
             }
             RuntimeErrorType::BuiltinFailed { name, message } => {
                 return write!(f, "{name}: {message}");
-            }
-            RuntimeErrorType::Unsupported { feature } => {
-                return write!(f, "{feature} is not supported yet");
             }
             RuntimeErrorType::ReturnTypeMismatch {
                 function,
