@@ -12,6 +12,7 @@ use crate::language::runtime::{
 use super::JvmLaunch;
 use super::idea::{self, IdeaModule};
 use super::jar_merge::{self, JarContents};
+use super::relocate;
 use super::maven::TargetPlatform;
 use super::module::{
     Compilation, ModuleBuildInputs, Sources, classes_kind, create_jar, dependencies_type,
@@ -122,41 +123,14 @@ fn build_jar(
 
     let fat_jar = args.get::<bool>("fat_jar")?;
 
-    let mut relocations = vec![];
-    for (from, to) in args.assignments("relocate")? {
-        let to = to.trim().to_string();
-
-        if from.is_empty() || to.is_empty() {
-            return Err(format!("relocate: '{from}={to}' needs a package on both sides"));
-        }
-
-        relocations.push((from, to));
-    }
-
-    if !relocations.is_empty() && !fat_jar {
-        return Err("relocate moves packages inside a fat jar, it needs fat_jar = true".to_string());
-    }
+    let relocations = relocations(args, fat_jar)?;
 
     let artifact = match fat_jar {
         true => libs_dir.join(format!("{}-all.jar", inputs.name)),
         false => jar.clone(),
     };
 
-    let (kotlin_sources, java_sources) = kotlin_and_java_sources(&inputs.source_dirs);
-
-    if kotlin_sources.is_empty() && java_sources.is_empty() {
-        let dirs: Vec<String> = inputs.source_dirs.iter()
-            .map(|dir| dir.display().to_string())
-            .collect();
-
-        let files = if inputs.sources == Sources::Java {
-            ".java"
-        } else {
-            ".kt or .java"
-        };
-
-        return Err(format!("no {files} files found in {}", dirs.join(", ")));
-    }
+    expect_sources(inputs)?;
 
     let fingerprint = inputs.input_fingerprint(&inputs.name, args, &inputs.resources.inputs())?;
 
@@ -255,6 +229,48 @@ fn build_jar(
     return Ok((jar, artifact));
 }
 
+/// The packages of `relocate` as (from, to), only a fat jar has them
+fn relocations(args: &Arguments, fat_jar: bool) -> Result<Vec<(String, String)>, String> {
+    let mut relocations = vec![];
+
+    for (from, to) in args.assignments("relocate")? {
+        let to = to.trim().to_string();
+
+        if from.is_empty() || to.is_empty() {
+            return Err(format!("relocate: '{from}={to}' needs a package on both sides"));
+        }
+
+        relocations.push((from, to));
+    }
+
+    if !relocations.is_empty() && !fat_jar {
+        return Err("relocate moves packages inside a fat jar, it needs fat_jar = true".to_string());
+    }
+
+    return Ok(relocations);
+}
+
+/// A module without sources is an error, not an empty jar
+fn expect_sources(inputs: &ModuleBuildInputs) -> Result<(), String> {
+    let (kotlin_sources, java_sources) = kotlin_and_java_sources(&inputs.source_dirs);
+
+    if !kotlin_sources.is_empty() || !java_sources.is_empty() {
+        return Ok(());
+    }
+
+    let dirs: Vec<String> = inputs.source_dirs.iter()
+        .map(|dir| dir.display().to_string())
+        .collect();
+
+    let files = if inputs.sources == Sources::Java {
+        ".java"
+    } else {
+        ".kt or .java"
+    };
+
+    return Err(format!("no {files} files found in {}", dirs.join(", ")));
+}
+
 /// The jars merged into `output`, the packages of `relocations` (from, to) moved
 fn build_fat_jar(
     inputs: &ModuleBuildInputs,
@@ -294,12 +310,12 @@ fn build_fat_jar(
         &format!("Relocating {} package(s) with jar-relocator", relocations.len()),
     );
 
-    jar_merge::relocate_service_files(&contents, relocations)?;
+    relocate::relocate_service_files(&contents, relocations)?;
 
     let unrelocated = work_dir.join("unrelocated.jar");
     create_jar(&inputs.jdk, &unrelocated, Some(&manifest_file), &[&contents])?;
 
-    return jar_merge::relocate(inputs, &unrelocated, output, relocations);
+    return relocate::relocate(inputs, &unrelocated, output, relocations);
 }
 
 /// Returns their file names for the Class-Path

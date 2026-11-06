@@ -9,6 +9,7 @@ mod jdk;
 mod ksp;
 pub mod maven;
 mod module;
+mod relocate;
 mod resources;
 pub mod templates;
 mod testing;
