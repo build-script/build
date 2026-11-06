@@ -84,28 +84,43 @@ pub struct ArchiveFile {
     checksum: Option<Checksum>,
 }
 
-/// The NDK of the version: that of ANDROID_HOME, else the one in <build home>/android-sdk, installed once
-/// its license is accepted
-pub fn ndk(version: &str, accept_license: bool) -> Result<PathBuf, String> {
-    let installed = ["ANDROID_HOME", "ANDROID_SDK_ROOT"].iter()
+/// The SDKs installed outside of build-script: ANDROID_HOME and ANDROID_SDK_ROOT
+pub fn installed_roots() -> Vec<PathBuf> {
+    return ["ANDROID_HOME", "ANDROID_SDK_ROOT"].iter()
         .filter_map(|variable| std::env::var_os(variable))
-        .map(|root| PathBuf::from(root).join("ndk").join(version))
-        .find(|ndk| ndk.is_dir());
+        .map(PathBuf::from)
+        .collect();
+}
 
-    if let Some(ndk) = installed {
-        return Ok(ndk);
+/// The directory of `package` below `sdk_root`, installed from Google's catalog unless it is there
+pub fn ensure_package(sdk_root: &Path, package: &str, accept_license: bool) -> Result<PathBuf, String> {
+    let target = sdk_root.join(package.replace(';', "/"));
+
+    if target.is_dir() {
+        return Ok(target);
     }
 
-    let root = system::data_dir("android-sdk");
-    let ndk = root.join("ndk").join(version);
+    return SdkCatalog::load()?.install(sdk_root, package, accept_license);
+}
 
-    return system::installing(&root, || {
-        if !ndk.is_dir() {
-            SdkCatalog::load()?.install(&root, &format!("ndk;{version}"), &ndk, accept_license)?;
-        }
+/// `package` of an installed SDK, else the one in <build home>/android-sdk, installed once
+/// its license is accepted
+pub fn find_or_install(package: &str, accept_license: bool) -> Result<PathBuf, String> {
+    let installed = installed_roots()
+        .into_iter()
+        .map(|root| root.join(package.replace(';', "/")))
+        .find(|directory| directory.is_dir());
 
-        return Ok(ndk.clone());
-    });
+    if let Some(directory) = installed {
+        return Ok(directory);
+    }
+
+    return ensure_package(&system::data_dir("android-sdk"), package, accept_license);
+}
+
+/// The NDK of the version, see find_or_install
+pub fn ndk(version: &str, accept_license: bool) -> Result<PathBuf, String> {
+    return find_or_install(&format!("ndk;{version}"), accept_license);
 }
 
 impl AndroidSdk {
@@ -114,28 +129,15 @@ impl AndroidSdk {
     pub fn adb(sdk_root: &Path) -> Result<PathBuf, String> {
         let name = format!("adb{}", std::env::consts::EXE_SUFFIX);
 
-        let roots = ["ANDROID_HOME", "ANDROID_SDK_ROOT"].iter()
-            .filter_map(|variable| std::env::var_os(variable).map(PathBuf::from))
-            .chain([sdk_root.to_path_buf()]);
-
-        for root in roots {
+        for root in installed_roots().into_iter().chain([sdk_root.to_path_buf()]) {
             let adb = root.join("platform-tools").join(&name);
+
             if adb.is_file() {
                 return Ok(adb);
             }
         }
 
-        let target = sdk_root.join("platform-tools");
-
-        system::installing(&sdk_root, || {
-            if !target.join(&name).is_file() {
-                SdkCatalog::load()?.install(sdk_root, "platform-tools", &target, false)?;
-            }
-
-            return Ok(());
-        })?;
-
-        return Ok(target.join(name));
+        return Ok(ensure_package(sdk_root, "platform-tools", false)?.join(name));
     }
 
     /// An installed SDK (ANDROID_HOME) as it is, otherwise the packages in <build home>/android-sdk,
@@ -145,12 +147,11 @@ impl AndroidSdk {
         build_tools: &str,
         accept_license: bool,
     ) -> Result<Self, String> {
-        for variable in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
-            if let Some(root) = std::env::var_os(variable) {
-                let sdk = Self::at(Path::new(&root), compile_sdk, build_tools);
-                if sdk.is_complete() {
-                    return Ok(sdk);
-                }
+        for root in installed_roots() {
+            let sdk = Self::at(&root, compile_sdk, build_tools);
+
+            if sdk.is_complete() {
+                return Ok(sdk);
             }
         }
 
@@ -161,50 +162,28 @@ impl AndroidSdk {
             return Ok(sdk);
         }
 
-        // builds on other threads may need the same packages, the first installs them
-        return system::installing(&root, || {
-            let sdk = Self::at(&root, compile_sdk, build_tools);
+        let catalog = SdkCatalog::load()?;
 
-            if sdk.is_complete() {
-                return Ok(sdk);
-            }
+        if !sdk.android_jar.is_file() {
+            let platform = Self::platform_names(compile_sdk)
+                .into_iter()
+                .find(|name| catalog.package(&format!("platforms;{name}")).is_some())
+                .ok_or_else(|| format!("the Android SDK has no platform for API {compile_sdk}"))?;
 
-            let catalog = SdkCatalog::load()?;
+            catalog.install(&root, &format!("platforms;{platform}"), accept_license)?;
+        }
 
-            if !sdk.android_jar.is_file() {
-                let platform = Self::platform_names(compile_sdk)
-                    .into_iter()
-                    .find(|name| catalog.package(&format!("platforms;{name}")).is_some())
-                    .ok_or_else(|| format!("the Android SDK has no platform for API {compile_sdk}"))?;
+        if !sdk.aapt2.is_file() {
+            catalog.install(&root, &format!("build-tools;{build_tools}"), accept_license)?;
+        }
 
-                catalog.install(
-                    &root,
-                    &format!("platforms;{platform}"),
-                    &root.join("platforms").join(&platform),
-                    accept_license,
-                )?;
-            }
+        let sdk = Self::at(&root, compile_sdk, build_tools);
 
-            if !sdk.aapt2.is_file() {
-                catalog.install(
-                    &root,
-                    &format!("build-tools;{build_tools}"),
-                    &root.join("build-tools").join(build_tools),
-                    accept_license,
-                )?;
-            }
+        if !sdk.is_complete() {
+            return Err(format!("the Android SDK in {} is incomplete", root.display()));
+        }
 
-            let sdk = Self::at(&root, compile_sdk, build_tools);
-
-            if !sdk.is_complete() {
-                return Err(format!(
-                    "the Android SDK in {} is incomplete",
-                    root.display()
-                ));
-            }
-
-            return Ok(sdk);
-        });
+        return Ok(sdk);
     }
 
     /// Platforms are android-36 up to API 36, from API 37 on android-37.0
@@ -288,7 +267,23 @@ impl SdkCatalog {
         return Some(self.package(path)?.archive()?.complete.as_ref()?.size);
     }
 
-    pub fn install(
+    /// Into its directory below `sdk_root` (platforms;android-36 into platforms/android-36) unless
+    /// it is there. Builds on other threads may want the same package, the first installs it.
+    pub fn install(&self, sdk_root: &Path, package: &str, accept_license: bool) -> Result<PathBuf, String> {
+        let target = sdk_root.join(package.replace(';', "/"));
+
+        system::installing(sdk_root, || {
+            if target.is_dir() {
+                return Ok(());
+            }
+
+            return self.download(sdk_root, package, &target, accept_license);
+        })?;
+
+        return Ok(target);
+    }
+
+    fn download(
         &self,
         sdk_root: &Path,
         package: &str,

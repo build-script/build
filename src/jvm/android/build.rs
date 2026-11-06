@@ -24,7 +24,7 @@ use super::manifest::{
     remove_entries_marked_for_removal,
 };
 use super::release::ReleaseKey;
-use super::sdk::{AndroidSdk, SdkCatalog};
+use super::sdk::{self, AndroidSdk};
 
 pub const DEFAULT_NDK_VERSION: &str = "28.2.13676358";
 
@@ -581,7 +581,6 @@ impl AndroidBuild {
         };
         return CMakeBuild {
             cmake_lists,
-            sdk_root: &self.sdk.root,
             ndk_version: &self.ndk_version,
             min_sdk: self.min_sdk,
             build_type: self.build_type,
@@ -1394,7 +1393,6 @@ impl UnpackedLibraries {
 /// The shared libraries of one CMakeLists.txt, like externalNativeBuild in the Android Gradle plugin
 struct CMakeBuild<'a> {
     cmake_lists: &'a Path,
-    sdk_root: &'a Path,
     ndk_version: &'a str,
     min_sdk: i64,
     build_type: BuildType,
@@ -1407,25 +1405,8 @@ impl CMakeBuild<'_> {
     /// Installs the NDK and CMake if needed, then configures and builds the
     /// libraries for every ABI, like the Gradle plugin
     fn run(&self, log: &dyn Fn(&str)) -> Result<(), String> {
-        let ndk = self.sdk_root.join("ndk").join(self.ndk_version);
-        let cmake_home = self.sdk_root.join("cmake").join(CMAKE_VERSION);
-
-        let packages = [
-            (format!("ndk;{}", self.ndk_version), &ndk),
-            (format!("cmake;{CMAKE_VERSION}"), &cmake_home),
-        ];
-
-        if packages.iter().any(|(_, dir)| !dir.is_dir()) {
-            system::installing(&self.sdk_root, || {
-                let catalog = SdkCatalog::load()?;
-
-                for (package, dir) in packages.iter().filter(|(_, dir)| !dir.is_dir()) {
-                    catalog.install(self.sdk_root, package, dir, self.accept_license)?;
-                }
-
-                return Ok(());
-            })?;
-        }
+        let ndk = sdk::ndk(self.ndk_version, self.accept_license)?;
+        let cmake_home = sdk::find_or_install(&format!("cmake;{CMAKE_VERSION}"), self.accept_license)?;
 
         let cmake = cmake_home.join("bin")
             .join(format!("cmake{}", std::env::consts::EXE_SUFFIX));

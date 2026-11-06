@@ -9,7 +9,7 @@ use crate::common::system::{self, HostArchitecture};
 use crate::common::xml::{self, XmlElement};
 use crate::language::runtime::{TestCounts, TestOutcome, TestRunner};
 
-use super::sdk::{AndroidSdk, SDK_REPOSITORY, SdkCatalog};
+use super::sdk::{self, AndroidSdk, SDK_REPOSITORY, SdkCatalog};
 
 /// catalogs of system images: directory below sys-img/ and how it is shown.
 /// "android" holds the plain open source Android (AOSP).
@@ -235,12 +235,8 @@ fn start_or_set_up_emulator(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result
         }
     };
 
-    let emulator = sdk_root.join("emulator")
+    let emulator = sdk::ensure_package(sdk_root, "emulator", false)?
         .join(format!("emulator{}", std::env::consts::EXE_SUFFIX));
-
-    if !emulator.is_file() {
-        SdkCatalog::load()?.install(sdk_root, "emulator", &sdk_root.join("emulator"), false)?;
-    }
 
     return start_emulator(adb, &emulator, sdk_root, &home, &name);
 }
@@ -335,13 +331,8 @@ fn set_up_virtual_device(sdk_root: &Path, home: &Path, min_sdk: i64) -> Result<S
         }
     }
 
-    if !emulator_dir.is_dir() {
-        main_catalog.install(sdk_root, "emulator", &emulator_dir, false)?;
-    }
-
-    if !image_dir.is_dir() {
-        catalogs[catalog_index].install(sdk_root, &image.path, &image_dir, false)?;
-    }
+    main_catalog.install(sdk_root, "emulator", false)?;
+    catalogs[catalog_index].install(sdk_root, &image.path, false)?;
 
     let name = create_virtual_device(home, &image)?;
     println!("Created emulator {name}");
