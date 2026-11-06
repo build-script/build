@@ -441,15 +441,6 @@ impl TargetPlatform {
     }
 }
 
-impl fmt::Display for DependencyNotation {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            DependencyNotation::Library(coordinate) => return write!(f, "{coordinate}"),
-            DependencyNotation::Platform(coordinate) => return write!(f, "platform({coordinate})"),
-        }
-    }
-}
-
 impl fmt::Display for MavenCoordinate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}:{}", self.group, self.artifact)?;

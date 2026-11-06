@@ -54,15 +54,15 @@ impl DependencyResolver {
         };
     }
 
-    /// The POMs of the newest builds of SNAPSHOT versions, and when they were
-    /// written. A module that depends on a SNAPSHOT is built again when they change.
+    /// The POMs of the newest builds of the SNAPSHOT versions `snapshots`, and when they
+    /// were written. A module that depends on a SNAPSHOT is built again when they change.
     pub fn snapshot_poms(
         &mut self,
-        coordinates: &[MavenCoordinate],
+        snapshots: &[MavenCoordinate],
     ) -> Result<Vec<(PathBuf, Option<SystemTime>)>, String> {
         let mut poms = vec![];
 
-        for coordinate in coordinates.iter().filter(|coordinate| coordinate.is_snapshot()) {
+        for coordinate in snapshots {
             let Some(pom) = self.find_in_repositories(&coordinate.pom_path())? else {
                 return Err(format!("{coordinate} was not found in any repository"));
             };
