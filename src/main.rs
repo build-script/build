@@ -182,153 +182,174 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         };
     };
 
-    // the arguments of a program after -- are its own
-    let own = &rest[..rest.iter().position(|arg| arg == "--").unwrap_or(rest.len())];
+    let arguments = CommandArguments { command, rest };
 
-    if own.iter().any(|arg| arg == "--help" || arg == "-h") {
+    if arguments.own().iter().any(|arg| arg == "--help" || arg == "-h") {
         return Ok(Command::Help { command: Some(command) });
     }
 
-    let wrong = |problem: String| format!("{problem}\n{}", command_usage(command));
-
-    // an option the command does not have, most likely misspelled
-    let without_unknown_options = |positional: Vec<String>, options: &[&str]| -> Result<Vec<String>, String> {
-        let Some(option) = positional.iter().find(|arg| arg.starts_with('-')) else {
-            return Ok(positional);
-        };
-
-        let known = [options, BUILD_OPTIONS].concat();
-        return Err(wrong(format!("{command} has no option {option}{}", suggestion(option, &known))));
-    };
-
-    let script_or_default = |positional: &[String]| match positional {
-        [] => Ok(DEFAULT_SCRIPT.to_string()),
-        [script] => Ok(script.clone()),
-        _ => Err(wrong(format!("{command} takes one script at most, not {}", positional.join(" ")))),
-    };
-
     match command {
         "build" | "idea" => {
-            let script = script_or_default(&without_unknown_options(rest.to_vec(), &[])?)?;
+            let script = arguments.script_or_default(&arguments.without_unknown_options(rest.to_vec(), &[])?)?;
 
             return Ok(match command {
                 "build" => Command::Build { script },
                 _ => Command::Idea { script },
             });
         }
-        "clean" => {
-            // the cache belongs to no script
-            if rest.iter().any(|arg| arg == "--cache") {
-                return match rest {
-                    [_] => Ok(Command::CleanCache),
-                    _ => Err(wrong("clean --cache takes no script".to_string())),
-                };
-            }
-
-            let script = script_or_default(&without_unknown_options(rest.to_vec(), &["--cache"])?)?;
-            return Ok(Command::Clean { script });
-        }
-        "run" => {
-            let (module, positional) = take_option(own, "--module").map_err(wrong)?;
-            let positional = without_unknown_options(positional, &["--module"])?;
-
-            return Ok(Command::Run {
-                script: script_or_default(&positional)?,
-                module,
-                args: rest.get(own.len() + 1..).unwrap_or_default().to_vec(),
-            });
-        }
-        "test" => {
-            let (module, positional) = take_option(own, "--module").map_err(wrong)?;
-            let positional = without_unknown_options(positional, &["--module"])?;
-
-            return Ok(Command::Test {
-                script: script_or_default(&positional)?,
-                module,
-                args: rest.get(own.len() + 1..).unwrap_or_default().to_vec(),
-            });
-        }
-        "new" => {
-            let (package, positional) = take_option(rest, "--package").map_err(wrong)?;
-            let positional = without_unknown_options(positional, &["--package"])?;
-
-            if positional.len() > 2 {
-                return Err(wrong(format!("new takes a kind and a path, not {}", positional.join(" "))));
-            }
-
-            return Ok(Command::New {
-                kind: positional.first().cloned(),
-                path: positional.get(1).cloned(),
-                package,
-            });
-        }
-        "add" => {
-            let (package, positional) = take_option(rest, "--package").map_err(wrong)?;
-            let positional = without_unknown_options(positional, &["--package"])?;
-
-            return Ok(Command::Add {
-                kind: positional.first().cloned(),
-                name: positional.get(1).cloned(),
-                script: script_or_default(positional.get(2..).unwrap_or_default())?,
-                package,
-            });
-        }
-        "install" => {
-            let (module, args) = take_option(rest, "--module").map_err(wrong)?;
-            let is_list = |arg: &String| project::DEPENDENCY_KINDS.iter().any(|(flag, _)| flag == arg);
-
-            // a flag names the list the library goes to
-            let (lists, positional): (Vec<String>, Vec<String>) = args.into_iter().partition(is_list);
-            let flags: Vec<&str> = project::DEPENDENCY_KINDS.iter()
-                .map(|(flag, _)| *flag)
-                .collect();
-            let positional = without_unknown_options(positional, &[&flags[..], &["--module"]].concat())?;
-
-            let parameter = match lists.as_slice() {
-                [] => project::DEPENDENCIES,
-                [list] => project::DEPENDENCY_KINDS.iter()
-                    .find(|(flag, _)| flag == list)
-                    .map_or(project::DEPENDENCIES, |(_, parameter)| *parameter),
-                _ => return Err(wrong(format!("install takes one list, not {}", lists.join(" ")))),
-            };
-
-            return Ok(Command::Install {
-                library: positional.first().cloned(),
-                script: script_or_default(positional.get(1..).unwrap_or_default())?,
-                module,
-                parameter,
-            });
-        }
-        "config" => {
-            let unset = rest.iter().any(|arg| arg == "--unset");
-            let positional = rest.iter()
-                .filter(|arg| *arg != "--unset")
-                .cloned()
-                .collect();
-            let positional = without_unknown_options(positional, &["--unset"])?;
-
-            // config --unset asks which setting
-            return match (positional.as_slice(), unset) {
-                ([], _) => Ok(Command::Config {
-                    setting: None,
-                    value: None,
-                    unset,
-                }),
-                ([setting], _) => Ok(Command::Config {
-                    setting: Some(setting.clone()),
-                    value: None,
-                    unset,
-                }),
-                ([setting, value], false) => Ok(Command::Config {
-                    setting: Some(setting.clone()),
-                    value: Some(value.clone()),
-                    unset,
-                }),
-                _ => Err(wrong(format!("config takes a setting and its value at most, not {}", rest.join(" ")))),
-            };
-        }
+        "clean" => return parse_clean(&arguments),
+        "run" | "test" => return parse_run_or_test(&arguments),
+        "new" => return parse_new(&arguments),
+        "add" => return parse_add(&arguments),
+        "install" => return parse_install(&arguments),
+        "config" => return parse_config(&arguments),
         _ => return Err(no_command(command)),
     }
+}
+
+/// What follows a command, for the parsers of the commands
+struct CommandArguments<'a> {
+    command: &'static str,
+    rest: &'a [String],
+}
+
+impl CommandArguments<'_> {
+    /// `problem` and the usage of the command
+    fn wrong(&self, problem: String) -> String {
+        return format!("{problem}\n{}", command_usage(self.command));
+    }
+
+    /// Those before --, the arguments of a program after it are its own
+    fn own(&self) -> &[String] {
+        let end = self.rest.iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(self.rest.len());
+
+        return &self.rest[..end];
+    }
+
+    /// Those after --
+    fn program_arguments(&self) -> Vec<String> {
+        return self.rest.get(self.own().len() + 1..).unwrap_or_default().to_vec();
+    }
+
+    /// An option the command does not have is an error, most likely it is misspelled
+    fn without_unknown_options(&self, positional: Vec<String>, options: &[&str]) -> Result<Vec<String>, String> {
+        let Some(option) = positional.iter().find(|arg| arg.starts_with('-')) else {
+            return Ok(positional);
+        };
+
+        let known = [options, BUILD_OPTIONS].concat();
+        return Err(self.wrong(format!("{} has no option {option}{}", self.command, suggestion(option, &known))));
+    }
+
+    fn script_or_default(&self, positional: &[String]) -> Result<String, String> {
+        match positional {
+            [] => return Ok(DEFAULT_SCRIPT.to_string()),
+            [script] => return Ok(script.clone()),
+            _ => return Err(self.wrong(format!("{} takes one script at most, not {}", self.command, positional.join(" ")))),
+        }
+    }
+}
+
+fn parse_clean(arguments: &CommandArguments) -> Result<Command, String> {
+    let rest = arguments.rest;
+
+    // the cache belongs to no script
+    if rest.iter().any(|arg| arg == "--cache") {
+        return match rest {
+            [_] => Ok(Command::CleanCache),
+            _ => Err(arguments.wrong("clean --cache takes no script".to_string())),
+        };
+    }
+
+    let script = arguments.script_or_default(&arguments.without_unknown_options(rest.to_vec(), &["--cache"])?)?;
+    return Ok(Command::Clean { script });
+}
+
+fn parse_run_or_test(arguments: &CommandArguments) -> Result<Command, String> {
+    let (module, positional) = take_option(arguments.own(), "--module").map_err(|problem| arguments.wrong(problem))?;
+    let script = arguments.script_or_default(&arguments.without_unknown_options(positional, &["--module"])?)?;
+    let args = arguments.program_arguments();
+
+    return Ok(match arguments.command {
+        "run" => Command::Run { script, module, args },
+        _ => Command::Test { script, module, args },
+    });
+}
+
+fn parse_new(arguments: &CommandArguments) -> Result<Command, String> {
+    let (package, positional) = take_option(arguments.rest, "--package").map_err(|problem| arguments.wrong(problem))?;
+    let positional = arguments.without_unknown_options(positional, &["--package"])?;
+
+    if positional.len() > 2 {
+        return Err(arguments.wrong(format!("new takes a kind and a path, not {}", positional.join(" "))));
+    }
+
+    return Ok(Command::New {
+        kind: positional.first().cloned(),
+        path: positional.get(1).cloned(),
+        package,
+    });
+}
+
+fn parse_add(arguments: &CommandArguments) -> Result<Command, String> {
+    let (package, positional) = take_option(arguments.rest, "--package").map_err(|problem| arguments.wrong(problem))?;
+    let positional = arguments.without_unknown_options(positional, &["--package"])?;
+
+    return Ok(Command::Add {
+        kind: positional.first().cloned(),
+        name: positional.get(1).cloned(),
+        script: arguments.script_or_default(positional.get(2..).unwrap_or_default())?,
+        package,
+    });
+}
+
+fn parse_install(arguments: &CommandArguments) -> Result<Command, String> {
+    let (module, args) = take_option(arguments.rest, "--module").map_err(|problem| arguments.wrong(problem))?;
+    let is_list = |arg: &String| project::DEPENDENCY_KINDS.iter().any(|(flag, _)| flag == arg);
+
+    // a flag names the list the library goes to
+    let (lists, positional): (Vec<String>, Vec<String>) = args.into_iter().partition(is_list);
+    let flags: Vec<&str> = project::DEPENDENCY_KINDS.iter()
+        .map(|(flag, _)| *flag)
+        .collect();
+    let positional = arguments.without_unknown_options(positional, &[&flags[..], &["--module"]].concat())?;
+
+    let parameter = match lists.as_slice() {
+        [] => project::DEPENDENCIES,
+        [list] => project::DEPENDENCY_KINDS.iter()
+            .find(|(flag, _)| flag == list)
+            .map_or(project::DEPENDENCIES, |(_, parameter)| *parameter),
+        _ => return Err(arguments.wrong(format!("install takes one list, not {}", lists.join(" ")))),
+    };
+
+    return Ok(Command::Install {
+        library: positional.first().cloned(),
+        script: arguments.script_or_default(positional.get(1..).unwrap_or_default())?,
+        module,
+        parameter,
+    });
+}
+
+fn parse_config(arguments: &CommandArguments) -> Result<Command, String> {
+    let rest = arguments.rest;
+    let unset = rest.iter().any(|arg| arg == "--unset");
+    let positional = rest.iter()
+        .filter(|arg| *arg != "--unset")
+        .cloned()
+        .collect();
+    let positional = arguments.without_unknown_options(positional, &["--unset"])?;
+
+    // config --unset asks which setting
+    let (setting, value) = match (positional.as_slice(), unset) {
+        ([], _) => (None, None),
+        ([setting], _) => (Some(setting.clone()), None),
+        ([setting, value], false) => (Some(setting.clone()), Some(value.clone())),
+        _ => return Err(arguments.wrong(format!("config takes a setting and its value at most, not {}", rest.join(" ")))),
+    };
+
+    return Ok(Command::Config { setting, value, unset });
 }
 
 /// ", did you mean build?" for biuld: the known word the fewest edits away, none when all are too far
@@ -477,7 +498,7 @@ fn main() {
         jvm::maven::refresh();
     }
 
-    let script_path = match &command {
+    let request = match &command {
         Command::Help { command: None } => {
             println!("{}\n{}", usage(), help());
             return;
@@ -579,29 +600,20 @@ fn main() {
 
             return;
         }
-        Command::Build { script }
-        | Command::Idea { script }
-        | Command::Run { script, .. }
-        | Command::Test { script, .. } => script.as_str(),
-    };
-
-    let tests = match &command {
-        Command::Test {
-            module: Some(module),
-            ..
-        } => TestSelection::Module(module.clone()),
-        Command::Test { module: None, .. } => TestSelection::All,
-        _ => TestSelection::None,
-    };
-
-    let test_arguments = match &command {
-        Command::Test { args, .. } => args.clone(),
-        _ => vec![],
+        Command::Build { script } | Command::Run { script, .. } => BuildRequest::of(script),
+        Command::Idea { script } => BuildRequest {
+            set_up_idea: true,
+            ..BuildRequest::of(script)
+        },
+        Command::Test { script, module, args } => BuildRequest {
+            tests: module.clone().map_or(TestSelection::All, TestSelection::Module),
+            test_arguments: args.clone(),
+            ..BuildRequest::of(script)
+        },
     };
 
     let jobs = options.jobs.unwrap_or_else(runtime::default_jobs);
-    let set_up_idea = matches!(command, Command::Idea { .. });
-    let modules = run_script(script_path, tests, test_arguments, jobs, options.release, set_up_idea);
+    let modules = run_script(request, jobs, options.release);
 
     match &command {
         Command::Run { module, args, .. } => {
@@ -658,15 +670,31 @@ fn take_build_options(args: &[String]) -> Result<(BuildOptions, Vec<String>), St
     ));
 }
 
-/// The modules the script built, the builds of independent modules ran in parallel
-fn run_script(
-    script_path: &str,
+/// What build, idea, run and test build
+struct BuildRequest<'a> {
+    script: &'a str,
     tests: TestSelection,
+    /// after -- of build test, for the test programs of C and C++ modules
     test_arguments: Vec<String>,
-    jobs: usize,
-    release: bool,
+    /// build idea: every build after keeps IntelliJ current
     set_up_idea: bool,
-) -> Vec<Arc<BuiltModule>> {
+}
+
+impl<'a> BuildRequest<'a> {
+    fn of(script: &'a str) -> Self {
+        return BuildRequest {
+            script,
+            tests: TestSelection::None,
+            test_arguments: vec![],
+            set_up_idea: false,
+        };
+    }
+}
+
+/// The modules the script built, the builds of independent modules ran in parallel
+fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<BuiltModule>> {
+    let BuildRequest { script: script_path, tests, test_arguments, set_up_idea } = request;
+
     let source = std::fs::read_to_string(script_path).unwrap_or_else(|error| {
         match error.kind() {
             io::ErrorKind::NotFound if script_path == DEFAULT_SCRIPT => eprintln!(
@@ -694,17 +722,7 @@ fn run_script(
         .map(|parent| parent.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // once `build idea` set it up, every build keeps IntelliJ current, release builds leave it
-    let marker = project_dir.join(jvm::idea::MARKER);
-
-    if set_up_idea {
-        exit_on_error(common::system::write_file(&marker, jvm::idea::MARKER_TEXT));
-    }
-
-    let idea = !release && marker.is_file();
-
-    // project.lock: the files of Maven repositories the last builds took
-    exit_on_error(jvm::maven::lock::open(Path::new(script_path)));
+    let idea = exit_on_error(jvm::before_build(Path::new(script_path), &project_dir, set_up_idea, release));
 
     let mut runtime = Runtime::new(project_dir.clone())
         .with_tests(tests)
@@ -717,29 +735,11 @@ fn run_script(
     // builds that started before an error finish, none of their tools keep running
     let built = runtime.finish();
 
-    // a failed build keeps the module files of every module
     let worked = built.as_deref()
         .ok()
         .filter(|_| evaluated.is_ok());
 
-    // a failed build may not have come to every library
-    if worked.is_some() && let Err(error) = jvm::maven::lock::save() {
-        eprintln!("{error}");
-    }
-
-    if idea && let Err(error) = jvm::idea::write_project(&project_dir, worked) {
-        eprintln!("could not write the IntelliJ project: {error}");
-    }
-
-    if set_up_idea && worked.is_some() {
-        println!(
-            "Open {} in IntelliJ. A JDK it does not know yet, like temurin-21, is in {}: add it under Project Structure > SDKs with that name.",
-            common::system::canonical_path(&project_dir)
-                .unwrap_or(project_dir)
-                .display(),
-            common::system::data_dir("jdks").display()
-        );
-    }
+    jvm::after_build(&project_dir, idea, set_up_idea, worked);
 
     let errors = match (evaluated, built) {
         (Ok(()), Ok(modules)) => return modules,
