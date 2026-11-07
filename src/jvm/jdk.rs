@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 use serde_json::Value as Json;
 
@@ -165,6 +166,9 @@ impl ToolCommand {
 /// In the cache, the archives of the tools
 const CLASS_ARCHIVES_DIR: &str = "class-archives";
 
+/// How long an archive stays without being used, like that of an older Kotlin version
+const UNUSED_ARCHIVES_KEPT: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// The JVM options that map the archive of a tool, or that write it when there is none yet
 struct ClassArchive {
     options: Vec<String>,
@@ -194,7 +198,7 @@ impl ClassArchive {
         let key = up_to_date::hash_hex((&jdk.home, stamp(&jdk.home.join("lib/modules")), classpath));
         let archive = directory.join(format!("{tool}-{key}.jsa"));
 
-        // a JDK that wrote none, like one without archive of its own classes, is not asked again
+        // a JDK that wrote none, like one without archive of its own classes, is not asked again for a week
         if archive.with_extension("unwritten").exists() || system::create_dir(directory).is_err() {
             return none;
         }
@@ -203,10 +207,14 @@ impl ClassArchive {
         let mut options = vec!["-Xlog:cds*=off".to_string()];
 
         if archive.is_file() {
+            // its time is that of its last use, Windows lets no read only file change it
+            let _ = fs::File::open(&archive).and_then(|file| file.set_modified(SystemTime::now()));
+
             options.push(format!("-XX:SharedArchiveFile={}", archive.display()));
             return ClassArchive { options, writing: None };
         }
 
+        remove_unused_archives(directory);
         let partial = system::partial_path(&archive);
         options.push(format!("-XX:ArchiveClassesAtExit={}", partial.display()));
 
@@ -230,6 +238,25 @@ impl ClassArchive {
                 let _ = system::write_file(&archive.with_extension("unwritten"), "");
             }
             (false, _) => remove_archive(partial),
+        }
+    }
+}
+
+/// Before another archive is written: each one is as large as the classes of its tool, kotlinc's 80 MB.
+/// Those still in use are written again, on Windows a week after they were written.
+fn remove_unused_archives(directory: &Path) {
+    let entries = fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten();
+
+    for entry in entries {
+        let unused = entry.metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|used| used.elapsed().is_ok_and(|age| age > UNUSED_ARCHIVES_KEPT));
+
+        if unused {
+            remove_archive(&entry.path());
         }
     }
 }
@@ -547,6 +574,54 @@ mod tests {
 
         system::write_file(&home.join("release"), "JAVA_VERSION=\"11.0.2\"\n").unwrap();
         assert!(ClassArchive::new(&archives, &jdk, "tool", &[jar]).options.is_empty());
+
+    }
+
+    #[test]
+    fn archives_unused_for_a_week_go_once_another_is_written() {
+        let root = ScratchDir::new("unused-class-archives");
+        let home = root.join("jdk");
+        system::write_file(&home.join("release"), "JAVA_VERSION=\"21.0.12\"\n").unwrap();
+        let jdk = Jdk { home };
+
+        let jar = root.join("tool.jar");
+        system::write_file(&jar, "classes").unwrap();
+        let archives = root.join("archives");
+
+        // read only like the JVM writes them
+        let written = |file: &Path, used: SystemTime| {
+            system::write_file(file, "archive").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(file)
+                .and_then(|file| file.set_modified(used))
+                .unwrap();
+
+            let mut permissions = fs::metadata(file).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(file, permissions).unwrap();
+        };
+        let eight_days_ago = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+
+        let first = ClassArchive::new(&archives, &jdk, "tool", &[jar.clone()]);
+        let (_, used) = first.writing.clone().unwrap();
+        written(&used, eight_days_ago);
+
+        // its use counts from now on
+        ClassArchive::new(&archives, &jdk, "tool", &[jar.clone()]);
+        let modified = fs::metadata(&used)
+            .and_then(|metadata| metadata.modified())
+            .unwrap();
+        assert!(modified.elapsed().unwrap() < Duration::from_secs(60));
+
+        let unused = archives.join("kotlinc-unused.jsa");
+        let recent = archives.join("d8-recent.jsa");
+        written(&unused, eight_days_ago);
+        written(&recent, SystemTime::now());
+
+        ClassArchive::new(&archives, &jdk, "other", &[jar]);
+        assert!(!unused.exists());
+        assert!(recent.exists() && used.exists());
 
     }
 
