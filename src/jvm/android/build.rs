@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use crate::common::xml::{self, XmlElement};
 use crate::common::{system, up_to_date};
 use crate::jvm::idea::{self, IdeaModule};
-use crate::jvm::jdk::Jdk;
+use crate::jvm::jdk::{Jdk, ToolCommand};
 use crate::jvm::maven::{DependencyResolver, MavenCoordinate, TargetPlatform};
 use crate::jvm::module::{
     self, Compilation, ModuleBuildInputs, ResolvedDependencies, Sources, create_jar,
@@ -39,6 +39,8 @@ const CMAKE_VERSION: &str = "3.22.1";
 const ABIS: &[&str] = &["armeabi-v7a", "arm64-v8a", "x86", "x86_64"];
 /// the CMake builds, and the libraries in libs/<abi> like jniLibs
 const CMAKE_DIR: &str = "intermediates/cmake";
+/// of lib/apksigner.jar in the build tools
+const APKSIGNER_MAIN_CLASS: &str = "com.android.apksigner.ApkSignerTool";
 
 /// Debug, or release with `build --release`
 #[derive(Clone, Copy, PartialEq)]
@@ -733,7 +735,8 @@ impl AndroidBuild {
         );
 
         let dexed = self.cached_dex(work_dir, inputs, |partial| {
-            let mut command = self.r8_command("L8", partial)?;
+            let mut l8 = self.r8_command("L8", partial)?;
+            let command = &mut l8.command;
 
             command.arg(self.dex_mode())
                 .arg("--desugared-lib")
@@ -744,7 +747,7 @@ impl AndroidBuild {
             }
 
             command.args(&library.jars);
-            return system::run_command(&mut command, "L8");
+            return l8.run(|command| system::run_command(command, "L8"));
         })?;
 
         let mut next = system::files_with_extension(&[dex_dir.to_path_buf()], "dex").len() + 1;
@@ -868,18 +871,19 @@ impl AndroidBuild {
     }
 
     /// D8, L8 or R8 of the build tools, against android.jar into `output`
-    pub fn r8_command(&self, tool: &str, output: &Path) -> Result<Command, String> {
+    pub fn r8_command(&self, tool: &str, output: &Path) -> Result<ToolCommand, String> {
         let main_class = format!("com.android.tools.r8.{tool}");
-        let mut command = self.inputs.jdk.java_command(&[], &[self.sdk.d8.clone()], &main_class)?;
+        let mut r8 = self.inputs.jdk.tool_command(&tool.to_ascii_lowercase(), &[self.sdk.d8.clone()], &main_class)?;
 
-        command.arg("--min-api")
+        r8.command
+            .arg("--min-api")
             .arg(self.min_api().to_string())
             .arg("--lib")
             .arg(&self.sdk.android_jar)
             .arg("--output")
             .arg(output);
 
-        return Ok(command);
+        return Ok(r8);
     }
 
     /// `classpath` only to desugar against, like the libraries for the own classes
@@ -890,7 +894,8 @@ impl AndroidBuild {
         output: &Path,
         desugared: Option<&DesugaredLibrary>,
     ) -> Result<(), String> {
-        let mut command = self.r8_command("D8", output)?;
+        let mut d8 = self.r8_command("D8", output)?;
+        let command = &mut d8.command;
         command.arg(self.dex_mode());
 
         for jar in classpath {
@@ -903,7 +908,7 @@ impl AndroidBuild {
 
         command.args(inputs);
 
-        return self.run_dex_tool(&mut command, "d8");
+        return d8.run(|command| self.run_dex_tool(command, "d8"));
     }
 
     /// d8 or R8, with the notes split_d8_noise hides only counted
@@ -992,15 +997,14 @@ impl AndroidBuild {
 
     /// With the debug key, the release key or not at all, verified after
     fn sign(&self, aligned: &Path, signature: &Signature, apk: &Path) -> Result<(), String> {
-        let mut sign = Command::new(self.inputs.jdk.tool_path("java"));
-        sign.arg("-jar")
-            .arg(&self.sdk.apksigner)
-            .arg("sign");
+        let mut sign = self.inputs.jdk.tool_command("apksigner", &[self.sdk.apksigner.clone()], APKSIGNER_MAIN_CLASS)?;
+        let command = &mut sign.command;
+        command.arg("sign");
 
         match signature {
             Signature::Unsigned => return system::copy_file(aligned, apk),
             Signature::Debug => {
-                sign.arg("--ks")
+                command.arg("--ks")
                     .arg(debug_keystore(&self.inputs.jdk)?)
                     // the well known password of the debug key every Android tool uses
                     .args([
@@ -1014,7 +1018,7 @@ impl AndroidBuild {
             }
             // apksigner reads the passwords from the environment, they stay out of the arguments
             Signature::Release(key) => {
-                sign.arg("--ks")
+                command.arg("--ks")
                     .arg(&key.keystore)
                     .arg("--ks-key-alias")
                     .arg(&key.alias)
@@ -1025,21 +1029,20 @@ impl AndroidBuild {
             }
         }
 
-        sign.arg("--min-sdk-version")
+        command.arg("--min-sdk-version")
             .arg(self.min_sdk.to_string())
             .arg("--out")
             .arg(apk)
             .arg(aligned);
-        system::run_command(&mut sign, "apksigner sign")?;
+        sign.run(|command| system::run_command(command, "apksigner sign"))?;
 
         // a sanity check, its warnings about META-INF files outside the v2/v3 signature are expected
-        let mut verify = Command::new(self.inputs.jdk.tool_path("java"));
-        verify.arg("-jar")
-            .arg(&self.sdk.apksigner)
+        let mut verify = self.inputs.jdk.tool_command("apksigner", &[self.sdk.apksigner.clone()], APKSIGNER_MAIN_CLASS)?;
+        verify.command
             .arg("verify")
             .arg(apk);
 
-        return system::run_command_quietly(&mut verify, "apksigner verify");
+        return verify.run(|command| system::run_command_quietly(command, "apksigner verify"));
     }
 
     /// aapt2 link of the module's resources `own`, the ids in `symbols`

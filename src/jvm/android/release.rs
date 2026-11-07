@@ -222,7 +222,8 @@ pub fn shrink_with_r8(
     system::recreate_dir(&mapping_dir)?;
     system::recreate_dir(output)?;
 
-    let mut command = build.r8_command("R8", output)?;
+    let mut r8 = build.r8_command("R8", output)?;
+    let command = &mut r8.command;
 
     command.arg("--release")
         // the Java resources are packaged apart, as they are
@@ -256,7 +257,7 @@ pub fn shrink_with_r8(
     }
 
     command.args(unique(own_jars.iter().chain(&build.jars)));
-    build.run_dex_tool(&mut command, "R8")?;
+    r8.run(|command| build.run_dex_tool(command, "R8"))?;
 
     system::log(
         &build.inputs.name,
@@ -318,25 +319,28 @@ pub fn build_app_bundle(
 
     let unsigned = work_dir.join("unsigned.aab");
 
-    let mut build_bundle = build.inputs.jdk.java_command(&[], &bundletool, BUNDLETOOL_MAIN_CLASS)?;
-    build_bundle.arg("build-bundle")
+    let mut build_bundle = build.inputs.jdk.tool_command("bundletool", &bundletool, BUNDLETOOL_MAIN_CLASS)?;
+    let command = &mut build_bundle.command;
+    command.arg("build-bundle")
         .arg(format!("--modules={}", module_zip.display()))
         .arg(format!("--output={}", unsigned.display()))
         .arg("--overwrite");
 
     // Google Play reads the mapping from the bundle and shows readable stack traces
     if let Some(mapping) = mapping {
-        build_bundle.arg(format!(
+        command.arg(format!(
             "--metadata-file=com.android.tools.build.obfuscation/proguard.map:{}",
             mapping.display()
         ));
     }
 
-    system::run_command_quietly(&mut build_bundle, "bundletool build-bundle")?;
+    build_bundle.run(|command| system::run_command_quietly(command, "bundletool build-bundle"))?;
 
-    let mut validate = build.inputs.jdk.java_command(&[], &bundletool, BUNDLETOOL_MAIN_CLASS)?;
-    validate.arg("validate").arg(format!("--bundle={}", unsigned.display()));
-    system::run_command_quietly(&mut validate, "bundletool validate")?;
+    let mut validate = build.inputs.jdk.tool_command("bundletool", &bundletool, BUNDLETOOL_MAIN_CLASS)?;
+    validate.command
+        .arg("validate")
+        .arg(format!("--bundle={}", unsigned.display()));
+    validate.run(|command| system::run_command_quietly(command, "bundletool validate"))?;
 
     system::create_parent_dir(bundle)?;
 
