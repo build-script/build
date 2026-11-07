@@ -183,8 +183,9 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     };
 
     let arguments = CommandArguments { command, rest };
+    let own = arguments.own();
 
-    if arguments.own().iter().any(|arg| arg == "--help" || arg == "-h") {
+    if own.iter().any(|arg| arg == "--help" || arg == "-h") {
         return Ok(Command::Help { command: Some(command) });
     }
 
@@ -230,7 +231,9 @@ impl CommandArguments<'_> {
 
     /// Those after --
     fn program_arguments(&self) -> Vec<String> {
-        return self.rest.get(self.own().len() + 1..).unwrap_or_default().to_vec();
+        return self.rest.get(self.own().len() + 1..)
+            .unwrap_or_default()
+            .to_vec();
     }
 
     /// An option the command does not have is an error, most likely it is misspelled

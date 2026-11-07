@@ -5,9 +5,9 @@ mod script;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{fs, io};
 
+use crate::common::git;
 use crate::common::settings::Settings;
 use crate::common::system;
 use crate::common::up_to_date;
@@ -108,15 +108,7 @@ pub fn new_project(
     // C and C++ have no packages, clangd keeps its index in .cache/
     let native = native::templates::PROJECT_KINDS.iter().any(|(known, _)| *known == kind);
 
-    let base_package = match (package, native) {
-        (_, true) => String::new(),
-        (Some(package), false) => templates::checked_package(package)?,
-        (None, false) => format!(
-            "{}.{}",
-            templates::package_of_domain(&domain()?),
-            templates::package_segment(&name)
-        ),
-    };
+    let base_package = new_package(package, native, &[&name], domain)?;
 
     let mut script = String::new();
     let ignored = if native { "build/\n.cache/\n" } else { "build/\n" };
@@ -203,18 +195,7 @@ pub fn add_module(
         })
         .unwrap_or_else(|| "project".to_string());
 
-    let package = match (package, native) {
-        (_, true) => String::new(),
-        (Some(package), false) => templates::checked_package(package)?,
-        (None, false) => {
-            let prefix = templates::package_of_domain(&domain()?);
-            format!(
-                "{prefix}.{}.{}",
-                templates::package_segment(&project_name),
-                templates::package_segment(&name)
-            )
-        }
-    };
+    let package = new_package(package, native, &[&project_name, &name], domain)?;
 
     let module = NewModule {
         name: name.clone(),
@@ -244,6 +225,28 @@ pub fn add_module(
     }
 
     return Ok(());
+}
+
+/// The package of new sources: `package` as given, else `names` below the domain `domain`
+/// gives. C and C++ have none.
+fn new_package(
+    package: Option<&str>,
+    native: bool,
+    names: &[&str],
+    domain: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if native {
+        return Ok(String::new());
+    }
+
+    if let Some(package) = package {
+        return templates::checked_package(package);
+    }
+
+    let mut segments = vec![templates::package_of_domain(&domain()?)];
+    segments.extend(names.iter().map(|name| templates::package_segment(name)));
+
+    return Ok(segments.join("."));
 }
 
 /// Removes the build directories build-script wrote below the script's directory,
@@ -278,17 +281,10 @@ pub fn clean(script_file: &Path) -> Result<(), String> {
             let is_build_dir = name == "build" || name == ".build";
 
             if is_build_dir && path.join(up_to_date::FINGERPRINTS_DIR).is_dir() {
-                let tracked = system::command_output(Command::new("git").arg("-C").arg(&path).args(["ls-files", "."]), "git ls-files")
-                    .is_ok_and(|output| !output.is_empty());
+                let tracked = git::tracks_files(&path);
 
                 match tracked {
-                    true => {
-                        let mut command = Command::new("git");
-                        command.arg("-C")
-                            .arg(&path)
-                            .args(["clean", "-d", "-x", "--force", "--quiet", "."]);
-                        system::run_command_quietly(&mut command, "git clean")?;
-                    }
+                    true => git::remove_untracked(&path)?,
                     false => system::remove_dir(&path)?,
                 }
 
@@ -478,6 +474,8 @@ fn variable_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use crate::common::test_support::ScratchDir;
 
     use super::*;

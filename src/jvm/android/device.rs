@@ -871,14 +871,16 @@ mod tests {
         assert_eq!(choose_device(one, None).unwrap(), Some("emulator-5580".to_string()));
 
         let several = attached(&[("emulator-5580", "device"), ("R58M", "device")]);
-        assert!(choose_device(several.clone(), None).unwrap_err().contains("ANDROID_SERIAL"));
+        let error = choose_device(several.clone(), None).unwrap_err();
+        assert!(error.contains("ANDROID_SERIAL"));
         assert_eq!(choose_device(several, Some("R58M".to_string())).unwrap(), Some("R58M".to_string()));
 
         // without a connected device an emulator starts, ANDROID_SERIAL or not
         assert_eq!(choose_device(attached(&[("emulator-5582", "offline")]), Some("R58M".to_string())).unwrap(), None);
 
         let unauthorized = attached(&[("emulator-5580", "device"), ("R58M", "unauthorized")]);
-        assert!(choose_device(unauthorized, None).unwrap_err().contains("R58M"));
+        let error = choose_device(unauthorized, None).unwrap_err();
+        assert!(error.contains("R58M"));
     }
 
     #[test]

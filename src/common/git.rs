@@ -70,6 +70,26 @@ pub fn project_build_dir(module_dir: &Path) -> Option<PathBuf> {
     );
 }
 
+/// Whether git tracks files in `directory`, false outside of a repository
+pub fn tracks_files(directory: &Path) -> bool {
+    let mut command = Command::new("git");
+    command.arg("-C")
+        .arg(directory)
+        .args(["ls-files", "."]);
+
+    return system::command_output(&mut command, "git ls-files").is_ok_and(|output| !output.is_empty());
+}
+
+/// Removes what git does not track in `directory`, what it ignores too
+pub fn remove_untracked(directory: &Path) -> Result<(), String> {
+    let mut command = Command::new("git");
+    command.arg("-C")
+        .arg(directory)
+        .args(["clean", "-d", "-x", "--force", "--quiet", "."]);
+
+    return system::run_command_quietly(&mut command, "git clean");
+}
+
 /// Into `target`, with the objects of the repository in `objects`
 fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Result<PathBuf, String> {
     let pinned = format!("{url} {reference}");

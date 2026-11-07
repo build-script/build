@@ -106,8 +106,7 @@ pub fn ensure_package(sdk_root: &Path, package: &str, accept_license: bool) -> R
 /// `package` of an installed SDK, else the one in <build home>/android-sdk, installed once
 /// its license is accepted
 pub fn find_or_install(package: &str, accept_license: bool) -> Result<PathBuf, String> {
-    let installed = installed_roots()
-        .into_iter()
+    let installed = installed_roots().into_iter()
         .map(|root| root.join(package.replace(';', "/")))
         .find(|directory| directory.is_dir());
 

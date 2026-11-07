@@ -640,7 +640,9 @@ mod tests {
                 }
                 ExpressionType::Assignment { target, value } => return format!("({} = {})", target.name, show(value)),
                 ExpressionType::FunctionCall { target, args } => {
-                    let args: Vec<String> = args.iter().map(show).collect();
+                    let args: Vec<String> = args.iter()
+                        .map(show)
+                        .collect();
                     return format!("{}({})", show(target), args.join(", "));
                 }
                 other => return format!("{other:?}"),
