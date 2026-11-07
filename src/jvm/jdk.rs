@@ -7,6 +7,7 @@ use std::process::Command;
 use serde_json::Value as Json;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
+use crate::common::up_to_date;
 use crate::language::runtime::{
     Arguments, BuildScriptContext, FunctionParameters, Type, Value, builtin,
 };
@@ -92,6 +93,25 @@ impl Jdk {
         return Ok(command);
     }
 
+    /// Like java_command for a tool like kotlinc or d8, its classes from an archive. Run it with ToolCommand::run.
+    pub fn tool_command(&self, tool: &str, classpath: &[PathBuf], main_class: &str) -> Result<ToolCommand, String> {
+        let archive = ClassArchive::new(&system::cache_dir(CLASS_ARCHIVES_DIR), self, tool, classpath);
+        let command = self.java_command(&archive.options, classpath, main_class)?;
+
+        return Ok(ToolCommand { command, archive });
+    }
+
+    /// javac, its classes from an archive. Run it with ToolCommand::run.
+    pub fn javac_command(&self) -> ToolCommand {
+        let archive = ClassArchive::new(&system::cache_dir(CLASS_ARCHIVES_DIR), self, "javac", &[]);
+        let mut command = Command::new(self.tool_path("javac"));
+
+        // the launcher passes options with -J on to its JVM
+        command.args(archive.options.iter().map(|option| format!("-J{option}")));
+
+        return ToolCommand { command, archive };
+    }
+
     /// From the `release` file: 21 for "21.0.12", 8 for "1.8.0_402"
     pub fn major_version(&self) -> Option<u32> {
         let release = fs::read_to_string(self.home.join("release")).ok()?;
@@ -122,6 +142,107 @@ impl Jdk {
             Some(major) => return major.to_string(),
         }
     }
+}
+
+/// A JVM tool like javac, kotlinc or d8 whose classes come from an archive of class data sharing in the
+/// cache: the JVM maps them instead of loading and verifying them again, kotlinc starts in half the time.
+/// The first run writes the archive.
+pub struct ToolCommand {
+    pub command: Command,
+    archive: ClassArchive,
+}
+
+impl ToolCommand {
+    /// `run` runs the command, once it succeeded the archive its JVM wrote is put in place
+    pub fn run<T>(mut self, run: impl FnOnce(&mut Command) -> Result<T, String>) -> Result<T, String> {
+        let result = run(&mut self.command);
+        self.archive.finish(result.is_ok());
+
+        return result;
+    }
+}
+
+/// In the cache, the archives of the tools
+const CLASS_ARCHIVES_DIR: &str = "class-archives";
+
+/// The JVM options that map the archive of a tool, or that write it when there is none yet
+struct ClassArchive {
+    options: Vec<String>,
+    /// where the JVM writes it when it ends, and the archive that becomes
+    writing: Option<(PathBuf, PathBuf)>,
+}
+
+impl ClassArchive {
+    /// One for every tool, JDK and classpath in `directory`. JDKs before 13 cannot write one, classes
+    /// from directories are not archived.
+    fn new(directory: &Path, jdk: &Jdk, tool: &str, classpath: &[PathBuf]) -> Self {
+        let none = ClassArchive { options: vec![], writing: None };
+
+        if jdk.major_version().is_none_or(|major| major < 13) || classpath.iter().any(|entry| !entry.is_file()) {
+            return none;
+        }
+
+        // an updated JDK or another version of the tool is another archive
+        let stamp = |file: &Path| {
+            return fs::metadata(file)
+                .ok()
+                .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        };
+        let classpath: Vec<_> = classpath.iter()
+            .map(|entry| (entry, stamp(entry)))
+            .collect();
+        let key = up_to_date::hash_hex((&jdk.home, stamp(&jdk.home.join("lib/modules")), classpath));
+        let archive = directory.join(format!("{tool}-{key}.jsa"));
+
+        // a JDK that wrote none, like one without archive of its own classes, is not asked again
+        if archive.with_extension("unwritten").exists() || system::create_dir(directory).is_err() {
+            return none;
+        }
+
+        // its warnings, like about an archive that does not fit, would end up in the output of the tool
+        let mut options = vec!["-Xlog:cds*=off".to_string()];
+
+        if archive.is_file() {
+            options.push(format!("-XX:SharedArchiveFile={}", archive.display()));
+            return ClassArchive { options, writing: None };
+        }
+
+        let partial = system::partial_path(&archive);
+        options.push(format!("-XX:ArchiveClassesAtExit={}", partial.display()));
+
+        return ClassArchive { options, writing: Some((partial, archive)) };
+    }
+
+    /// Once the JVM ended. A tool that failed may have ended before it wrote the whole archive.
+    fn finish(&self, succeeded: bool) {
+        let Some((partial, archive)) = &self.writing else {
+            return;
+        };
+
+        match (succeeded, partial.is_file()) {
+            // the archive of a build that ran at the same time may be in place and in use already
+            (true, true) => {
+                if fs::rename(partial, archive).is_err() {
+                    remove_archive(partial);
+                }
+            }
+            (true, false) => {
+                let _ = system::write_file(&archive.with_extension("unwritten"), "");
+            }
+            (false, _) => remove_archive(partial),
+        }
+    }
+}
+
+/// The JVM writes archives read only, Windows deletes no such file
+fn remove_archive(file: &Path) {
+    if let Ok(metadata) = fs::metadata(file) {
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(file, permissions);
+    }
+
+    let _ = fs::remove_file(file);
 }
 
 /// `jdk(...)`: the directory of the JDK, installed if needed
@@ -380,6 +501,52 @@ mod tests {
             .unwrap();
 
         assert!(error.contains("neither a java version"), "{error}");
+
+    }
+
+    #[test]
+    fn tools_map_the_archive_their_first_run_wrote() {
+        let root = ScratchDir::new("class-archive");
+        let home = root.join("jdk");
+        system::write_file(&home.join("release"), "JAVA_VERSION=\"21.0.12\"\n").unwrap();
+        system::write_file(&home.join("lib/modules"), "modules").unwrap();
+        let jdk = Jdk { home: home.clone() };
+
+        let jar = root.join("tool.jar");
+        system::write_file(&jar, "classes").unwrap();
+        let archives = root.join("archives");
+
+        let first = ClassArchive::new(&archives, &jdk, "tool", &[jar.clone()]);
+        let (partial, archive) = first.writing.clone().unwrap();
+        assert!(first.options.contains(&format!("-XX:ArchiveClassesAtExit={}", partial.display())));
+
+        // the JVM writes it when it ends
+        system::write_file(&partial, "archive").unwrap();
+        first.finish(true);
+        assert!(archive.is_file());
+
+        let next = ClassArchive::new(&archives, &jdk, "tool", &[jar.clone()]);
+        assert_eq!(next.options, ["-Xlog:cds*=off".to_string(), format!("-XX:SharedArchiveFile={}", archive.display())]);
+        assert!(next.writing.is_none());
+
+        // a failed run may have stopped half way, read only like the JVM writes it
+        let failed = ClassArchive::new(&archives, &jdk, "other", &[jar.clone()]);
+        let (partial, archive) = failed.writing.clone().unwrap();
+        system::write_file(&partial, "half").unwrap();
+        let mut permissions = fs::metadata(&partial).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&partial, permissions).unwrap();
+        failed.finish(false);
+        assert!(!partial.exists() && !archive.exists());
+
+        // a JDK that wrote none is not asked again
+        ClassArchive::new(&archives, &jdk, "other", &[jar.clone()]).finish(true);
+        assert!(ClassArchive::new(&archives, &jdk, "other", &[jar.clone()]).options.is_empty());
+
+        assert!(ClassArchive::new(&archives, &jdk, "classes", &[archives.clone()]).options.is_empty());
+
+        system::write_file(&home.join("release"), "JAVA_VERSION=\"11.0.2\"\n").unwrap();
+        assert!(ClassArchive::new(&archives, &jdk, "tool", &[jar]).options.is_empty());
 
     }
 

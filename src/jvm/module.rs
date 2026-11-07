@@ -294,7 +294,8 @@ pub fn compile_java(
     let mut java_classpath = vec![output.to_path_buf()];
     java_classpath.extend(classpath.iter().cloned());
 
-    let mut command = Command::new(jdk.tool_path("javac"));
+    let mut javac = jdk.javac_command();
+    let command = &mut javac.command;
     command.arg("-d")
         .arg(output)
         .args([
@@ -323,7 +324,7 @@ pub fn compile_java(
 
     command.args(sources);
 
-    return system::run_command(&mut command, "javac");
+    return javac.run(|command| system::run_command(command, "javac"));
 }
 
 /// Everything in `directories`, with `manifest` or without one
@@ -866,7 +867,8 @@ impl Compilation<'_> {
         kotlin_sources: &[PathBuf],
         java_sources: &[PathBuf],
     ) -> Result<(), String> {
-        let mut command = self.inputs.jdk.java_command(&[], &self.tools.compiler, KOTLIN_COMPILER_MAIN_CLASS)?;
+        let mut kotlinc = self.inputs.jdk.tool_command("kotlinc", &self.tools.compiler, KOTLIN_COMPILER_MAIN_CLASS)?;
+        let command = &mut kotlinc.command;
 
         command
             // the standard library is already on the classpath
@@ -900,7 +902,7 @@ impl Compilation<'_> {
             .args(kotlin_sources)
             .args(java_sources);
 
-        return system::run_command(&mut command, "compilation");
+        return kotlinc.run(|command| system::run_command(command, "compilation"));
     }
 }
 
