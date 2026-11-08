@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -305,6 +305,73 @@ pub fn partial_path(path: &Path) -> PathBuf {
     ));
 }
 
+/// What a cache keeps unused, like the dex of a library version no app needs anymore
+const UNUSED_CACHE_ENTRIES_KEPT: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// Sets the time of a file or directory in a cache to now: that of its last use, which
+/// `remove_unused_cache_entries` goes by.
+pub fn mark_used(entry: &Path) {
+    let mut options = fs::OpenOptions::new();
+
+    // Windows opens directories only with backup semantics, and read only files only to write
+    // their attributes
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.access_mode(FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+
+    #[cfg(not(windows))]
+    options.read(true);
+
+    let _ = options.open(entry).and_then(|file| file.set_modified(SystemTime::now()));
+}
+
+/// Removes what in a cache directory was not used for a week, before something new goes into it.
+/// A directory is renamed first: a build stopped while it is removed leaves none half removed.
+pub fn remove_unused_cache_entries(directory: &Path) {
+    let entries = fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten();
+
+    for entry in entries {
+        let unused = entry.metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|used| used.elapsed().is_ok_and(|age| age > UNUSED_CACHE_ENTRIES_KEPT));
+
+        if !unused {
+            continue;
+        }
+
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+            remove_file_even_read_only(&path);
+            continue;
+        }
+
+        // Windows renames no directory with a file in use, it stays
+        let removing = PathBuf::from(format!("{}.removing-{}", path.display(), std::process::id()));
+        if fs::rename(&path, &removing).is_ok() {
+            let _ = remove_dir(&removing);
+        }
+    }
+}
+
+/// Like the class archives the JVM writes: Windows deletes no read only file
+pub fn remove_file_even_read_only(file: &Path) {
+    if let Ok(metadata) = fs::metadata(file) {
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(file, permissions);
+    }
+
+    let _ = fs::remove_file(file);
+}
+
 /// One installation into `target` at a time: modules building at the same time may need the same JDK or SDK
 /// package. Others go on, a vcpkg install of an hour holds back no JDK.
 pub fn installing<T>(target: &Path, install: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -365,6 +432,47 @@ mod tests {
         assert_eq!(sha(&file, 1).unwrap(), "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(sha(&file, 256).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert!(sha(&file, 512).is_err());
+
+    }
+
+    #[test]
+    fn cache_entries_unused_for_a_week_are_removed() {
+        let cache = ScratchDir::new("unused-cache-entries");
+        let eight_days_ago = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+        let last_used = |entry: &Path, used: SystemTime| {
+            fs::File::open(entry)
+                .and_then(|file| file.set_modified(used))
+                .unwrap();
+        };
+
+        // read only like the class archives the JVM writes
+        let unused_file = cache.join("kotlinc-unused.jsa");
+        write_file(&unused_file, "archive").unwrap();
+        let mut permissions = fs::metadata(&unused_file).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&unused_file, permissions).unwrap();
+        last_used(&unused_file, eight_days_ago);
+
+        let unused_directory = cache.join("unused-library");
+        write_file(&unused_directory.join("dex.zip"), "dex").unwrap();
+        last_used(&unused_directory, eight_days_ago);
+
+        let used_directory = cache.join("used-library");
+        write_file(&used_directory.join("dex.zip"), "dex").unwrap();
+        last_used(&used_directory, eight_days_ago);
+        mark_used(&used_directory);
+
+        let recent_file = cache.join("d8-recent.jsa");
+        write_file(&recent_file, "archive").unwrap();
+
+        remove_unused_cache_entries(&cache);
+
+        let remaining: Vec<_> = fs::read_dir(&*cache)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(remaining.len(), 2, "{remaining:?}");
+        assert!(used_directory.join("dex.zip").is_file() && recent_file.is_file());
 
     }
 }

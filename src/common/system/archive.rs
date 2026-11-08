@@ -1,6 +1,6 @@
 // Zip and tar archives, also compressed with gzip or xz: extracted, written and read entry by entry
 use std::fs;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -113,7 +113,9 @@ pub fn add_to_zip(archive: &Path, files: &[(String, PathBuf)], stored: bool) -> 
     // renamed once complete, the entries already there copied as they are: appending would write a
     // central directory that differs from the headers aapt2 wrote, zipalign warns about that
     return produce_atomically(archive, |partial| {
-        let mut zip = ZipWriter::new(fs::File::create(partial).map_err(|error| failed(&error))?);
+        // buffered, the headers of the entries are many small writes
+        let file = fs::File::create(partial).map_err(|error| failed(&error))?;
+        let mut zip = ZipWriter::new(BufWriter::new(file));
 
         if archive.is_file() {
             let mut existing = open_zip(archive)?;
@@ -134,7 +136,10 @@ pub fn add_to_zip(archive: &Path, files: &[(String, PathBuf)], stored: bool) -> 
             std::io::copy(&mut input, &mut zip).map_err(|error| failed(&error))?;
         }
 
-        zip.finish().map_err(|error| failed(&error))?;
+        zip.finish()
+            .map_err(|error| failed(&error))?
+            .flush()
+            .map_err(|error| failed(&error))?;
 
         return Ok(());
     });
@@ -175,7 +180,38 @@ pub fn read_zip_entry(archive: &Path, entry: &str) -> Result<Vec<u8>, String> {
     return Ok(content);
 }
 
-fn open_zip(archive: &Path) -> Result<ZipArchive<BufReader<fs::File>>, String> {
+/// The entries of `from` with these names, copied as they are into the new zip archive `to`. Names `from`
+/// does not have are left out, without any entry `to` is not written.
+pub fn copy_zip_entries(from: &mut ZipReader, names: &[String], to: &Path) -> Result<(), String> {
+    let indices: Vec<usize> = names.iter()
+        .filter_map(|name| from.index_for_name(name))
+        .collect();
+
+    if indices.is_empty() {
+        return Ok(());
+    }
+
+    let failed = |error: &dyn std::fmt::Display| format!("could not write {}: {error}", to.display());
+    let file = fs::File::create(to).map_err(|error| failed(&error))?;
+    let mut zip = ZipWriter::new(BufWriter::new(file));
+
+    for index in indices {
+        let entry = from.by_index_raw(index).map_err(|error| failed(&error))?;
+        zip.raw_copy_file(entry).map_err(|error| failed(&error))?;
+    }
+
+    zip.finish()
+        .map_err(|error| failed(&error))?
+        .flush()
+        .map_err(|error| failed(&error))?;
+
+    return Ok(());
+}
+
+/// A zip archive read entry by entry
+pub type ZipReader = ZipArchive<BufReader<fs::File>>;
+
+pub fn open_zip(archive: &Path) -> Result<ZipReader, String> {
     let file = fs::File::open(archive)
         .map_err(|error| format!("could not read {}: {error}", archive.display()))?;
 
@@ -210,6 +246,28 @@ mod tests {
         extract_zip(&archive, &directory.join("kept"), |name| name.ends_with(".so")).unwrap();
         assert!(directory.join("kept/lib/x86/libb.so").is_file());
         assert!(!directory.join("kept/a.txt").exists());
+
+    }
+
+    #[test]
+    fn zip_entries_are_copied_by_name() {
+        let directory = ScratchDir::new("zip-copy");
+        write_file(&directory.join("content/a/A.dex"), "a").unwrap();
+        write_file(&directory.join("content/b/B.dex"), "b").unwrap();
+
+        let archive = directory.join("classes.zip");
+        add_to_zip(&archive, &relative_files(&directory.join("content")), false).unwrap();
+        let mut classes = open_zip(&archive).unwrap();
+
+        let copied = directory.join("a.zip");
+        copy_zip_entries(&mut classes, &["a/A.dex".to_string(), "a/Missing.dex".to_string()], &copied).unwrap();
+        assert_eq!(zip_entries(&copied).unwrap(), ["a/A.dex"]);
+        assert_eq!(read_zip_entry(&copied, "a/A.dex").unwrap(), b"a");
+
+        // none of the names, no archive
+        let empty = directory.join("empty.zip");
+        copy_zip_entries(&mut classes, &["c/C.dex".to_string()], &empty).unwrap();
+        assert!(!empty.exists());
 
     }
 

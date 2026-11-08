@@ -31,6 +31,11 @@ pub const DEFAULT_NDK_VERSION: &str = "28.2.13676358";
 
 /// from this API level on Android loads several dex files natively
 const NATIVE_MULTIDEX_API: i64 = 21;
+/// from this API level on Android runs default methods of interfaces, below it d8 desugars them in the
+/// classes that implement them and needs the interfaces of the other libraries
+const DEFAULT_METHODS_API: i64 = 24;
+/// in the cache, the dex of each library for every app
+const LIBRARY_DEX_DIR: &str = "dex-libraries";
 /// runtime of generated view bindings, which implement its ViewBinding interface
 const VIEW_BINDING_VERSION: &str = "8.1.0";
 /// the CMake of the SDK the Android Gradle plugin uses by default
@@ -814,7 +819,7 @@ impl AndroidBuild {
         desugared: Option<&DesugaredLibrary>,
     ) -> Result<PathBuf, String> {
         let desugared_config = desugared.map(|desugared| system::read_file(&desugared.config)).transpose()?;
-        let inputs = (up_to_date::files_hash(libraries)?, desugared_config);
+        let inputs = (up_to_date::files_hash(libraries)?, desugared_config.clone());
         let mut dexed_now = false;
 
         let dex = self.cached_dex(&self.build_dir.join("intermediates/dex-libraries"), inputs, |partial| {
@@ -822,6 +827,11 @@ impl AndroidBuild {
 
             if libraries.is_empty() {
                 return Ok(());
+            }
+
+            if self.min_api() >= DEFAULT_METHODS_API {
+                let archives = self.library_dex_archives(libraries, desugared, desugared_config.as_deref())?;
+                return self.merge_dex(&archives, partial, desugared);
             }
 
             system::log(
@@ -834,9 +844,146 @@ impl AndroidBuild {
 
         if !dexed_now {
             system::log(&self.inputs.name, "Libraries dexed before");
+
+            // in use as long as the app is built, not only when its libraries change
+            if self.min_api() >= DEFAULT_METHODS_API {
+                for library in libraries {
+                    system::mark_used(&self.library_dex_archive(library, desugared_config.as_deref())?);
+                }
+            }
         }
 
         return Ok(dex);
+    }
+
+    /// The dex of each library in the cache, made once for every app like with the Gradle plugin:
+    /// intermediates, merged into the dex files of an app. Those not there yet are dexed in one run,
+    /// a dex file for each class file, and sorted to their libraries after.
+    fn library_dex_archives(
+        &self,
+        libraries: &[PathBuf],
+        desugared: Option<&DesugaredLibrary>,
+        desugared_config: Option<&str>,
+    ) -> Result<Vec<PathBuf>, String> {
+        let mut archives = vec![];
+        let mut missing = vec![];
+
+        for library in libraries {
+            let archive = self.library_dex_archive(library, desugared_config)?;
+
+            match archive.is_dir() {
+                true => system::mark_used(&archive),
+                false => missing.push((library, archive.clone())),
+            }
+
+            archives.push(archive);
+        }
+
+        let message = match missing.len() {
+            0 => format!("Merging the dex of {} libraries dexed before", libraries.len()),
+            count if count == libraries.len() => format!("Dexing {count} libraries, each again only when it changes"),
+            count => format!("Dexing {count} of {} libraries, the others were dexed before", libraries.len()),
+        };
+        system::log(&self.inputs.name, &message);
+
+        if missing.is_empty() {
+            return Ok(archives);
+        }
+
+        // a library a week without an app that needs it, like an older version, goes
+        let cache = system::cache_dir(LIBRARY_DEX_DIR);
+        system::remove_unused_cache_entries(&cache);
+
+        let run = system::partial_path(&cache.join("run"));
+        let classes = run.join("classes.zip");
+        let globals = run.join("globals.zip");
+        system::create_dir(&run)?;
+
+        let mut d8 = self.r8_command("D8", &classes)?;
+        let command = &mut d8.command;
+        command.arg(self.dex_mode())
+            .args(["--intermediate", "--file-per-class-file"])
+            .arg("--globals-output")
+            .arg(&globals);
+
+        if let Some(desugared) = desugared {
+            command.arg("--desugared-lib").arg(&desugared.config);
+        }
+
+        command.args(missing.iter().map(|(library, _)| library));
+
+        let sorted = d8.run(|command| self.run_dex_tool(command, "d8")).and_then(|()| {
+            let mut classes = system::open_zip(&classes)?;
+            let mut globals = globals.is_file()
+                .then(|| system::open_zip(&globals))
+                .transpose()?;
+
+            for (library, archive) in &missing {
+                system::produce_atomically(archive, |partial| {
+                    return archive_library_dex(library, &mut classes, globals.as_mut(), partial);
+                })?;
+            }
+
+            return Ok(());
+        });
+
+        let _ = system::remove_dir(&run);
+        sorted?;
+
+        return Ok(archives);
+    }
+
+    /// In the cache: another version of a library, of d8 or another way to dex is another archive
+    fn library_dex_archive(&self, library: &Path, desugared_config: Option<&str>) -> Result<PathBuf, String> {
+        let metadata = fs::metadata(library)
+            .map_err(|error| format!("could not read {}: {error}", library.display()))?;
+        let key = up_to_date::hash_hex((
+            library,
+            metadata.len(),
+            metadata.modified().ok(),
+            &self.sdk.d8,
+            &self.sdk.android_jar,
+            self.min_api(),
+            self.build_type.name(),
+            desugared_config,
+        ));
+
+        return Ok(system::cache_dir(LIBRARY_DEX_DIR).join(key));
+    }
+
+    /// The dex archives of the libraries merged into classes.dex and those after it
+    fn merge_dex(
+        &self,
+        archives: &[PathBuf],
+        output: &Path,
+        desugared: Option<&DesugaredLibrary>,
+    ) -> Result<(), String> {
+        let dex_files: Vec<PathBuf> = archives.iter()
+            .map(|archive| archive.join("dex.zip"))
+            .filter(|dex| dex.is_file())
+            .collect();
+
+        if dex_files.is_empty() {
+            return Ok(());
+        }
+
+        let mut d8 = self.r8_command("D8", output)?;
+        let command = &mut d8.command;
+        command.arg(self.dex_mode());
+
+        for globals in archives.iter().map(|archive| archive.join("globals.zip")) {
+            if globals.is_file() {
+                command.arg("--globals").arg(globals);
+            }
+        }
+
+        if let Some(desugared) = desugared {
+            command.arg("--desugared-lib").arg(&desugared.config);
+        }
+
+        command.args(dex_files);
+
+        return d8.run(|command| self.run_dex_tool(command, "d8"));
     }
 
     /// What `dex` writes, in `directory`/<hash of `inputs` and of how d8 runs>. Kept until
@@ -1232,6 +1379,35 @@ pub fn unique<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> 
 }
 
 /// classes.dex, classes2.dex, ... of a d8 output, in that order
+/// Into `archive`: what d8 wrote into `classes` for the class files of `library` as dex.zip, their
+/// global synthetics in `globals` as globals.zip. Both name the entries after the class files.
+fn archive_library_dex(
+    library: &Path,
+    classes: &mut system::ZipReader,
+    globals: Option<&mut system::ZipReader>,
+    archive: &Path,
+) -> Result<(), String> {
+    system::create_dir(archive)?;
+
+    let class_files: Vec<String> = system::zip_entries(library)?
+        .into_iter()
+        .filter_map(|entry| entry.strip_suffix(".class").map(str::to_string))
+        .collect();
+    let named = |extension: &str| -> Vec<String> {
+        return class_files.iter()
+            .map(|class| format!("{class}.{extension}"))
+            .collect();
+    };
+
+    system::copy_zip_entries(classes, &named("dex"), &archive.join("dex.zip"))?;
+
+    if let Some(globals) = globals {
+        system::copy_zip_entries(globals, &named("globals"), &archive.join("globals.zip"))?;
+    }
+
+    return Ok(());
+}
+
 fn dex_files(directory: &Path) -> Vec<PathBuf> {
     let mut files = system::files_with_extension(&[directory.to_path_buf()], "dex");
     files.sort_by_key(|file| {
