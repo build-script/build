@@ -844,6 +844,13 @@ impl AndroidBuild {
 
         if !dexed_now {
             system::log(&self.inputs.name, "Libraries dexed before");
+
+            // in use as long as the app is built, not only when its libraries change
+            if self.min_api() >= DEFAULT_METHODS_API {
+                for library in libraries {
+                    system::mark_used(&self.library_dex_archive(library, desugared_config.as_deref())?);
+                }
+            }
         }
 
         return Ok(dex);
@@ -858,27 +865,15 @@ impl AndroidBuild {
         desugared: Option<&DesugaredLibrary>,
         desugared_config: Option<&str>,
     ) -> Result<Vec<PathBuf>, String> {
-        let cache = system::cache_dir(LIBRARY_DEX_DIR);
         let mut archives = vec![];
         let mut missing = vec![];
 
         for library in libraries {
-            let metadata = fs::metadata(library)
-                .map_err(|error| format!("could not read {}: {error}", library.display()))?;
-            let key = up_to_date::hash_hex((
-                library,
-                metadata.len(),
-                metadata.modified().ok(),
-                &self.sdk.d8,
-                &self.sdk.android_jar,
-                self.min_api(),
-                self.build_type.name(),
-                desugared_config,
-            ));
-            let archive = cache.join(key);
+            let archive = self.library_dex_archive(library, desugared_config)?;
 
-            if !archive.is_dir() {
-                missing.push((library, archive.clone()));
+            match archive.is_dir() {
+                true => system::mark_used(&archive),
+                false => missing.push((library, archive.clone())),
             }
 
             archives.push(archive);
@@ -894,6 +889,10 @@ impl AndroidBuild {
         if missing.is_empty() {
             return Ok(archives);
         }
+
+        // a library a week without an app that needs it, like an older version, goes
+        let cache = system::cache_dir(LIBRARY_DEX_DIR);
+        system::remove_unused_cache_entries(&cache);
 
         let run = system::partial_path(&cache.join("run"));
         let classes = run.join("classes.zip");
@@ -932,6 +931,24 @@ impl AndroidBuild {
         sorted?;
 
         return Ok(archives);
+    }
+
+    /// In the cache: another version of a library, of d8 or another way to dex is another archive
+    fn library_dex_archive(&self, library: &Path, desugared_config: Option<&str>) -> Result<PathBuf, String> {
+        let metadata = fs::metadata(library)
+            .map_err(|error| format!("could not read {}: {error}", library.display()))?;
+        let key = up_to_date::hash_hex((
+            library,
+            metadata.len(),
+            metadata.modified().ok(),
+            &self.sdk.d8,
+            &self.sdk.android_jar,
+            self.min_api(),
+            self.build_type.name(),
+            desugared_config,
+        ));
+
+        return Ok(system::cache_dir(LIBRARY_DEX_DIR).join(key));
     }
 
     /// The dex archives of the libraries merged into classes.dex and those after it

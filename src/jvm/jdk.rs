@@ -3,7 +3,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime};
 
 use serde_json::Value as Json;
 
@@ -166,9 +165,6 @@ impl ToolCommand {
 /// In the cache, the archives of the tools
 const CLASS_ARCHIVES_DIR: &str = "class-archives";
 
-/// How long an archive stays without being used, like that of an older Kotlin version
-const UNUSED_ARCHIVES_KEPT: Duration = Duration::from_secs(7 * 24 * 3600);
-
 /// The JVM options that map the archive of a tool, or that write it when there is none yet
 struct ClassArchive {
     options: Vec<String>,
@@ -207,14 +203,13 @@ impl ClassArchive {
         let mut options = vec!["-Xlog:cds*=off".to_string()];
 
         if archive.is_file() {
-            // its time is that of its last use, Windows lets no read only file change it
-            let _ = fs::File::open(&archive).and_then(|file| file.set_modified(SystemTime::now()));
+            system::mark_used(&archive);
 
             options.push(format!("-XX:SharedArchiveFile={}", archive.display()));
             return ClassArchive { options, writing: None };
         }
 
-        remove_unused_archives(directory);
+        system::remove_unused_cache_entries(directory);
         let partial = system::partial_path(&archive);
         options.push(format!("-XX:ArchiveClassesAtExit={}", partial.display()));
 
@@ -231,45 +226,15 @@ impl ClassArchive {
             // the archive of a build that ran at the same time may be in place and in use already
             (true, true) => {
                 if fs::rename(partial, archive).is_err() {
-                    remove_archive(partial);
+                    system::remove_file_even_read_only(partial);
                 }
             }
             (true, false) => {
                 let _ = system::write_file(&archive.with_extension("unwritten"), "");
             }
-            (false, _) => remove_archive(partial),
+            (false, _) => system::remove_file_even_read_only(partial),
         }
     }
-}
-
-/// Before another archive is written: each one is as large as the classes of its tool, kotlinc's 80 MB.
-/// Those still in use are written again, on Windows a week after they were written.
-fn remove_unused_archives(directory: &Path) {
-    let entries = fs::read_dir(directory)
-        .into_iter()
-        .flatten()
-        .flatten();
-
-    for entry in entries {
-        let unused = entry.metadata()
-            .and_then(|metadata| metadata.modified())
-            .is_ok_and(|used| used.elapsed().is_ok_and(|age| age > UNUSED_ARCHIVES_KEPT));
-
-        if unused {
-            remove_archive(&entry.path());
-        }
-    }
-}
-
-/// The JVM writes archives read only, Windows deletes no such file
-fn remove_archive(file: &Path) {
-    if let Ok(metadata) = fs::metadata(file) {
-        let mut permissions = metadata.permissions();
-        permissions.set_readonly(false);
-        let _ = fs::set_permissions(file, permissions);
-    }
-
-    let _ = fs::remove_file(file);
 }
 
 /// `jdk(...)`: the directory of the JDK, installed if needed
@@ -483,6 +448,8 @@ fn foojay_string(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime};
+
     use crate::common::test_support::ScratchDir;
 
     use super::*;
