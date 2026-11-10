@@ -115,11 +115,11 @@ pub fn run_command_within(command: &mut Command, what: &str, timeout: Duration) 
     }
 }
 
-#[cfg(test)]
+// sleep, true and false are unix tools
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn commands_that_run_too_long_are_stopped() {
         let started = Instant::now();
