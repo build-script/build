@@ -311,6 +311,10 @@ const UNUSED_CACHE_ENTRIES_KEPT: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Sets the time of a file or directory in a cache to now: that of its last use, which
 /// `remove_unused_cache_entries` goes by.
 pub fn mark_used(entry: &Path) {
+    let _ = open_to_set_times(entry).and_then(|file| file.set_modified(SystemTime::now()));
+}
+
+fn open_to_set_times(entry: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
 
     // Windows opens directories only with backup semantics, and read only files only to write
@@ -327,7 +331,7 @@ pub fn mark_used(entry: &Path) {
     #[cfg(not(windows))]
     options.read(true);
 
-    let _ = options.open(entry).and_then(|file| file.set_modified(SystemTime::now()));
+    return options.open(entry);
 }
 
 /// Removes what in a cache directory was not used for a week, before something new goes into it.
@@ -440,7 +444,7 @@ mod tests {
         let cache = ScratchDir::new("unused-cache-entries");
         let eight_days_ago = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
         let last_used = |entry: &Path, used: SystemTime| {
-            fs::File::open(entry)
+            open_to_set_times(entry)
                 .and_then(|file| file.set_modified(used))
                 .unwrap();
         };
