@@ -756,3 +756,113 @@ fn built_modules_are_remembered_for_run() {
     let error = launch(&built[0], &[]).unwrap_err();
     assert!(error.contains("core cannot be run"), "{error}");
 }
+
+/// The modules a script in `directory` built, or the first error
+#[cfg(unix)]
+fn build_in(directory: &std::path::Path, source: &str, tests: TestSelection) -> Result<Vec<Arc<BuiltModule>>, String> {
+    let script = Parser::new(source)
+        .parse_script()
+        .expect("script should parse");
+    let mut runtime = Runtime::new(directory).with_tests(tests);
+
+    runtime.run(&script).map_err(|error| error.to_string())?;
+    return runtime.finish().map_err(|errors| errors[0].to_string());
+}
+
+#[cfg(unix)]
+#[test]
+fn commands_run_again_only_when_what_they_depend_on_changed() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command");
+    // the runtime takes the project directory as the system names it, /private/var for /var on macOS
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |name: &str| project.join(name);
+    system::write_file(&file("input.txt"), "a").unwrap();
+    system::write_file(&file("ignored.txt"), "1").unwrap();
+
+    let copy = "build_command(\"copy\", list(\"sh\", \"-c\", \"cat input.txt > {output}/copy.txt; echo run >> runs.log\"), \
+                inputs = list(\"*.txt\"), exclude = list(\"ignored.txt\"), outputs = list(\"{output}/copy.txt\"))";
+    let runs = || system::read_file(&file("runs.log")).unwrap().lines().count();
+
+    let built = build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!((runs(), built[0].artifact.clone()), (1, file("build/commands/copy/copy.txt")));
+    assert_eq!(system::read_file(&built[0].artifact).unwrap(), "a");
+
+    build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!(runs(), 1, "up to date");
+
+    system::write_file(&file("ignored.txt"), "2").unwrap();
+    build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!(runs(), 1, "an excluded file is no input");
+
+    system::write_file(&file("input.txt"), "b").unwrap();
+    build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!(runs(), 2, "a changed input");
+
+    // a generator built first, at its place in the command; a changed generator builds the table again
+    let generator = |text: &str| {
+        format!(
+            "generator = build_command(\"generator\", list(\"sh\", \"-c\", \"printf '#!/bin/sh\\\\necho {text} > $1\\\\n' > {{output}}/generate; \
+             chmod +x {{output}}/generate\"), outputs = list(\"{{output}}/generate\"))\n\
+             build_command(\"table\", list(generator, \"{{output}}/table.h\"), outputs = list(\"{{output}}/table.h\"))"
+        )
+    };
+
+    build_in(&directory, &generator("one"), TestSelection::None).unwrap();
+    assert_eq!(system::read_file(&file("build/commands/table/table.h")).unwrap(), "one\n");
+
+    build_in(&directory, &generator("two"), TestSelection::None).unwrap();
+    assert_eq!(system::read_file(&file("build/commands/table/table.h")).unwrap(), "two\n");
+
+    let error = build_in(&directory, "build_command(\"lazy\", list(\"sh\", \"-c\", \"true\"), outputs = list(\"{output}/out.txt\"))", TestSelection::None)
+        .unwrap_err();
+    assert!(error.ends_with("sh did not write build/commands/lazy/out.txt"), "{error}");
+
+    let error = build_in(&directory, "build_command(\"a/b\", list(\"true\"))", TestSelection::None).unwrap_err();
+    assert!(error.contains("\"a/b\" cannot name a command"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn commands_take_an_environment_a_path_and_run_and_test() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command-environment");
+    let file = |name: &str| directory.join(name);
+    system::write_file(&file("tools/hello"), "#!/bin/sh\necho hello from the path > \"$1\"\n").unwrap();
+    std::process::Command::new("chmod")
+        .args(["+x", "tools/hello"])
+        .current_dir(&*directory)
+        .status()
+        .unwrap();
+
+    let source = "build_command(\"greeting\", list(\"sh\", \"-c\", \"echo $GREETING > {output}/greeting; hello {output}/hello\"), \
+                  environment = list(\"GREETING=one\", \"GREETING=two\"), path = list(\"tools\"), \
+                  outputs = list(\"{output}/greeting\", \"{output}/hello\"), run = list(\"sh\", \"-c\", \"exit $1\", \"sh\"))";
+    let built = build_in(&directory, source, TestSelection::None).unwrap();
+
+    assert_eq!(system::read_file(&file("build/commands/greeting/greeting")).unwrap(), "two\n", "the later entry wins");
+    assert_eq!(system::read_file(&file("build/commands/greeting/hello")).unwrap(), "hello from the path\n");
+    assert!(built[0].can_launch());
+    assert_eq!(launch(&built[0], &["7".to_string()]), Ok(7), "run takes the arguments after --");
+
+    let report = "<testsuite><testcase name=\\\"a\\\"/><testcase name=\\\"b\\\"><failure/></testcase></testsuite>";
+    let tested = |test: &str| {
+        let source = format!("build_command(\"checked\", list(\"true\"), test = list(\"sh\", \"-c\", \"{test}\"), test_timeout = 1)");
+        let built = build_in(&directory, &source, TestSelection::All).unwrap();
+        return built[0].tests[0].tests.run("checked");
+    };
+
+    assert_eq!(tested("true"), TestOutcome::Passed(None));
+    assert_eq!(tested("true"), TestOutcome::UpToDate, "passed before");
+    assert!(matches!(tested("exit 1"), TestOutcome::Failed { .. }));
+    assert!(matches!(tested("sleep 5"), TestOutcome::Failed { error, .. } if error.contains("timed out")));
+
+    let counted = tested(&format!("echo '{report}' > {{test_reports}}/results.xml; exit 1"));
+    assert!(matches!(counted, TestOutcome::Failed { counts: Some(TestCounts { tests: 2, failed: 1, .. }), .. }), "{counted:?}");
+
+    // without build test the tests are not prepared
+    let built = build_in(&directory, "build_command(\"checked\", list(\"true\"), test = list(\"true\"))", TestSelection::None).unwrap();
+    assert!(built[0].tests.is_empty());
+}

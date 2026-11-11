@@ -1,3 +1,4 @@
+mod command;
 mod common;
 mod jvm;
 mod language;
@@ -825,7 +826,7 @@ fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -
         match name {
             Some(name) => eprintln!("run: {}", no_module_named(built, name)),
             None => eprintln!(
-                "run: the script built nothing to run (build_kotlin with a main_class, or build_android)"
+                "run: the script built nothing to run (build_kotlin with a main_class, build_cpp with program = true, build_android or build_command with run)"
             ),
         }
         return 1;

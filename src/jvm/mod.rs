@@ -166,6 +166,7 @@ impl BuiltModule {
             ModuleOutput::Jvm(output) => return output,
             // the JVM builds take no other modules, see Dependencies::read
             ModuleOutput::Native(_) => unreachable!("{} is a C or C++ module", self.name),
+            ModuleOutput::Command(_) => unreachable!("{} is a command", self.name),
         }
     }
 }

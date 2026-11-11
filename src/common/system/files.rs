@@ -484,6 +484,24 @@ pub fn relative_with_slashes(directory: &Path, file: &Path) -> String {
     };
 }
 
+/// The files the patterns match below the directory, without those `exclude` matches. A pattern
+/// without * and ? that names a directory stands for everything below it: "src" like "src/**".
+pub fn files_matching(directory: &Path, patterns: &[String], exclude: &[String]) -> Vec<PathBuf> {
+    let patterns: Vec<String> = patterns.iter()
+        .map(|pattern| match !pattern.contains(['*', '?']) && directory.join(pattern).is_dir() {
+            true => format!("{}/**", pattern.trim_end_matches('/')),
+            false => pattern.clone(),
+        })
+        .collect();
+
+    let matches_any = |patterns: &[String], file: &Path| {
+        let relative = relative_with_slashes(directory, file);
+        return patterns.iter().any(|pattern| matches_glob(pattern, &relative));
+    };
+
+    return files_below_roots(directory, &patterns, |file| matches_any(&patterns, file) && !matches_any(exclude, file));
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::test_support::ScratchDir;
@@ -591,5 +609,23 @@ mod tests {
         assert!(matches_glob("port/port_?osix.cc", "port/port_posix.cc"));
         assert!(!matches_glob("testes/**", "src/testes.c"));
         assert!(!matches_glob("src/*.cc", "src/fmt.cpp"));
+    }
+
+    #[test]
+    fn files_match_patterns_and_directories_but_not_build_hidden_or_excluded() {
+        let directory = ScratchDir::new("files-matching");
+
+        for file in ["main.go", "go.mod", ".nvmrc", "cmd/tool/tool.go", "assets/logo.svg", "assets/css/site.css",
+                     "build/old.go", ".git/objects.go", "vendor/library/library.go", "notes.txt"] {
+            write_file(&directory.join(file), "").unwrap();
+        }
+
+        let patterns = ["**/*.go", "go.mod", ".nvmrc", "assets"].map(String::from);
+        let found: Vec<String> = files_matching(&directory, &patterns, &["vendor/**".to_string()])
+            .iter()
+            .map(|file| relative_with_slashes(&directory, file))
+            .collect();
+
+        assert_eq!(found, [".nvmrc", "assets/css/site.css", "assets/logo.svg", "cmd/tool/tool.go", "go.mod", "main.go"]);
     }
 }

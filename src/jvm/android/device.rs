@@ -136,7 +136,7 @@ impl InstrumentedTests {
             &self.reports_dir.join(format!("TEST-{}.xml", self.package)),
             &xml::write(&report, &|_| false),
         )?;
-        let counts = TestCounts::read_junit_reports(&self.reports_dir);
+        let counts = TestCounts::read_junit_reports(&self.reports_dir, "TEST-");
 
         if let Some(error) = instrumentation.problem() {
             return Ok(TestOutcome::Failed { counts, error });

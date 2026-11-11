@@ -1,8 +1,9 @@
-// What every script has without `use`: print, type, env, git, operating_system, the time and list
+// What every script has without `use`: print, type, env, git, operating_system, the time, list and
+// build_command
 use super::*;
 
 pub fn core_functions() -> Vec<(&'static str, Value)> {
-    return vec![
+    let mut functions = vec![
         builtin(
             "print",
             FunctionParameters::new()
@@ -96,4 +97,7 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
             |_, args| Ok(Value::List(args.rest()?)),
         ),
     ];
+
+    functions.extend(crate::command::builtins());
+    return functions;
 }

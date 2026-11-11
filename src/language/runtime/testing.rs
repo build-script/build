@@ -41,6 +41,8 @@ pub struct TestRun {
     directory: Option<PathBuf>,
     /// emptied before the run, so only the JUnit XML reports of this run count
     reports_dir: PathBuf,
+    /// what the names of the reports start with, TEST- like JUnit writes them, "" for any
+    report_prefix: &'static str,
     /// stored once the tests passed, they do not run again until their inputs change
     fingerprint: InputFingerprint,
     /// tests that run longer are stopped and failed
@@ -96,9 +98,15 @@ impl TestRun {
                 .collect(),
             directory: command.get_current_dir().map(Path::to_path_buf),
             reports_dir,
+            report_prefix: "TEST-",
             fingerprint,
             timeout: None,
         };
+    }
+
+    pub fn with_report_prefix(mut self, prefix: &'static str) -> Self {
+        self.report_prefix = prefix;
+        return self;
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -136,7 +144,7 @@ impl TestRunner for TestRun {
             Some(timeout) => system::run_command_within(&mut command, "tests", timeout),
             None => system::run_command(&mut command, "tests"),
         };
-        let counts = TestCounts::read_junit_reports(&self.reports_dir);
+        let counts = TestCounts::read_junit_reports(&self.reports_dir, self.report_prefix);
 
         if let Err(error) = result {
             return TestOutcome::Failed { counts, error };
@@ -154,14 +162,15 @@ impl TestRunner for TestRun {
 }
 
 impl TestCounts {
-    /// The <testcase> elements of the TEST-*.xml reports in the directory, None without any. Not the
-    /// counts of the suites: GoogleTest counts disabled tests there, doctest assertions.
-    pub fn read_junit_reports(directory: &Path) -> Option<Self> {
+    /// The <testcase> elements of the XML reports in the directory whose names start with `prefix`, like
+    /// TEST-*.xml, None without any. Not the counts of the suites: GoogleTest counts disabled tests there,
+    /// doctest assertions.
+    pub fn read_junit_reports(directory: &Path, prefix: &str) -> Option<Self> {
         let mut counts: Option<TestCounts> = None;
 
         for report in system::files_with_extension(&[directory.to_path_buf()], "xml") {
             if !report.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("TEST-"))
+                .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
             {
                 continue;
             }
@@ -206,7 +215,7 @@ mod tests {
     fn junit_reports_are_summed() {
         let dir = ScratchDir::new("reports");
         system::recreate_dir(&dir).unwrap();
-        assert_eq!(TestCounts::read_junit_reports(&dir), None);
+        assert_eq!(TestCounts::read_junit_reports(&dir, "TEST-"), None);
 
         // one suite per engine, like the JUnit Platform writes them
         system::write_file(
@@ -234,7 +243,7 @@ mod tests {
         system::write_file(&dir.join("junit-platform-events.xml"), "<events/>").unwrap();
 
         assert_eq!(
-            TestCounts::read_junit_reports(&dir),
+            TestCounts::read_junit_reports(&dir, "TEST-"),
             Some(TestCounts {
                 tests: 6,
                 failed: 2,

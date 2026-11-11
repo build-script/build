@@ -650,6 +650,9 @@ impl Dependencies {
                         ModuleOutput::Native(_) => {
                             return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
                         }
+                        ModuleOutput::Command(_) => {
+                            return Err(format!("{} is a command: JVM modules do not take what build_command writes yet", module.name));
+                        }
                     }
                 }
                 other => {

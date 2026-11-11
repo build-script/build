@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::command::{self, CommandOutput};
 use crate::jvm::{self, JvmOutput};
 use crate::native::NativeOutput;
 use crate::language::lexer::Span;
@@ -48,6 +49,8 @@ pub enum BuildFailure {
 pub enum ModuleOutput {
     Jvm(JvmOutput),
     Native(NativeOutput),
+    /// of build_command
+    Command(CommandOutput),
 }
 
 /// Starts what a module built and returns the exit code for the process
@@ -55,6 +58,7 @@ pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
     match &module.output {
         ModuleOutput::Jvm(output) => return jvm::launch(module, output, args),
         ModuleOutput::Native(output) => return crate::native::launch(module, output, args),
+        ModuleOutput::Command(output) => return command::launch(module, output, args),
     }
 }
 
@@ -129,6 +133,7 @@ impl BuiltModule {
         match &self.output {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),
             ModuleOutput::Native(output) => return output.program.is_some(),
+            ModuleOutput::Command(output) => return !output.run.is_empty(),
         }
     }
 }
