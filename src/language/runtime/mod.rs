@@ -618,15 +618,18 @@ impl Runtime {
                     ));
                 }
             },
+            TypeExpressionType::Variant(name) => return Ok(Type::Variant(name.clone())),
             TypeExpressionType::List(element) => {
                 return Ok(Type::list(Self::resolve_type(element)?));
             }
             TypeExpressionType::Union(members) => {
-                return Ok(Type::Union(
-                    members.iter()
-                        .map(Self::resolve_type)
-                        .collect::<Result<_, _>>()?,
-                ));
+                let types: Vec<Type> = members.iter()
+                    .map(Self::resolve_type)
+                    .collect::<Result<_, _>>()?;
+
+                Self::check_variants(&types, members)?;
+
+                return Ok(Type::Union(types));
             }
             TypeExpressionType::Function { params, returns } => {
                 let mut parameters = FunctionParameters::new();
@@ -644,6 +647,41 @@ impl Runtime {
                 )));
             }
         }
+    }
+
+    /// The variants of a union: each once, and not beside str or any, which accept them anyway
+    fn check_variants(types: &[Type], members: &[TypeExpression]) -> Result<(), RuntimeError> {
+        let union = Type::Union(types.to_vec());
+        let wider = types.iter().find(|member_type| matches!(member_type, Type::String | Type::Any));
+
+        for (index, member_type) in types.iter().enumerate() {
+            if !matches!(member_type, Type::Variant(_)) {
+                continue;
+            }
+
+            if types[..index].contains(member_type) {
+                return Err(RuntimeError::new(
+                    RuntimeErrorType::DuplicateVariant {
+                        variant: member_type.clone(),
+                        union,
+                    },
+                    members[index].span,
+                ));
+            }
+
+            if let Some(wider) = wider {
+                return Err(RuntimeError::new(
+                    RuntimeErrorType::RedundantVariant {
+                        variant: member_type.clone(),
+                        wider: wider.clone(),
+                        union,
+                    },
+                    members[index].span,
+                ));
+            }
+        }
+
+        return Ok(());
     }
 
     fn call(
@@ -768,7 +806,7 @@ impl Runtime {
                 RuntimeErrorType::ReturnTypeMismatch {
                     function: function.name.clone(),
                     expected: function.signature.returns.clone(),
-                    got: result.type_of(),
+                    got: function.signature.returns.describe_mismatch(&result),
                 },
                 span,
             ));

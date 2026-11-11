@@ -154,6 +154,8 @@ pub struct Expression {
 pub enum TypeExpressionType {
     /// str, int, bool, module, any, unit
     Named(String),
+    /// "auto": only this string, in a union one of several like "auto" | "local"
+    Variant(String),
     /// list<str>
     List(Box<TypeExpression>),
     /// str | module
@@ -516,6 +518,12 @@ impl<'src> Parser<'src> {
                     span: token.span,
                 });
             }
+            TokenType::String(text) => {
+                return Ok(TypeExpression {
+                    variant: TypeExpressionType::Variant(text),
+                    span: token.span,
+                });
+            }
             TokenType::Fn => {
                 self.expect(TokenType::LeftParen)?;
                 let (params, _) = self.comma_separated(|parser| parser.parse_type())?;
@@ -680,9 +688,9 @@ mod tests {
         assert_eq!(error("f(x) = 1"), "only variables can be assigned to");
     }
 
-    #[test]
-    fn functions_have_typed_parameters_with_defaults() {
-        let script = parse("greet = fn(name: str | list<str>, count: int = 1, call: fn(str) -> bool) -> str { name }").unwrap();
+    /// The parameters, return type and body of `name = fn(...) { ... }`
+    fn function_parts(source: &str) -> (Vec<Parameter>, Option<TypeExpression>, Vec<Expression>) {
+        let script = parse(source).unwrap();
         let [Statement { variant: StatementType::Expression(expression), .. }] = script.statements.as_slice() else {
             panic!("one expression expected");
         };
@@ -695,6 +703,23 @@ mod tests {
             panic!("a function expected");
         };
 
+        return (params.clone(), returns.clone(), body.clone());
+    }
+
+    /// The variants of a type written as a variant or a union of them
+    fn variants(type_expression: &TypeExpression) -> Vec<String> {
+        match &type_expression.variant {
+            TypeExpressionType::Variant(name) => return vec![name.clone()],
+            TypeExpressionType::Union(members) => return members.iter().flat_map(variants).collect(),
+            _ => return vec![],
+        }
+    }
+
+    #[test]
+    fn functions_have_typed_parameters_with_defaults() {
+        let (params, returns, body) =
+            function_parts("greet = fn(name: str | list<str>, count: int = 1, call: fn(str) -> bool) -> str { name }");
+
         let names: Vec<&str> = params.iter()
             .map(|param| param.name.name.as_str())
             .collect();
@@ -705,5 +730,19 @@ mod tests {
         assert!(matches!(params[2].param_type.variant, TypeExpressionType::Function { ref params, .. } if params.len() == 1));
         assert!(matches!(returns, Some(TypeExpression { variant: TypeExpressionType::Named(name), .. }) if name == "str"));
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn strings_in_types_are_variants() {
+        let (params, returns, _) = function_parts(
+            "pick = fn(mode: \"auto\" | \"local\" = \"auto\", level: \"debug\", modes: list<\"fast\" | \"small\">, \
+             call: fn(\"a\" | \"b\") -> str) -> \"x\" | \"y\" { mode }",
+        );
+
+        assert_eq!(variants(&params[0].param_type), ["auto", "local"]);
+        assert_eq!(variants(&params[1].param_type), ["debug"]);
+        assert!(matches!(&params[2].param_type.variant, TypeExpressionType::List(element) if variants(element) == ["fast", "small"]));
+        assert!(matches!(&params[3].param_type.variant, TypeExpressionType::Function { params, .. } if variants(&params[0]) == ["a", "b"]));
+        assert_eq!(variants(&returns.unwrap()), ["x", "y"]);
     }
 }

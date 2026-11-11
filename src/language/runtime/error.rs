@@ -54,7 +54,8 @@ pub enum RuntimeErrorType {
         function: String,
         param: String,
         expected: Type,
-        got: Type,
+        /// the type of the value, or the string itself where the type has variants
+        got: String,
     },
     UnknownPlatform {
         name: String,
@@ -67,10 +68,21 @@ pub enum RuntimeErrorType {
     ReturnTypeMismatch {
         function: String,
         expected: Type,
-        got: Type,
+        got: String,
     },
     UnknownType {
         name: String,
+    },
+    /// a variant written twice in a union: "auto" | "local" | "auto"
+    DuplicateVariant {
+        variant: Type,
+        union: Type,
+    },
+    /// a variant beside str or any, which accept it anyway: "auto" | str
+    RedundantVariant {
+        variant: Type,
+        wider: Type,
+        union: Type,
     },
     DuplicateParameter {
         function: String,
@@ -126,7 +138,7 @@ impl RuntimeError {
                 function: function.to_string(),
                 param: param.to_string(),
                 expected: expected.clone(),
-                got: value.type_of(),
+                got: expected.describe_mismatch(value),
             },
             span,
         );
@@ -239,8 +251,18 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorType::UnknownType { name } => {
                 return write!(
                     f,
-                    "unknown type '{name}' (types: str, int, bool, module, any, unit, list<...>, fn(...) -> ..., a | b)"
+                    "unknown type '{name}' (types: str, int, bool, module, any, unit, list<...>, fn(...) -> ..., a | b, \"a variant\")"
                 );
+            }
+            RuntimeErrorType::DuplicateVariant { variant, union } => {
+                return write!(f, "{variant} is listed twice in {union}");
+            }
+            RuntimeErrorType::RedundantVariant {
+                variant,
+                wider,
+                union,
+            } => {
+                return write!(f, "{wider} already accepts {variant}, leave the variant out of {union}");
             }
             RuntimeErrorType::DuplicateParameter { function, param } => {
                 return write!(f, "{function}: parameter '{param}' is declared twice");

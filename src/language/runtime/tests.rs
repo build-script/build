@@ -493,6 +493,75 @@ fn functions_check_their_types() {
 }
 
 #[test]
+fn variants_accept_only_their_strings() {
+    let pick = "pick = fn (name: str, toolchain: \"auto\" | \"local\" = \"auto\") -> str { toolchain }\n";
+    let runtime = run(&format!("{pick}a = pick(\"x\")\nb = pick(\"x\", \"local\")\nc = pick(\"x\", toolchain = \"auto\")")).unwrap();
+    assert_eq!((string(&runtime, "a"), string(&runtime, "b"), string(&runtime, "c")), ("auto".into(), "local".into(), "auto".into()));
+
+    let error = |source: &str| run(&format!("{pick}{source}")).err().expect(source);
+    let message = |source: &str| error(source).to_string();
+
+    assert_eq!(message("pick(\"x\", \"remote\")"), "pick: argument 'toolchain' must be \"auto\" | \"local\", got \"remote\"");
+    assert!(message("pick(\"x\", \"Local\")").ends_with("got \"Local\", did you mean \"local\"?"));
+    assert!(message("pick(\"x\", \"locla\")").ends_with("did you mean \"local\"?"));
+    assert!(message("pick(\"x\", 1)").ends_with("got int"));
+
+    // a default must be one of the variants already where the function is defined
+    assert!(matches!(
+        error("other = fn (mode: \"a\" | \"b\" = \"c\") { mode }").variant,
+        RuntimeErrorType::TypeMismatch { got, .. } if got == "\"c\""
+    ));
+
+    assert_eq!(
+        message("level = fn () -> \"debug\" | \"release\" { \"test\" }\nlevel()"),
+        "level must return \"debug\" | \"release\", got \"test\""
+    );
+    assert_eq!(
+        message("modes = fn (modes: list<\"fast\" | \"small\">) { modes }\nmodes(list(\"fast\", \"smal\"))"),
+        "modes: argument 'modes' must be list<\"fast\" | \"small\">, got a list with \"smal\", did you mean \"small\"?"
+    );
+    assert_eq!(
+        message("twice = fn (mode: \"a\" | \"b\" | \"a\") { mode }"),
+        "\"a\" is listed twice in \"a\" | \"b\" | \"a\""
+    );
+    assert_eq!(
+        message("wide = fn (mode: \"a\" | str) { mode }"),
+        "str already accepts \"a\", leave the variant out of \"a\" | str"
+    );
+
+    // the order of the variants does not change the shape of a function
+    let runtime = run("apply = fn (f: fn(\"a\" | \"b\") -> str) -> str { f(\"a\") }\nr = apply(fn (x: \"b\" | \"a\") -> str { x })").unwrap();
+    assert_eq!(string(&runtime, "r"), "a");
+}
+
+#[test]
+fn builtins_take_variants() {
+    let mut runtime = Runtime::new(".");
+    let mode = Type::Union(vec![Type::Variant("fast".into()), Type::Variant("small".into())]);
+    let signature = FunctionParameters::new()
+        .with_default("mode", mode, "fast")
+        .returns(Type::String);
+    let (name, value) = builtin("optimize", signature, |_, args| Ok(args.get::<String>("mode")?.into()));
+    runtime.define(name, value);
+
+    let runtime = run_in(runtime, "a = optimize()\nb = optimize(\"small\")").unwrap();
+    assert_eq!((string(&runtime, "a"), string(&runtime, "b")), ("fast".into(), "small".into()));
+
+    let mut runtime = Runtime::new(".");
+    let (name, value) = builtin(
+        "optimize",
+        FunctionParameters::new()
+            .required("mode", Type::Union(vec![Type::Variant("fast".into()), Type::Variant("small".into())]))
+            .returns(Type::String),
+        |_, args| Ok(args.get::<String>("mode")?.into()),
+    );
+    runtime.define(name, value);
+
+    let error = run_in(runtime, "optimize(\"big\")").err().unwrap();
+    assert_eq!(error.to_string(), "optimize: argument 'mode' must be \"fast\" | \"small\", got \"big\"");
+}
+
+#[test]
 fn lists_concatenate_and_compare() {
     let runtime = run("a = list(\"x\") + list(\"y\")\nsame = a == list(\"x\", \"y\")").unwrap();
     assert_eq!(variable(&runtime, "a").to_string(), "[x, y]");
