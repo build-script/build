@@ -26,28 +26,21 @@ use maven::MavenCoordinate;
 
 pub use jdk::jni_include_dirs;
 
-/// Before the script runs: project.lock, the files of Maven repositories the last builds took.
-/// Returns whether the build keeps IntelliJ current: once `build idea` set it up every build
-/// does, release builds leave it.
-pub fn before_build(script: &Path, project_dir: &Path, set_up_idea: bool, release: bool) -> Result<bool, String> {
+/// Before the script runs: whether the build keeps IntelliJ current. Once `build idea` set it up
+/// every build does, release builds leave it.
+pub fn before_build(project_dir: &Path, set_up_idea: bool, release: bool) -> Result<bool, String> {
     let marker = project_dir.join(idea::MARKER);
 
     if set_up_idea {
         system::write_file(&marker, idea::MARKER_TEXT)?;
     }
 
-    maven::lock::open(script)?;
-
     return Ok(!release && marker.is_file());
 }
 
-/// After the script ran: project.lock saved and the IntelliJ project written. `built` is None
-/// when a build failed, it may not have come to every library and keeps the module files.
+/// After the script ran: the IntelliJ project written. `built` is None when a build failed, it may
+/// not have come to every library and keeps the module files.
 pub fn after_build(project_dir: &Path, keeps_idea_current: bool, set_up_idea: bool, built: Option<&[Arc<BuiltModule>]>) {
-    if built.is_some() && let Err(error) = maven::lock::save() {
-        eprintln!("{error}");
-    }
-
     if keeps_idea_current && let Err(error) = idea::write_project(project_dir, built) {
         eprintln!("could not write the IntelliJ project: {error}");
     }

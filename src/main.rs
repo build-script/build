@@ -8,6 +8,7 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use common::lock;
 use common::settings::Settings;
 use common::terminal::{self, Color};
 use language::lexer::line_column;
@@ -498,7 +499,7 @@ fn main() {
     }
 
     if options.refresh {
-        jvm::maven::refresh();
+        common::refresh::refresh();
     }
 
     let request = match &command {
@@ -725,7 +726,9 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
         .map(|parent| parent.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let idea = exit_on_error(jvm::before_build(Path::new(script_path), &project_dir, set_up_idea, release));
+    // project.lock: what the last builds downloaded, from now on downloads are checked against it
+    exit_on_error(lock::open(Path::new(script_path)));
+    let idea = exit_on_error(jvm::before_build(&project_dir, set_up_idea, release));
 
     let mut runtime = Runtime::new(project_dir.clone())
         .with_tests(tests)
@@ -741,6 +744,11 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     let worked = built.as_deref()
         .ok()
         .filter(|_| evaluated.is_ok());
+
+    // a failed build may not have come to every download
+    if worked.is_some() && let Err(error) = lock::save() {
+        eprintln!("{error}");
+    }
 
     jvm::after_build(&project_dir, idea, set_up_idea, worked);
 

@@ -1,10 +1,10 @@
 // maven-metadata.xml: the versions of an artifact, and which build a SNAPSHOT version stands for
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::common::refresh::REFRESHED_AT;
 use crate::common::system;
 
 use super::MavenRepository;
@@ -13,9 +13,6 @@ use super::MavenRepository;
 /// Gradle waits before it looks for a newer SNAPSHOT
 const EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 pub const SNAPSHOT: &str = "-SNAPSHOT";
-
-/// Set by `--refresh`: whatever was fetched before counts as expired
-pub(super) static REFRESHED_AT: OnceLock<SystemTime> = OnceLock::new();
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -72,11 +69,6 @@ pub struct SnapshotFile<'a> {
     version: &'a str,
     classifier: Option<&'a str>,
     extension: &'a str,
-}
-
-/// From now on, metadata fetched before counts as expired
-pub fn refresh() {
-    let _ = REFRESHED_AT.set(SystemTime::now());
 }
 
 /// The maven-metadata.xml in `directory` of a repository. Remote ones are

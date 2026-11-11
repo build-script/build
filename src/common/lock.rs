@@ -1,15 +1,15 @@
-// project.lock next to the script, like Cargo.lock: the SHA-256 of every file the build took from a Maven
-// repository and the build each SNAPSHOT resolved to. The first build writes it, later ones take the same.
+// project.lock next to the script, like Cargo.lock: the SHA-256 of every file the build downloaded, from
+// Maven repositories and the like, and the build each SNAPSHOT resolved to. The first build writes it, later
+// ones take the same.
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::common::refresh::REFRESHED_AT;
 use crate::common::system;
 
-use super::metadata::REFRESHED_AT;
-
-const HEADER: &str = "# Written by build-script: the SHA-256 of every file the build took from a Maven repository, and the
-# build a SNAPSHOT resolved to. Keep it with the script, build --refresh takes newer builds and files.
+const HEADER: &str = "# Written by build-script: the SHA-256 of every file the build downloaded, and the build a SNAPSHOT
+# resolved to. Keep it with the script, build --refresh takes newer builds and files.
 ";
 
 struct Lock {

@@ -1,5 +1,4 @@
 // Maven: repositories, coordinates, dependency notations and versions, like in Gradle
-pub mod lock;
 mod metadata;
 mod pom;
 mod resolver;
@@ -11,7 +10,6 @@ use std::path::{Path, PathBuf};
 use crate::common::system;
 use crate::language::runtime::{FunctionParameters, Type, Value, builtin};
 
-pub use metadata::refresh;
 pub use pom::license_report;
 pub use resolver::DependencyResolver;
 
