@@ -392,6 +392,98 @@ pub fn installing<T>(target: &Path, install: impl FnOnce() -> Result<T, String>)
     return install();
 }
 
+/// The directories of the patterns up to their first * or ?, of a pattern without them that of its file:
+/// src of "src/**", the module of "*.c". Their sources are below them, private headers next to those.
+pub fn source_roots(module_dir: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = vec![];
+
+    for pattern in patterns {
+        let segments: Vec<&str> = pattern.split('/').collect();
+        let fixed = segments.iter()
+            .take_while(|segment| !segment.contains(['*', '?']))
+            .count();
+        let fixed = &segments[..fixed.min(segments.len() - 1)];
+        let root = if fixed.is_empty() { module_dir.to_path_buf() } else { module_dir.join(fixed.join("/")) };
+
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+
+    return roots;
+}
+
+/// `*` and `?` within a name, `**` for any directories: "src/**/*.cpp", "testes/**"
+pub fn matches_glob(pattern: &str, path: &str) -> bool {
+    fn segments(pattern: &[&str], path: &[&str]) -> bool {
+        match (pattern.first(), path.first()) {
+            (None, None) => return true,
+            (Some(&"**"), _) => {
+                return segments(&pattern[1..], path) || (!path.is_empty() && segments(pattern, &path[1..]));
+            }
+            (Some(name_pattern), Some(name)) => {
+                return name_matches(name_pattern.as_bytes(), name.as_bytes()) && segments(&pattern[1..], &path[1..]);
+            }
+            _ => return false,
+        }
+    }
+
+    fn name_matches(pattern: &[u8], name: &[u8]) -> bool {
+        match (pattern.first(), name.first()) {
+            (None, None) => return true,
+            (Some(b'*'), _) => return name_matches(&pattern[1..], name) || (!name.is_empty() && name_matches(pattern, &name[1..])),
+            (Some(b'?'), Some(_)) => return name_matches(&pattern[1..], &name[1..]),
+            (Some(expected), Some(found)) => return expected == found && name_matches(&pattern[1..], &name[1..]),
+            _ => return false,
+        }
+    }
+
+    let pattern: Vec<&str> = pattern.split('/').collect();
+    let path: Vec<&str> = path.split('/').collect();
+
+    return segments(&pattern, &path);
+}
+
+/// The files below the roots of the patterns that `keep` takes, but those in build/ and in hidden
+/// directories like .git
+pub fn files_below_roots(directory: &Path, patterns: &[String], keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut files = vec![];
+    let mut pending = source_roots(directory, patterns);
+
+    while let Some(current) = pending.pop() {
+        for entry in fs::read_dir(&current).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let hidden = entry.file_name()
+                .to_string_lossy()
+                .starts_with('.');
+
+            match path.is_dir() {
+                true if !hidden && path != build_dir(directory) => pending.push(path),
+                false if keep(&path) => files.push(path),
+                _ => {}
+            }
+        }
+    }
+
+    // roots may be below each other
+    files.sort();
+    files.dedup();
+    return files;
+}
+
+/// Relative to the directory like a pattern, with / on Windows too
+pub fn relative_with_slashes(directory: &Path, file: &Path) -> String {
+    let relative = file.strip_prefix(directory)
+        .unwrap_or(file)
+        .display()
+        .to_string();
+
+    return match cfg!(windows) {
+        true => relative.replace('\\', "/"),
+        false => relative,
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::test_support::ScratchDir;
@@ -478,5 +570,26 @@ mod tests {
         assert_eq!(remaining.len(), 2, "{remaining:?}");
         assert!(used_directory.join("dex.zip").is_file() && recent_file.is_file());
 
+    }
+
+    #[test]
+    fn patterns_are_searched_below_their_roots() {
+        let patterns = ["src/**", "*.c", "examples/simple.cpp", "src/**/*.cc"].map(String::from);
+        let roots = source_roots(Path::new("/module"), &patterns);
+
+        assert_eq!(roots, ["/module/src", "/module", "/module/examples"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn globs_match_names_and_directories() {
+        assert!(matches_glob("examples/simple.cpp", "examples/simple.cpp"));
+        assert!(matches_glob("*.c", "lapi.c"));
+        assert!(!matches_glob("*.c", "src/lapi.c"));
+        assert!(matches_glob("**/*_test.cc", "db/db_test.cc"));
+        assert!(matches_glob("**/*_test.cc", "db_test.cc"));
+        assert!(matches_glob("testes/**", "testes/libs/lib1.c"));
+        assert!(matches_glob("port/port_?osix.cc", "port/port_posix.cc"));
+        assert!(!matches_glob("testes/**", "src/testes.c"));
+        assert!(!matches_glob("src/*.cc", "src/fmt.cpp"));
     }
 }

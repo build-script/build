@@ -210,7 +210,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let source_patterns: Vec<String> = args.get("sources")?;
     let exclude_patterns: Vec<String> = args.get("exclude")?;
     // with the sources the private headers
-    let source_roots = compile::source_roots(&directory, &source_patterns);
+    let source_roots = system::source_roots(&directory, &source_patterns);
 
     // headers like CMake generates them, and those of TableGen, written before the sources compile
     let generated_dir = build_dir.join("generated");
@@ -314,7 +314,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // the tests see the headers next to them
     let (test_compile_flags, test_link_flags) = test_dependencies.flags(installed.as_ref(), release);
     let mut test_flags = compilation.flags.clone();
-    test_flags.extend(compile::source_roots(&directory, &test_source_patterns).iter().map(|dir| format!("-I{}", dir.display())));
+    test_flags.extend(system::source_roots(&directory, &test_source_patterns).iter().map(|dir| format!("-I{}", dir.display())));
     test_flags.extend(test_compile_flags);
     let test_flags = without_repeated_flags(test_flags);
 

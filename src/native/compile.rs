@@ -66,67 +66,36 @@ impl Compilation<'_> {
 
     /// Whether one of the patterns matches the file, relative to the module directory
     pub fn matches_any(&self, patterns: &[String], file: &Path) -> bool {
-        return patterns.iter().any(|pattern| matches_glob(pattern, &self.relative(file)));
+        return patterns.iter().any(|pattern| system::matches_glob(pattern, &system::relative_with_slashes(self.module_dir, file)));
     }
 
     /// A pattern of `source_patterns` that matches no source, most likely misspelled
     pub fn unmatched_pattern(&self) -> Option<&String> {
         let sources: Vec<String> = self.candidates()
             .iter()
-            .map(|file| self.relative(file))
+            .map(|file| system::relative_with_slashes(self.module_dir, file))
             .collect();
-        return self.source_patterns.iter().find(|pattern| !sources.iter().any(|source| matches_glob(pattern, source)));
+        return self.source_patterns.iter().find(|pattern| !sources.iter().any(|source| system::matches_glob(pattern, source)));
     }
 
     fn candidates(&self) -> &[PathBuf] {
         return self.candidates.get_or_init(|| self.search_candidates());
     }
 
-    /// The sources below the roots of the patterns, but in build/ and hidden directories like .git
+    /// The sources of the language below the roots of the patterns
     fn search_candidates(&self) -> Vec<PathBuf> {
-        let mut sources = vec![];
-        let mut pending = source_roots(self.module_dir, self.source_patterns);
+        return system::files_below_roots(self.module_dir, self.source_patterns, |file| {
+            let extension = file.extension()
+                .unwrap_or_default()
+                .to_string_lossy();
 
-        while let Some(directory) = pending.pop() {
-            for entry in fs::read_dir(&directory).into_iter().flatten().flatten() {
-                let path = entry.path();
-                let hidden = entry.file_name()
-                    .to_string_lossy()
-                    .starts_with('.');
-                let extension = path.extension()
-                    .unwrap_or_default()
-                    .to_string_lossy();
-
-                match path.is_dir() {
-                    true if !hidden && path != system::build_dir(self.module_dir) => pending.push(path),
-                    false if self.language.extensions().contains(&extension.as_ref()) => sources.push(path),
-                    _ => {}
-                }
-            }
-        }
-
-        // roots may be below each other
-        sources.sort();
-        sources.dedup();
-        return sources;
-    }
-
-    /// Relative to the module directory, like the patterns, with / on Windows too
-    fn relative(&self, file: &Path) -> String {
-        let relative = file.strip_prefix(self.module_dir)
-            .unwrap_or(file)
-            .display()
-            .to_string();
-
-        return match cfg!(windows) {
-            true => relative.replace('\\', "/"),
-            false => relative,
-        };
+            return self.language.extensions().contains(&extension.as_ref());
+        });
     }
 
     /// src/main.cpp becomes <objects>/src/main.cpp.o
     pub fn object(&self, source: &Path) -> PathBuf {
-        return self.objects_dir.join(format!("{}.o", self.relative(source)));
+        return self.objects_dir.join(format!("{}.o", system::relative_with_slashes(self.module_dir, source)));
     }
 
     /// The compiler with its arguments, without the depfile
@@ -249,27 +218,6 @@ impl Compilation<'_> {
     }
 }
 
-/// The directories of the patterns up to their first * or ?, of a pattern without them that of its file:
-/// src of "src/**", the module of "*.c". Their sources are below them, private headers next to those.
-pub fn source_roots(module_dir: &Path, patterns: &[String]) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = vec![];
-
-    for pattern in patterns {
-        let segments: Vec<&str> = pattern.split('/').collect();
-        let fixed = segments.iter()
-            .take_while(|segment| !segment.contains(['*', '?']))
-            .count();
-        let fixed = &segments[..fixed.min(segments.len() - 1)];
-        let root = if fixed.is_empty() { module_dir.to_path_buf() } else { module_dir.join(fixed.join("/")) };
-
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-
-    return roots;
-}
-
 /// The output of one command, like the object of a source: up to date while it is newer than every input
 /// its depfile names and its .line file holds the same command line
 pub struct RecordedCommand {
@@ -336,37 +284,6 @@ fn depfile_inputs(depfile: &str) -> Vec<String> {
 
     names.extend((!name.is_empty()).then_some(name));
     return names;
-}
-
-/// `*` and `?` within a name, `**` for any directories: "src/**/*.cpp", "testes/**"
-fn matches_glob(pattern: &str, path: &str) -> bool {
-    fn segments(pattern: &[&str], path: &[&str]) -> bool {
-        match (pattern.first(), path.first()) {
-            (None, None) => return true,
-            (Some(&"**"), _) => {
-                return segments(&pattern[1..], path) || (!path.is_empty() && segments(pattern, &path[1..]));
-            }
-            (Some(name_pattern), Some(name)) => {
-                return name_matches(name_pattern.as_bytes(), name.as_bytes()) && segments(&pattern[1..], &path[1..]);
-            }
-            _ => return false,
-        }
-    }
-
-    fn name_matches(pattern: &[u8], name: &[u8]) -> bool {
-        match (pattern.first(), name.first()) {
-            (None, None) => return true,
-            (Some(b'*'), _) => return name_matches(&pattern[1..], name) || (!name.is_empty() && name_matches(pattern, &name[1..])),
-            (Some(b'?'), Some(_)) => return name_matches(&pattern[1..], &name[1..]),
-            (Some(expected), Some(found)) => return expected == found && name_matches(&pattern[1..], &name[1..]),
-            _ => return false,
-        }
-    }
-
-    let pattern: Vec<&str> = pattern.split('/').collect();
-    let path: Vec<&str> = path.split('/').collect();
-
-    return segments(&pattern, &path);
 }
 
 /// A static library of the objects
@@ -436,22 +353,12 @@ fn linked_once(link_flags: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use super::{depfile_inputs, linked_once, matches_glob, source_roots};
+    use super::{depfile_inputs, linked_once};
 
     #[test]
     fn libraries_are_linked_once_after_the_last_that_needs_them() {
         let flags = ["libapp.a", "-lfmt", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"].map(String::from);
         assert_eq!(linked_once(&flags), ["libapp.a", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"]);
-    }
-
-    #[test]
-    fn patterns_are_searched_below_their_roots() {
-        let patterns = ["src/**", "*.c", "examples/simple.cpp", "src/**/*.cc"].map(String::from);
-        let roots = source_roots(Path::new("/module"), &patterns);
-
-        assert_eq!(roots, ["/module/src", "/module", "/module/examples"].map(PathBuf::from));
     }
 
     #[test]
@@ -461,18 +368,5 @@ mod tests {
 
         let depfile = "D:\\a\\obj\\main.cpp.o: D:\\a\\src\\main.cpp \\\r\n  C:\\Program\\ Files\\x.h\r\n";
         assert_eq!(depfile_inputs(depfile), ["D:\\a\\src\\main.cpp", "C:\\Program Files\\x.h"]);
-    }
-
-    #[test]
-    fn globs_match_names_and_directories() {
-        assert!(matches_glob("examples/simple.cpp", "examples/simple.cpp"));
-        assert!(matches_glob("*.c", "lapi.c"));
-        assert!(!matches_glob("*.c", "src/lapi.c"));
-        assert!(matches_glob("**/*_test.cc", "db/db_test.cc"));
-        assert!(matches_glob("**/*_test.cc", "db_test.cc"));
-        assert!(matches_glob("testes/**", "testes/libs/lib1.c"));
-        assert!(matches_glob("port/port_?osix.cc", "port/port_posix.cc"));
-        assert!(!matches_glob("testes/**", "src/testes.c"));
-        assert!(!matches_glob("src/*.cc", "src/fmt.cpp"));
     }
 }
