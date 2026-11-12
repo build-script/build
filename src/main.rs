@@ -3,6 +3,7 @@ mod common;
 mod jvm;
 mod language;
 mod native;
+mod plugins;
 mod project;
 mod tool;
 
@@ -29,6 +30,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("install", "install <library> [<script>] [--module <name>] [<list>]"),
     ("clean", "clean [<script>] | clean --cache"),
     ("config", "config [<setting> [<value>]] | config --unset <setting>"),
+    ("plugins", "plugins"),
 ];
 
 /// What take_build_options takes before the commands get their arguments
@@ -99,6 +101,8 @@ enum Command {
         value: Option<String>,
         unset: bool,
     },
+    /// lists the plugins of the official list
+    Plugins,
 }
 
 /// Every command, then the options of those that build
@@ -207,6 +211,12 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         "add" => return parse_add(&arguments),
         "install" => return parse_install(&arguments),
         "config" => return parse_config(&arguments),
+        "plugins" => {
+            return match arguments.rest {
+                [] => Ok(Command::Plugins),
+                _ => Err(arguments.wrong("plugins takes no arguments".to_string())),
+            };
+        }
         _ => return Err(no_command(command)),
     }
 }
@@ -463,6 +473,7 @@ fn help() -> String {
           {}
   config  shows or changes what new and add remember, like your domain:
           {}
+  plugins lists the official plugins, use <name> in a script loads one
 
 The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.
 build --version shows the version.",
@@ -604,6 +615,11 @@ fn main() {
         }
         Command::CleanCache => {
             exit_on_error(project::clean_cache());
+
+            return;
+        }
+        Command::Plugins => {
+            exit_on_error(list_plugins());
 
             return;
         }
@@ -767,6 +783,24 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     }
 
     std::process::exit(1);
+}
+
+/// The plugins of the official list with what they build
+fn list_plugins() -> Result<(), String> {
+    let repository = plugins::official_repository();
+    let found = plugins::official_plugins(&repository, &common::system::cache_dir("git"))?;
+    let width = found.iter()
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+
+    println!("Plugins of {repository}, use <name> in a script loads one:");
+
+    for (name, about) in found {
+        println!("  {name:<width$}  {about}");
+    }
+
+    return Ok(());
 }
 
 /// The settings file and what it holds, or one setting shown, set or removed

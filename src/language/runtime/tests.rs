@@ -350,11 +350,11 @@ fn build_functions_need_use() {
         "build_kotlin has no parameter 'mainClass', it is called main_class"
     );
 
-    let error = run("use cobol").err().unwrap();
-    assert!(matches!(
-        error.variant,
-        RuntimeErrorType::UnknownPlatform { .. }
-    ));
+    // neither a platform nor in the official list, which is not there either
+    let runtime = Runtime::new(".").with_official_plugins("file:///nonexistent/build-script-plugins");
+    let error = run_in(runtime, "use cobol").err().unwrap();
+    assert!(matches!(&error.variant, RuntimeErrorType::UnknownPlugin { name, .. } if name == "cobol"));
+    assert!(error.to_string().starts_with("cobol is neither a platform nor an official plugin (platforms: kotlin"), "{error}");
 }
 
 #[test]
@@ -947,8 +947,8 @@ fn plugins_define_their_functions_in_a_scope_of_their_own() {
     let (_, result) = plugin_runtime(&directory, "use \"./plugins/missing.build\"");
     assert!(result.unwrap_err().contains("no plugin ./plugins/missing.build"));
 
-    let (_, result) = plugin_runtime(&directory, "use \"someone/build-zig\"");
-    assert!(result.unwrap_err().contains("someone/build-zig names a repository"));
+    let (_, result) = plugin_runtime(&directory, "use \"someone\"");
+    assert!(result.unwrap_err().contains("someone names no repository"));
 }
 
 #[test]

@@ -24,6 +24,9 @@ struct Lock {
 
 static LOCK: Mutex<Option<Lock>> = Mutex::new(None);
 
+/// keys a build that does not use them forgets
+const ONLY_WHEN_USED: &[&str] = &["plugin:", "git:"];
+
 /// The lock is one for the process, tests that open it take turns
 #[cfg(test)]
 pub static TESTS: Mutex<()> = Mutex::new(());
@@ -75,14 +78,41 @@ pub fn open(script: &Path, refresh: bool) -> Result<(), String> {
 
 /// The SHA-256 the lock has for `key`, from the file or from this build
 pub fn locked_sha256(key: &str) -> Option<String> {
+    return locked_value(key)?
+        .strip_prefix("sha256=")
+        .map(str::to_string);
+}
+
+/// What the lock has for `key`, from this build or from the file; nothing of the file with --refresh
+pub fn locked_value(key: &str) -> Option<String> {
     let lock = LOCK.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let lock = lock.as_ref()?;
 
     return lock.used.get(key)
         .or_else(|| lock.locked.get(key))
-        .and_then(|value| value.strip_prefix("sha256="))
-        .map(str::to_string);
+        .cloned();
+}
+
+/// What the file had for `key`, also with --refresh: which release a plugin had before
+pub fn previous_value(key: &str) -> Option<String> {
+    let lock = LOCK.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    return lock.as_ref()?
+        .previous
+        .get(key)
+        .cloned();
+}
+
+/// Keeps what this build took for `key`, like the commit a plugin resolved to
+pub fn keep_value(key: &str, value: &str) {
+    let mut lock = LOCK.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(lock) = lock.as_mut() {
+        lock.used.insert(key.to_string(), value.to_string());
+    }
 }
 
 /// A file of `key` with a SHA-256 known already, like the archive of an installed tool: it has to
@@ -195,6 +225,11 @@ pub fn save() -> Result<(), String> {
 
     let mut entries = lock.used.clone();
     for (path, value) in &lock.previous {
+        // what every build resolves again, like plugins and the commits of tags, stays only when it is used
+        if ONLY_WHEN_USED.iter().any(|prefix| path.starts_with(prefix)) {
+            continue;
+        }
+
         if used_versions.contains(directory(path)) || !used_artifacts.contains(directory(directory(path))) {
             entries.entry(path.clone()).or_insert_with(|| value.clone());
         }

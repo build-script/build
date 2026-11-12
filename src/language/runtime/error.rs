@@ -57,9 +57,6 @@ pub enum RuntimeErrorType {
         /// the type of the value, or the string itself where the type has variants
         got: String,
     },
-    UnknownPlatform {
-        name: String,
-    },
     BuiltinFailed {
         name: String,
         message: String,
@@ -101,9 +98,18 @@ pub enum RuntimeErrorType {
         plugin: String,
         path: String,
     },
-    /// use "owner/repository", until repositories are supported
-    PluginRepository {
+    /// use "owner/repository" whose plugin could not be had
+    PluginFailed {
         plugin: String,
+        message: String,
+    },
+    /// use with a name that is neither a platform nor an official plugin
+    UnknownPlugin {
+        name: String,
+        /// the names of the official list, empty when it could not be had
+        official: Vec<String>,
+        /// why the official list has none of that name
+        message: String,
     },
     /// a plugin uses a plugin that uses it
     PluginCycle {
@@ -264,13 +270,6 @@ impl fmt::Display for RuntimeError {
                     "{function}: argument '{param}' must be {expected}, got {got}"
                 );
             }
-            RuntimeErrorType::UnknownPlatform { name } => {
-                return write!(
-                    f,
-                    "unknown platform '{name}' (available: {})",
-                    platform_names().join(", ")
-                );
-            }
             RuntimeErrorType::BuiltinFailed { name, message } => {
                 return write!(f, "{name}: {message}");
             }
@@ -310,8 +309,14 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorType::PluginNotFound { plugin, path } => {
                 return write!(f, "no plugin {plugin}: {path} does not exist");
             }
-            RuntimeErrorType::PluginRepository { plugin } => {
-                return write!(f, "{plugin} names a repository, plugins come from files like \"./plugins/go.build\" for now");
+            RuntimeErrorType::PluginFailed { plugin, message } => return write!(f, "{plugin}: {message}"),
+            RuntimeErrorType::UnknownPlugin { name, official, message } => {
+                let official = match official.is_empty() {
+                    true => format!("the official list: {message}"),
+                    false => format!("official plugins: {}", official.join(", ")),
+                };
+
+                return write!(f, "{name} is neither a platform nor an official plugin (platforms: {}; {official})", platform_names().join(", "));
             }
             RuntimeErrorType::PluginCycle { plugin } => {
                 return write!(f, "{plugin} uses itself through the plugins it uses");

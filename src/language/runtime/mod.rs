@@ -77,6 +77,8 @@ pub struct Runtime {
     loading: Vec<PathBuf>,
     /// the script functions being called, outermost first: an error in a plugin names where the script called it
     calls: Vec<(String, Span)>,
+    /// the repository of the official plugins
+    official_plugins: String,
 }
 
 /// A file the spans of a runtime point into
@@ -152,7 +154,15 @@ impl Runtime {
             plugins: HashMap::new(),
             loading: vec![],
             calls: vec![],
+            official_plugins: crate::plugins::official_repository(),
         };
+    }
+
+    /// Another repository of the official plugins, a local one in tests
+    #[cfg(test)]
+    pub fn with_official_plugins(mut self, repository: &str) -> Self {
+        self.official_plugins = repository.to_string();
+        return self;
     }
 
     /// The script as the command line names it, for the places of errors
@@ -296,15 +306,26 @@ impl Runtime {
         }
     }
 
-    /// Defines what the plugin defines, loaded once and in a scope of its own
+    /// A file of the project or a plugin of a repository: `use "./go.build"`, `use "owner/repository"`
     fn load_plugin(&mut self, plugin: &str, span: Span) -> Result<(), RuntimeError> {
-        if !plugin.starts_with("./") && !plugin.starts_with("../") {
-            let plugin = plugin.to_string();
-            return Err(RuntimeError::new(RuntimeErrorType::PluginRepository { plugin }, span));
+        if plugin.starts_with("./") || plugin.starts_with("../") {
+            // relative to the file with the use
+            let file = self.source_directory(span.source).join(plugin);
+            return self.load_plugin_file(plugin, file, span);
         }
 
-        // relative to the file with the use
-        let file = self.source_directory(span.source).join(plugin);
+        let file = crate::plugins::PluginSource::of_repository(plugin)
+            .and_then(|source| crate::plugins::locate(&source, &system::cache_dir("git")))
+            .map_err(|message| {
+                let plugin = plugin.to_string();
+                return RuntimeError::new(RuntimeErrorType::PluginFailed { plugin, message }, span);
+            })?;
+
+        return self.load_plugin_file(plugin, file, span);
+    }
+
+    /// Defines what the plugin defines, loaded once and in a scope of its own
+    fn load_plugin_file(&mut self, plugin: &str, file: PathBuf, span: Span) -> Result<(), RuntimeError> {
         let path = system::canonical_path(&file).map_err(|_| {
             let (plugin, path) = (plugin.to_string(), file.display().to_string());
             return RuntimeError::new(RuntimeErrorType::PluginNotFound { plugin, path }, span);
@@ -400,10 +421,22 @@ impl Runtime {
             .map_or_else(|| self.context.project_dir.clone(), Path::to_path_buf);
     }
 
+    /// A platform of build-script, otherwise a plugin of the official list: `use go`, `use go@1.4`
     fn load_platform(&mut self, name: &str, span: Span) -> Result<(), RuntimeError> {
         let Some(platform) = platforms().find(|platform| platform.name == name) else {
-            let name = name.to_string();
-            return Err(RuntimeError::new(RuntimeErrorType::UnknownPlatform { name }, span));
+            let repository = self.official_plugins.clone();
+            let source = crate::plugins::PluginSource::official(name, &repository);
+
+            let file = crate::plugins::locate(&source, &system::cache_dir("git")).map_err(|message| {
+                // the list helps with a misspelled name, when it can be had
+                let official = crate::plugins::official_plugins(&repository, &system::cache_dir("git"))
+                    .map(|plugins| plugins.into_iter().map(|(name, _)| name).collect())
+                    .unwrap_or_default();
+                let name = name.to_string();
+                return RuntimeError::new(RuntimeErrorType::UnknownPlugin { name, official, message }, span);
+            })?;
+
+            return self.load_plugin_file(name, file, span);
         };
 
         for (function, value) in (platform.functions)() {
