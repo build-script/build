@@ -299,7 +299,8 @@ fn set_environment(process: &mut Command, environment: &[(String, String)], path
     return Ok(());
 }
 
-/// "go build" of go with its arguments, for the log and errors
+/// "go build" of go with its arguments, for the log and errors: the first argument when it is a subcommand,
+/// not an option or a path
 fn what(command: &[String]) -> String {
     let program = Path::new(&command[0])
         .file_stem()
@@ -308,7 +309,7 @@ fn what(command: &[String]) -> String {
         .to_string();
 
     return match command.get(1) {
-        Some(first) if !first.starts_with('-') => format!("{program} {first}"),
+        Some(first) if !first.starts_with('-') && !first.contains(['/', '\\', '.']) => format!("{program} {first}"),
         _ => program,
     };
 }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::common::semaphore::Semaphore;
+use crate::common::up_to_date::hash_hex;
 use crate::common::{system, terminal};
 
 use super::toolchain::{NativeTarget, Toolchain};
@@ -52,14 +53,17 @@ pub struct Compilation<'a> {
     pub tests: bool,
     /// the files below the roots of the patterns, searched once
     pub candidates: OnceLock<Vec<PathBuf>>,
+    /// what commands the module depends on wrote, compiled with its sources
+    pub generated_sources: Vec<PathBuf>,
 }
 
 impl Compilation<'_> {
-    /// The files `source_patterns` match, without those `exclude_patterns` match
+    /// The files `source_patterns` match, without those `exclude_patterns` match, and the generated ones
     pub fn sources(&self) -> Vec<PathBuf> {
         return self.candidates()
             .iter()
             .filter(|file| self.matches_any(self.source_patterns, file) && !self.matches_any(self.exclude_patterns, file))
+            .chain(&self.generated_sources)
             .cloned()
             .collect();
     }
@@ -95,6 +99,15 @@ impl Compilation<'_> {
 
     /// src/main.cpp becomes <objects>/src/main.cpp.o
     pub fn object(&self, source: &Path) -> PathBuf {
+        // generated outside of the module: by the directory it is in, two commands may write the same name
+        if !source.starts_with(self.module_dir) {
+            let directory = hash_hex(source.parent());
+            let name = source.file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            return self.objects_dir.join("generated").join(&directory[..8]).join(format!("{name}.o"));
+        }
+
         return self.objects_dir.join(format!("{}.o", system::relative_with_slashes(self.module_dir, source)));
     }
 
