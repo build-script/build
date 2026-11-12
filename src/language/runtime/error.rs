@@ -97,17 +97,48 @@ pub enum RuntimeErrorType {
         what: &'static str,
         got: Type,
     },
+    PluginNotFound {
+        plugin: String,
+        path: String,
+    },
+    /// use "owner/repository", until repositories are supported
+    PluginRepository {
+        plugin: String,
+    },
+    /// a plugin uses a plugin that uses it
+    PluginCycle {
+        plugin: String,
+    },
+    /// what a plugin defines is defined already
+    PluginNameTaken {
+        plugin: String,
+        name: String,
+    },
+    /// a plugin does not parse, the span is in its file
+    PluginParse {
+        message: String,
+    },
+    /// a module built while a plugin is loaded
+    ModuleInPlugin {
+        function: String,
+    },
 }
 
 #[derive(Debug)]
 pub struct RuntimeError {
     pub variant: RuntimeErrorType,
     pub span: Span,
+    /// for an error in a plugin: the function the script called and where, the script's line is shown first
+    pub called_from: Option<(String, Span)>,
 }
 
 impl RuntimeError {
     pub fn new(variant: RuntimeErrorType, span: Span) -> Self {
-        return RuntimeError { variant, span };
+        return RuntimeError {
+            variant,
+            span,
+            called_from: None,
+        };
     }
 
     pub fn invalid_binary_operands(
@@ -275,6 +306,22 @@ impl fmt::Display for RuntimeError {
                     f,
                     "{function}: calls nest too deeply, does it call itself without end?"
                 );
+            }
+            RuntimeErrorType::PluginNotFound { plugin, path } => {
+                return write!(f, "no plugin {plugin}: {path} does not exist");
+            }
+            RuntimeErrorType::PluginRepository { plugin } => {
+                return write!(f, "{plugin} names a repository, plugins come from files like \"./plugins/go.build\" for now");
+            }
+            RuntimeErrorType::PluginCycle { plugin } => {
+                return write!(f, "{plugin} uses itself through the plugins it uses");
+            }
+            RuntimeErrorType::PluginNameTaken { plugin, name } => {
+                return write!(f, "{plugin} defines {name}, which is defined already; a plugin keeps names starting with _ to itself");
+            }
+            RuntimeErrorType::PluginParse { message } => return write!(f, "{message}"),
+            RuntimeErrorType::ModuleInPlugin { function } => {
+                return write!(f, "{function}: plugins define functions, their modules come from the scripts that call them");
             }
         }
     }

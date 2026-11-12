@@ -734,6 +734,7 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     let idea = exit_on_error(jvm::before_build(&project_dir, set_up_idea, release));
 
     let mut runtime = Runtime::new(project_dir.clone())
+        .with_script(Path::new(script_path), &source)
         .with_tests(tests)
         .with_test_arguments(test_arguments)
         .with_jobs(jobs)
@@ -762,8 +763,7 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     };
 
     for error in errors {
-        let (line, column) = line_column(&source, error.span.start);
-        eprintln!("{script_path}:{line}:{column}: {error}");
+        eprintln!("{}", runtime.describe(&error));
     }
 
     std::process::exit(1);

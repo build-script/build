@@ -7,15 +7,15 @@ mod testing;
 mod values;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::common::semaphore::Semaphore;
 use crate::common::system;
 use crate::jvm;
-use crate::language::lexer::Span;
+use crate::language::lexer::{Span, line_column};
 use crate::language::parser::{
-    BinaryOperator, Expression, ExpressionType, Identifier, Parameter, Script, Statement, StatementType,
+    BinaryOperator, Expression, ExpressionType, Identifier, Parameter, Parser, Script, Statement, StatementType,
     TypeExpression, TypeExpressionType, UnaryOperator,
 };
 
@@ -62,11 +62,27 @@ pub enum TestSelection {
 pub struct Runtime {
     /// the scope of the script, or of the function being called
     scope: SharedScope,
+    /// true, false and the core functions: the script and every plugin have a scope of their own below it
+    core: SharedScope,
     context: BuildScriptContext,
     /// every module a builtin returned, in build order, maybe still building
     built: Vec<Arc<PendingModule>>,
     jobs: Arc<Semaphore>,
     call_depth: usize,
+    /// the script and the plugins, what the sources of spans count: the script is 0
+    sources: Vec<SourceFile>,
+    /// what each plugin loaded defines, by its canonical path
+    plugins: HashMap<PathBuf, Vec<(String, Value)>>,
+    /// plugins being loaded, a plugin that uses one of them uses itself
+    loading: Vec<PathBuf>,
+    /// the script functions being called, outermost first: an error in a plugin names where the script called it
+    calls: Vec<(String, Span)>,
+}
+
+/// A file the spans of a runtime point into
+struct SourceFile {
+    path: PathBuf,
+    text: String,
 }
 
 /// The platforms of every language category
@@ -104,8 +120,25 @@ impl Runtime {
         let project_dir = project_dir.into();
         let project_dir = system::canonical_path(&project_dir).unwrap_or(project_dir);
 
-        let mut runtime = Runtime {
-            scope: Arc::new(Mutex::new(Scope::default())),
+        let core = Arc::new(Mutex::new(Scope::default()));
+
+        {
+            let mut core = core.lock().unwrap();
+            core.variables.insert("true".to_string(), Value::Bool(true));
+            core.variables.insert("false".to_string(), Value::Bool(false));
+
+            for (name, value) in core_functions() {
+                core.variables.insert(name.to_string(), value);
+            }
+        }
+
+        return Runtime {
+            scope: Scope::child(&core),
+            core,
+            sources: vec![SourceFile {
+                path: project_dir.join("project.build"),
+                text: String::new(),
+            }],
             context: BuildScriptContext {
                 project_dir,
                 tests: TestSelection::None,
@@ -116,16 +149,43 @@ impl Runtime {
             built: vec![],
             jobs: Arc::new(Semaphore::new(default_jobs())),
             call_depth: 0,
+            plugins: HashMap::new(),
+            loading: vec![],
+            calls: vec![],
+        };
+    }
+
+    /// The script as the command line names it, for the places of errors
+    pub fn with_script(mut self, path: &Path, text: &str) -> Self {
+        self.sources[0] = SourceFile {
+            path: path.to_path_buf(),
+            text: text.to_string(),
+        };
+        return self;
+    }
+
+    /// path:line:column of a span, a plugin's path relative to the project when it is in there
+    pub fn location(&self, span: Span) -> String {
+        let Some(source) = self.sources.get(span.source) else {
+            return format!("?:{}", span.start);
         };
 
-        runtime.define("true", Value::Bool(true));
-        runtime.define("false", Value::Bool(false));
+        let path = source.path
+            .strip_prefix(&self.context.project_dir)
+            .unwrap_or(&source.path);
+        let (line, column) = line_column(&source.text, span.start);
 
-        for (name, value) in core_functions() {
-            runtime.define(name, value);
+        return format!("{}:{line}:{column}", path.display());
+    }
+
+    /// The error with where it happened. One in a plugin starts with where the script called it.
+    pub fn describe(&self, error: &RuntimeError) -> String {
+        match &error.called_from {
+            Some((function, call)) => {
+                return format!("{}: {function}: {error} (in {})", self.location(*call), self.location(error.span));
+            }
+            None => return format!("{}: {error}", self.location(error.span)),
         }
-
-        return runtime;
     }
 
     pub fn with_tests(mut self, tests: TestSelection) -> Self {
@@ -201,11 +261,11 @@ impl Runtime {
         for pending in &self.built {
             match pending.wait() {
                 Ok(module) => modules.push(module),
-                Err(BuildFailure::Failed(message)) => errors.push(RuntimeError::builtin_failed(
-                    pending.function,
-                    message,
-                    pending.span,
-                )),
+                Err(BuildFailure::Failed(message)) => {
+                    let mut error = RuntimeError::builtin_failed(pending.function, message, pending.span);
+                    error.called_from = pending.called_from.clone();
+                    errors.push(error);
+                }
                 Err(BuildFailure::DependencyFailed) => {}
             }
         }
@@ -232,7 +292,112 @@ impl Runtime {
                 return Ok(());
             }
             StatementType::Use(platform) => return self.load_platform(&platform.name, statement.span),
+            StatementType::UsePlugin(plugin) => return self.load_plugin(plugin, statement.span),
         }
+    }
+
+    /// Defines what the plugin defines, loaded once and in a scope of its own
+    fn load_plugin(&mut self, plugin: &str, span: Span) -> Result<(), RuntimeError> {
+        if !plugin.starts_with("./") && !plugin.starts_with("../") {
+            let plugin = plugin.to_string();
+            return Err(RuntimeError::new(RuntimeErrorType::PluginRepository { plugin }, span));
+        }
+
+        // relative to the file with the use
+        let file = self.source_directory(span.source).join(plugin);
+        let path = system::canonical_path(&file).map_err(|_| {
+            let (plugin, path) = (plugin.to_string(), file.display().to_string());
+            return RuntimeError::new(RuntimeErrorType::PluginNotFound { plugin, path }, span);
+        })?;
+
+        if self.loading.contains(&path) {
+            let plugin = plugin.to_string();
+            return Err(RuntimeError::new(RuntimeErrorType::PluginCycle { plugin }, span));
+        }
+
+        let definitions = match self.plugins.get(&path) {
+            Some(definitions) => definitions.clone(),
+            None => {
+                let definitions = self.evaluate_plugin(&path, span)?;
+                self.plugins.insert(path, definitions.clone());
+                definitions
+            }
+        };
+
+        for (name, value) in definitions {
+            let defined = self.scope.lock().unwrap().get(&name);
+
+            // the same plugin used twice defines the same values
+            if let Some(defined) = defined && Self::values_equal(&defined, &value) != Some(true) {
+                let plugin = plugin.to_string();
+                return Err(RuntimeError::new(RuntimeErrorType::PluginNameTaken { plugin, name }, span));
+            }
+
+            self.define(&name, value);
+        }
+
+        return Ok(());
+    }
+
+    /// The names a plugin assigns at its top, but those starting with _, and their values
+    fn evaluate_plugin(&mut self, path: &Path, span: Span) -> Result<Vec<(String, Value)>, RuntimeError> {
+        let text = std::fs::read_to_string(path).map_err(|error| {
+            let (plugin, path) = (path.display().to_string(), format!("{}: {error}", path.display()));
+            return RuntimeError::new(RuntimeErrorType::PluginNotFound { plugin, path }, span);
+        })?;
+
+        let source = self.sources.len();
+        self.sources.push(SourceFile {
+            path: path.to_path_buf(),
+            text: text.clone(),
+        });
+
+        let script = Parser::of_source(&text, source)
+            .parse_script()
+            .map_err(|error| {
+                let message = error.variant.to_string();
+                return RuntimeError::new(RuntimeErrorType::PluginParse { message }, error.span);
+            })?;
+
+        // the plugin sees the core functions, never the variables of the script
+        let scope = Scope::child(&self.core);
+        let directory = path.parent().unwrap_or(path).display().to_string();
+        scope.lock().unwrap().variables.insert("plugin_directory".to_string(), Value::String(directory));
+
+        let outer = std::mem::replace(&mut self.scope, scope.clone());
+        self.loading.push(path.to_path_buf());
+        let evaluated = self.run(&script);
+        self.loading.pop();
+        self.scope = outer;
+        evaluated?;
+
+        let mut definitions: Vec<(String, Value)> = vec![];
+
+        for statement in &script.statements {
+            let StatementType::Expression(expression) = &statement.variant else { continue };
+            let ExpressionType::Assignment { target, .. } = &expression.variant else { continue };
+
+            if target.name.starts_with('_') || definitions.iter().any(|(name, _)| *name == target.name) {
+                continue;
+            }
+
+            if let Some(value) = scope.lock().unwrap().variables.get(&target.name) {
+                definitions.push((target.name.clone(), value.clone()));
+            }
+        }
+
+        return Ok(definitions);
+    }
+
+    /// Of the file with this number: the project for the script
+    fn source_directory(&self, source: usize) -> PathBuf {
+        if source == 0 {
+            return self.context.project_dir.clone();
+        }
+
+        return self.sources[source].path
+            .parent()
+            .map_or_else(|| self.context.project_dir.clone(), Path::to_path_buf);
     }
 
     fn load_platform(&mut self, name: &str, span: Span) -> Result<(), RuntimeError> {
@@ -707,7 +872,17 @@ impl Runtime {
 
         // modules build on threads of their own, the script goes on meanwhile
         if matches!(signature.returns, Type::Module) {
-            let module = PendingModule::new(name, span);
+            if !self.loading.is_empty() {
+                let function = name.to_string();
+                return Err(RuntimeError::new(RuntimeErrorType::ModuleInPlugin { function }, span));
+            }
+
+            // built in a plugin's function: the script's call comes first in its error
+            let called_from = self.calls
+                .first()
+                .filter(|(_, call)| call.source != span.source)
+                .cloned();
+            let module = PendingModule::new(name, span, called_from);
             self.built.push(module.clone());
             self.build_in_background(module.clone(), function, args);
 
@@ -796,10 +971,19 @@ impl Runtime {
         }
 
         self.call_depth += 1;
+        self.calls.push((function.name.clone(), span));
         let result = self.evaluate_in(scope, &function.body);
+        self.calls.pop();
         self.call_depth -= 1;
 
-        let result = result?;
+        // an error in a plugin starts with where the script called it
+        let result = result.map_err(|mut error| {
+            if error.called_from.is_none() && error.span.source != span.source {
+                error.called_from = Some((function.name.clone(), span));
+            }
+
+            return error;
+        })?;
 
         if !function.signature.returns.accepts(&result) {
             return Err(RuntimeError::new(

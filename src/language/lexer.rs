@@ -2,15 +2,20 @@
 pub struct Span {
     pub start: usize,
     pub end: usize,
+    /// the file: 0 for the script, plugins have numbers of their own
+    pub source: usize,
 }
 
 impl Span {
     pub fn till(&self, end: Span) -> Span {
-        return Span::new(self.start, end.end);
+        return Span {
+            end: end.end,
+            ..*self
+        };
     }
 
     pub fn new(start: usize, end: usize) -> Self {
-        return Span { start, end };
+        return Span { start, end, source: 0 };
     }
 }
 
@@ -166,13 +171,16 @@ const KEYWORDS: &[(&'static str, TokenType)] = &[
 pub struct TokenStream<'src> {
     pub input: &'src str,
     pub current_pos: usize,
+    /// what the spans of the tokens name as their file
+    pub source: usize,
 }
 
 impl<'src> TokenStream<'src> {
-    pub fn new(input: &'src str) -> Self {
+    pub fn new(input: &'src str, source: usize) -> Self {
         return TokenStream {
             input,
             current_pos: 0,
+            source,
         };
     }
 
@@ -245,14 +253,16 @@ impl<'src> TokenStream<'src> {
     }
 
     pub fn next(&mut self) -> Token {
-        let token = self.lex_token(self.current_pos);
+        let token = self.peek();
         self.current_pos = token.span.end;
 
         return token;
     }
 
     pub fn peek(&self) -> Token {
-        return self.lex_token(self.current_pos);
+        let mut token = self.lex_token(self.current_pos);
+        token.span.source = self.source;
+        return token;
     }
 
     /// Position of the next token, after whitespace, `// …` and `/* … */`
@@ -301,7 +311,7 @@ mod tests {
     use super::*;
 
     fn tokens(input: &str) -> Vec<TokenType> {
-        let mut stream = TokenStream::new(input);
+        let mut stream = TokenStream::new(input, 0);
         let mut tokens = vec![];
 
         loop {

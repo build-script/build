@@ -34,6 +34,8 @@ pub fn with_module(
                 uses.push((platform.name.as_str(), statement.span.end));
                 continue;
             }
+            // what a plugin builds is not known without running it
+            StatementType::UsePlugin(_) => continue,
             StatementType::Expression(expression) => expression,
         };
 
@@ -271,6 +273,8 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
                 }
                 continue;
             }
+            // calls of plugin functions are not known without running them
+            StatementType::UsePlugin(_) => continue,
             StatementType::Expression(expression) => expression,
         };
 

@@ -894,3 +894,82 @@ fn scripts_ask_for_the_system_files_and_patterns() {
     assert!(message("match(\"x\", \"(\")").starts_with("match: ( is no regular expression"));
     assert!(message("cache_directory(\"../maven\")").contains("cannot name a directory of the cache"));
 }
+
+/// A runtime for a script in `directory` whose errors name project.build and the plugins by their paths
+fn plugin_runtime(directory: &std::path::Path, source: &str) -> (Runtime, Result<(), String>) {
+    let project = system::canonical_path(directory).unwrap();
+    let script = Parser::new(source)
+        .parse_script()
+        .expect("script should parse");
+    let mut runtime = Runtime::new(&project).with_script(&project.join("project.build"), source);
+
+    let result = runtime.run(&script)
+        .map_err(|error| runtime.describe(&error))
+        .and_then(|_| runtime.finish().map(|_| ()).map_err(|errors| runtime.describe(&errors[0])));
+
+    return (runtime, result);
+}
+
+#[test]
+fn plugins_define_their_functions_in_a_scope_of_their_own() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("plugins");
+    let write = |name: &str, content: &str| system::write_file(&directory.join(name), content).unwrap();
+    write("plugins/greet.build", "use cpp\n_prefix = \"Hello, \"\ngreeting = fn (name: str) -> str { _prefix + name }\nhere = plugin_directory\nleak = fn () -> str { secret }\n");
+
+    let (runtime, result) = plugin_runtime(&directory, "secret = \"x\"\nuse \"./plugins/greet.build\"\nuse \"./plugins/greet.build\"\nmessage = greeting(\"Go\")");
+    result.unwrap();
+    assert_eq!(string(&runtime, "message"), "Hello, Go");
+    assert_eq!(string(&runtime, "here"), system::canonical_path(&directory.join("plugins")).unwrap().display().to_string());
+
+    // only what it assigns, without _: neither its helpers, nor its platforms, nor plugin_directory
+    for name in ["_prefix", "build_cpp", "plugin_directory"] {
+        assert!(runtime.scope.lock().unwrap().get(name).is_none(), "{name}");
+    }
+
+    // a plugin never sees the variables of the script
+    let (_, result) = plugin_runtime(&directory, "secret = \"x\"\nuse \"./plugins/greet.build\"\nleak()");
+    assert!(result.unwrap_err().contains("secret"));
+
+    let (_, result) = plugin_runtime(&directory, "greeting = \"mine\"\nuse \"./plugins/greet.build\"");
+    assert!(result.unwrap_err().ends_with("./plugins/greet.build defines greeting, which is defined already; a plugin keeps names starting with _ to itself"));
+
+    write("plugins/a.build", "use \"./b.build\"\n");
+    write("plugins/b.build", "use \"./a.build\"\n");
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/a.build\"");
+    assert!(result.unwrap_err().contains("./a.build uses itself through the plugins it uses"));
+
+    write("plugins/eager.build", "built = build_command(\"eager\", list(\"true\"))\n");
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/eager.build\"");
+    assert!(result.unwrap_err().contains("build_command: plugins define functions, their modules come from the scripts that call them"));
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/missing.build\"");
+    assert!(result.unwrap_err().contains("no plugin ./plugins/missing.build"));
+
+    let (_, result) = plugin_runtime(&directory, "use \"someone/build-zig\"");
+    assert!(result.unwrap_err().contains("someone/build-zig names a repository"));
+}
+
+#[test]
+fn errors_in_plugins_name_the_script_and_the_plugin() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("plugin-errors");
+    let write = |name: &str, content: &str| system::write_file(&directory.join(name), content).unwrap();
+    write("plugins/tools.build", "broken = fn () -> str {\n    undefined_name\n}\nfails = fn () -> module {\n    build_command(\"fails\", list(\"no-such-program-of-build-script\"))\n}\n");
+    write("plugins/bad.build", "x = (\n");
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/tools.build\"\nbroken()");
+    let error = result.unwrap_err();
+    assert!(error.starts_with("project.build:2:1: broken: "), "{error}");
+    assert!(error.ends_with("(in plugins/tools.build:2:5)"), "{error}");
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/tools.build\"\n\nfails()");
+    let error = result.unwrap_err();
+    assert!(error.starts_with("project.build:3:1: fails: build_command: could not start no-such-program-of-build-script"), "{error}");
+    assert!(error.ends_with("(in plugins/tools.build:5:5)"), "{error}");
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/bad.build\"");
+    assert!(result.unwrap_err().starts_with("plugins/bad.build:2:1: expected an expression"));
+}

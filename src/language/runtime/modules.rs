@@ -32,6 +32,8 @@ pub struct PendingModule {
     /// what builds it and where the script calls it, for its error
     pub function: &'static str,
     pub span: Span,
+    /// built by a function of a plugin: that function and where the script called it
+    pub called_from: Option<(String, Span)>,
     result: Mutex<Option<Result<Arc<BuiltModule>, BuildFailure>>>,
     done: Condvar,
 }
@@ -63,10 +65,11 @@ pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
 }
 
 impl PendingModule {
-    pub fn new(function: &'static str, span: Span) -> Arc<Self> {
+    pub fn new(function: &'static str, span: Span, called_from: Option<(String, Span)>) -> Arc<Self> {
         return Arc::new(PendingModule {
             function,
             span,
+            called_from,
             result: Mutex::new(None),
             done: Condvar::new(),
         });
@@ -74,7 +77,7 @@ impl PendingModule {
 
     /// Of a build function that built it right away
     pub fn built(module: Arc<BuiltModule>) -> Arc<Self> {
-        let pending = Self::new("", Span::new(0, 0));
+        let pending = Self::new("", Span::new(0, 0), None);
         pending.finish(Ok(module));
 
         return pending;

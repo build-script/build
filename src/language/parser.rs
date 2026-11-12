@@ -10,6 +10,8 @@ pub enum ParseErrorType {
         got: Token,
     },
     InvalidAssignmentTarget,
+    /// use plugins/go.build, which reads as a division
+    PluginWithoutQuotes,
 }
 
 #[derive(Debug)]
@@ -44,6 +46,9 @@ impl fmt::Display for ParseErrorType {
             }
             ParseErrorType::InvalidAssignmentTarget => {
                 return write!(f, "only variables can be assigned to");
+            }
+            ParseErrorType::PluginWithoutQuotes => {
+                return write!(f, "the file of a plugin goes in quotes: use \"./plugins/go.build\"");
             }
         }
     }
@@ -191,6 +196,8 @@ pub struct Parameter {
 pub enum StatementType {
     /// `use kotlin`
     Use(Identifier),
+    /// `use "./plugins/go.build"`: the functions and values a plugin defines
+    UsePlugin(String),
     Expression(Expression),
 }
 
@@ -226,9 +233,15 @@ const fn infix_precedence(variant: &TokenType) -> Option<(u8, u8)> {
 }
 
 impl<'src> Parser<'src> {
+    /// Of the script
     pub fn new(input: &'src str) -> Self {
+        return Self::of_source(input, 0);
+    }
+
+    /// Of a file with its own number in the spans, like a plugin
+    pub fn of_source(input: &'src str, source: usize) -> Self {
         return Parser {
-            token_stream: TokenStream::new(input),
+            token_stream: TokenStream::new(input, source),
         };
     }
 
@@ -258,8 +271,25 @@ impl<'src> Parser<'src> {
 
     fn parse_use_statement(&mut self) -> Result<Statement, ParseError> {
         let use_token = self.expect(TokenType::Use)?;
-        let platform = self.expect_identifier("a platform like kotlin")?;
+
+        if let TokenType::String(plugin) = self.token_stream.peek().variant {
+            let plugin_token = self.token_stream.next();
+
+            return Ok(Statement {
+                variant: StatementType::UsePlugin(plugin),
+                span: use_token.span.till(plugin_token.span),
+            });
+        }
+
+        let platform = self.expect_identifier("a platform like kotlin or a plugin like \"./go.build\"")?;
         let span = use_token.span.till(platform.span);
+
+        if platform.name.ends_with(".build") || self.token_stream.peek().variant == TokenType::Slash {
+            return Err(ParseError {
+                variant: ParseErrorType::PluginWithoutQuotes,
+                span,
+            });
+        }
 
         return Ok(Statement {
             variant: StatementType::Use(platform),
@@ -683,7 +713,9 @@ mod tests {
         assert_eq!(error("f(a"), "expected ')', got the end of the script");
         assert_eq!(error("fn(a str) { a }"), "expected ':', got 'str'");
         assert_eq!(error("fn(\"a\": str) { a }"), "expected a parameter name, got \"a\"");
-        assert_eq!(error("use \"other.build\""), "expected a platform like kotlin, got \"other.build\"");
+        assert_eq!(error("use ("), "expected a platform like kotlin or a plugin like \"./go.build\", got '('");
+        assert_eq!(error("use plugins/go.build"), "the file of a plugin goes in quotes: use \"./plugins/go.build\"");
+        assert_eq!(error("use go.build"), "the file of a plugin goes in quotes: use \"./plugins/go.build\"");
         assert_eq!(error("x = )"), "expected an expression, got ')'");
         assert_eq!(error("f(x) = 1"), "only variables can be assigned to");
     }
