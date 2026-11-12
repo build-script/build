@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::common::refresh::REFRESHED_AT;
 use crate::common::system;
 
 const HEADER: &str = "# Written by build-script: the SHA-256 of every file the build downloaded, and the build a SNAPSHOT
@@ -16,18 +15,32 @@ struct Lock {
     file: PathBuf,
     /// what the file holds, nothing with --refresh: a path and sha256=<hex> or build=<path of the build>
     locked: BTreeMap<String, String>,
+    /// what the file holds, also with --refresh: saving keeps what this build did not need, like the
+    /// tools of other systems
+    previous: BTreeMap<String, String>,
     /// what this build took
     used: BTreeMap<String, String>,
 }
 
 static LOCK: Mutex<Option<Lock>> = Mutex::new(None);
 
-/// The lock of the script, from now on downloads are checked against it
-pub fn open(script: &Path) -> Result<(), String> {
-    let file = script.with_extension("lock");
-    let mut locked = BTreeMap::new();
+/// The lock is one for the process, tests that open it take turns
+#[cfg(test)]
+pub static TESTS: Mutex<()> = Mutex::new(());
 
-    if file.is_file() && REFRESHED_AT.get().is_none() {
+/// After a test: downloads are not checked anymore
+#[cfg(test)]
+pub fn close() {
+    *LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+/// The lock of the script, from now on downloads are checked against it. With `refresh` they are not,
+/// newer files and builds are taken.
+pub fn open(script: &Path, refresh: bool) -> Result<(), String> {
+    let file = script.with_extension("lock");
+    let mut previous = BTreeMap::new();
+
+    if file.is_file() {
         let content = system::read_file(&file)?;
 
         for (number, line) in content.lines().enumerate() {
@@ -39,18 +52,59 @@ pub fn open(script: &Path) -> Result<(), String> {
                 return Err(format!("{}:{}: neither a checksum nor a build: {line}", file.display(), number + 1));
             };
 
-            locked.insert(path.to_string(), value.trim().to_string());
+            previous.insert(path.to_string(), value.trim().to_string());
         }
     }
+
+    let locked = match refresh {
+        true => BTreeMap::new(),
+        false => previous.clone(),
+    };
 
     let mut lock = LOCK.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *lock = Some(Lock {
         file,
         locked,
+        previous,
         used: BTreeMap::new(),
     });
 
+    return Ok(());
+}
+
+/// The SHA-256 the lock has for `key`, from the file or from this build
+pub fn locked_sha256(key: &str) -> Option<String> {
+    let lock = LOCK.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock = lock.as_ref()?;
+
+    return lock.used.get(key)
+        .or_else(|| lock.locked.get(key))
+        .and_then(|value| value.strip_prefix("sha256="))
+        .map(str::to_string);
+}
+
+/// A file of `key` with a SHA-256 known already, like the archive of an installed tool: it has to
+/// match the lock, one the lock does not know yet is added
+pub fn check_sha256(key: &str, sha256: &str) -> Result<(), String> {
+    let actual = format!("sha256={sha256}");
+    let mut lock = LOCK.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(lock) = lock.as_mut() else {
+        return Ok(());
+    };
+
+    let expected = lock.used.get(key).or_else(|| lock.locked.get(key));
+
+    if let Some(expected) = expected && *expected != actual {
+        return Err(format!(
+            "{key} does not match {}: it says {expected}, the file has {actual}. build --refresh takes the new file",
+            lock.file.display()
+        ));
+    }
+
+    lock.used.insert(key.to_string(), actual);
     return Ok(());
 }
 
@@ -140,7 +194,7 @@ pub fn save() -> Result<(), String> {
         .collect();
 
     let mut entries = lock.used.clone();
-    for (path, value) in &lock.locked {
+    for (path, value) in &lock.previous {
         if used_versions.contains(directory(path)) || !used_artifacts.contains(directory(directory(path))) {
             entries.entry(path.clone()).or_insert_with(|| value.clone());
         }
@@ -165,6 +219,7 @@ mod tests {
 
     #[test]
     fn the_lock_keeps_checksums_and_builds_and_forgets_old_versions() {
+        let _turn = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = ScratchDir::new("lock");
 
         let jar = directory.join("library.jar");
@@ -178,7 +233,7 @@ mod tests {
             "org/example/cached/1/cached-1.jar sha256=22",
         ];
         system::write_file(&directory.join("project.lock"), &format!("{HEADER}{}\n", earlier.join("\n"))).unwrap();
-        open(&directory.join("project.build")).unwrap();
+        open(&directory.join("project.build"), false).unwrap();
 
         check("com/google/code/gson/gson/2.14/gson-2.14.jar", &jar, true).unwrap();
         check("org/example/cached/1/cached-1.jar", &jar, false).unwrap();
@@ -201,6 +256,40 @@ mod tests {
         // cached files are not hashed again
         assert!(saved.contains("org/example/cached/1/cached-1.jar sha256=22\n"), "{saved}");
         assert!(saved.contains(&format!("{snapshot} build={build}\n")), "{saved}");
+
+        *LOCK.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn tools_keep_the_lines_of_other_systems_also_with_refresh() {
+        let _turn = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let directory = ScratchDir::new("lock-tools");
+        let script = directory.join("project.build");
+        let lock_file = directory.join("project.lock");
+
+        let earlier = [
+            "tool:go/1.27.4/go1.27.4.darwin-arm64.tar.gz sha256=aa",
+            "tool:go/1.27.4/go1.27.4.linux-amd64.tar.gz sha256=bb",
+            "tool:go/1.26.0/go1.26.0.darwin-arm64.tar.gz sha256=cc",
+        ];
+        system::write_file(&lock_file, &format!("{HEADER}{}\n", earlier.join("\n"))).unwrap();
+
+        open(&script, false).unwrap();
+        assert_eq!(locked_sha256("tool:go/1.27.4/go1.27.4.darwin-arm64.tar.gz").as_deref(), Some("aa"));
+        assert_eq!(locked_sha256("tool:go/1.27.4/go1.27.4.windows-amd64.zip"), None);
+
+        let error = check_sha256("tool:go/1.27.4/go1.27.4.darwin-arm64.tar.gz", "ff").unwrap_err();
+        assert!(error.contains("does not match"), "{error}");
+
+        // --refresh takes the new archive, keeps the line of linux and forgets the older version
+        open(&script, true).unwrap();
+        check_sha256("tool:go/1.27.4/go1.27.4.darwin-arm64.tar.gz", "ff").unwrap();
+        save().unwrap();
+
+        let saved = system::read_file(&lock_file).unwrap();
+        assert!(saved.contains("tool:go/1.27.4/go1.27.4.darwin-arm64.tar.gz sha256=ff\n"), "{saved}");
+        assert!(saved.contains("tool:go/1.27.4/go1.27.4.linux-amd64.tar.gz sha256=bb\n"), "{saved}");
+        assert!(!saved.contains("1.26.0"), "{saved}");
 
         *LOCK.lock().unwrap() = None;
     }

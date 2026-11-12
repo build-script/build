@@ -866,3 +866,31 @@ fn commands_take_an_environment_a_path_and_run_and_test() {
     let built = build_in(&directory, "build_command(\"checked\", list(\"true\"), test = list(\"true\"))", TestSelection::None).unwrap();
     assert!(built[0].tests.is_empty());
 }
+
+#[test]
+fn scripts_ask_for_the_system_files_and_patterns() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("prelude");
+    system::write_file(&directory.join(".nvmrc"), "v22.11.0\n").unwrap();
+
+    let source = "architecture = architecture()\n\
+                  program = executable(\"go\")\n\
+                  version = match(read_file(\".nvmrc\"), \"v?(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)\")\n\
+                  whole = match(\"go1.27.4\", \"\\\\d+\\\\.\\\\d+\")\n\
+                  none = match(\"no version\", \"\\\\d+\")\n\
+                  missing = read_file(\".python-version\", default = \"3.13\")";
+    let runtime = run_in(Runtime::new(&*directory), source).unwrap();
+
+    assert!(["aarch64", "x86_64"].contains(&string(&runtime, "architecture").as_str()));
+    assert_eq!(string(&runtime, "program"), format!("go{}", std::env::consts::EXE_SUFFIX));
+    assert_eq!(string(&runtime, "version"), "22.11.0");
+    assert_eq!(string(&runtime, "whole"), "1.27");
+    assert_eq!(string(&runtime, "none"), "");
+    assert_eq!(string(&runtime, "missing"), "3.13");
+
+    let message = |source: &str| run(source).err().expect(source).to_string();
+    assert_eq!(message("fail(\"go has no toolchain for this system\")"), "fail: go has no toolchain for this system");
+    assert!(message("match(\"x\", \"(\")").starts_with("match: ( is no regular expression"));
+    assert!(message("cache_directory(\"../maven\")").contains("cannot name a directory of the cache"));
+}

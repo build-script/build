@@ -1,5 +1,7 @@
-// What every script has without `use`: print, type, env, git, operating_system, the time, list and
-// build_command
+// What every script has without `use`: print, type, env, git, the system, files, the time, list,
+// build_command and tool
+use std::path::Path;
+
 use super::*;
 
 pub fn core_functions() -> Vec<(&'static str, Value)> {
@@ -79,6 +81,83 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
             |_, _| Ok(std::env::consts::OS.into()),
         ),
         builtin(
+            "architecture",
+            FunctionParameters::new().returns(Type::String),
+            // "aarch64" or "x86_64"
+            |_, _| match system::host_architecture()? {
+                system::HostArchitecture::Aarch64 => Ok("aarch64".into()),
+                system::HostArchitecture::X86_64 => Ok("x86_64".into()),
+            },
+        ),
+        builtin(
+            "executable",
+            FunctionParameters::new()
+                .required("name", Type::String)
+                .returns(Type::String),
+            // with .exe on Windows
+            |_, args| Ok(format!("{}{}", args.get::<String>("name")?, std::env::consts::EXE_SUFFIX).into()),
+        ),
+        builtin(
+            "cache_directory",
+            FunctionParameters::new()
+                .required("name", Type::String)
+                .returns(Type::String),
+            // for the caches of tools, like the modules of Go, apart from those of build-script
+            |_, args| {
+                let name: String = args.get("name")?;
+
+                if name.is_empty() || name.contains("..") || Path::new(&name).is_absolute() {
+                    return Err(format!("\"{name}\" cannot name a directory of the cache"));
+                }
+
+                let directory = system::cache_dir("plugins").join(name);
+                system::create_dir(&directory)?;
+                return Ok(directory.display().to_string().into());
+            },
+        ),
+        builtin(
+            "fail",
+            FunctionParameters::new()
+                .required("message", Type::String)
+                .returns(Type::Unit),
+            |_, args| Err(args.get::<String>("message")?),
+        ),
+        builtin(
+            "read_file",
+            FunctionParameters::new()
+                .required("path", Type::String)
+                .with_default("default", Type::String, "")
+                .returns(Type::String),
+            // relative to the script, `default` when there is no such file
+            |context, args| {
+                let file = context.project_dir.join(args.get::<String>("path")?);
+
+                return match file.is_file() {
+                    true => Ok(system::read_file(&file)?.into()),
+                    false => Ok(args.get::<String>("default")?.into()),
+                };
+            },
+        ),
+        builtin(
+            "match",
+            FunctionParameters::new()
+                .required("text", Type::String)
+                .required("pattern", Type::String)
+                .returns(Type::String),
+            // the first group of the regular expression, the whole match without groups, "" without a match
+            |_, args| {
+                let pattern: String = args.get("pattern")?;
+                let expression = regex_lite::Regex::new(&pattern).map_err(|error| format!("{pattern} is no regular expression: {error}"))?;
+                let text: String = args.get("text")?;
+
+                let found = expression.captures(&text)
+                    .and_then(|captures| captures.get(1).or_else(|| captures.get(0)))
+                    .map_or("", |found| found.as_str());
+
+                return Ok(found.into());
+            },
+        ),
+        builtin(
             "current_time_millis",
             FunctionParameters::new().returns(Type::Int),
             |_, _| {
@@ -99,5 +178,6 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
     ];
 
     functions.extend(crate::command::builtins());
+    functions.extend(crate::tool::builtins());
     return functions;
 }

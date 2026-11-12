@@ -49,6 +49,13 @@ impl Settings {
         return &self.file;
     }
 
+    /// The settings whose names start with `prefix`: the rest of the name and the value
+    pub fn with_prefix(&self, prefix: &str) -> Vec<(&str, &str)> {
+        return self.entries.iter()
+            .filter_map(|(name, value)| name.strip_prefix(prefix).map(|rest| (rest, value.as_str())))
+            .collect();
+    }
+
     pub fn get(&self, name: &str) -> Option<&str> {
         return self.entries.iter()
             .find(|(known, _)| known == name)

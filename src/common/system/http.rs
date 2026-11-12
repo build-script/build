@@ -106,53 +106,44 @@ fn copy_with_progress(
     return Ok(());
 }
 
-/// `checksum`: the SHA bits (1 or 256) and the expected hex string. A file that does not match is not kept.
-fn download_verified(
-    url: &str,
-    target: &Path,
-    show_progress: bool,
-    checksum: Option<(u32, &str)>,
-) -> Result<bool, String> {
-    return download_checked(url, target, show_progress, None, |file| {
-        let Some((bits, expected)) = checksum else {
-            return Ok(());
-        };
-
-        let expected = expected.trim().to_ascii_lowercase();
-        let actual = sha(file, bits)?;
-
-        if actual != expected {
-            return Err(format!("checksum mismatch for {url} (expected {expected}, got {actual})"));
-        }
-
+/// `checksum`: the SHA bits (1 or 256) and the expected hex string
+fn verify_checksum(url: &str, file: &Path, checksum: Option<(u32, &str)>) -> Result<(), String> {
+    let Some((bits, expected)) = checksum else {
         return Ok(());
-    });
-}
+    };
 
-/// Downloads an archive and extracts it to `unpacked`, then deletes the archive
-pub fn download_and_extract(
-    url: &str,
-    archive: &Path,
-    checksum: Option<(u32, &str)>,
-    unpacked: &Path,
-) -> Result<(), String> {
-    if !download_verified(url, archive, true, checksum)? {
-        return Err(format!("{url} is not available"));
+    let expected = expected.trim().to_ascii_lowercase();
+    let actual = sha(file, bits)?;
+
+    if actual != expected {
+        return Err(format!("checksum mismatch for {url} (expected {expected}, got {actual})"));
     }
-
-    remove_dir(unpacked)?;
-    extract(archive, unpacked)?;
-    let _ = fs::remove_file(archive);
 
     return Ok(());
 }
 
 /// Downloads an archive and installs what it holds into `target`: the one directory in it, or all of it
-/// when there are more. Unpacked completely next to `target` before it is renamed, a half installed tool
-/// is never used.
+/// when there are more. An archive that does not match `checksum` is not kept.
 pub fn install_archive(url: &str, archive: &Path, checksum: Option<(u32, &str)>, target: &Path) -> Result<(), String> {
+    return install_archive_checked(url, archive, target, |file| verify_checksum(url, file, checksum));
+}
+
+/// Like install_archive, `verify` checks the archive before it is unpacked. Unpacked completely next to
+/// `target` before it is renamed, a half installed tool is never used.
+pub fn install_archive_checked(
+    url: &str,
+    archive: &Path,
+    target: &Path,
+    verify: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    if !download_checked(url, archive, true, None, verify)? {
+        return Err(format!("{url} is not available"));
+    }
+
     let unpacked = PathBuf::from(format!("{}.unpacked", target.display()));
-    download_and_extract(url, archive, checksum, &unpacked)?;
+    remove_dir(&unpacked)?;
+    extract(archive, &unpacked)?;
+    let _ = fs::remove_file(archive);
 
     let entries: Vec<PathBuf> = fs::read_dir(&unpacked)
         .map_err(|error| format!("could not read {}: {error}", unpacked.display()))?

@@ -4,6 +4,7 @@ mod jvm;
 mod language;
 mod native;
 mod project;
+mod tool;
 
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -563,9 +564,10 @@ fn main() {
                 .map(|(name, _)| *name)
                 .collect();
 
-            // config alone shows them all, config --unset asks which
+            // config alone shows them all, config --unset asks which; mirrors have names of their own
             let setting = match (setting, unset) {
                 (None, false) => None,
+                (Some(mirror), _) if mirror.starts_with(project::MIRROR) => Some(mirror.clone()),
                 _ => Some(argument("config", setting.as_deref(), "setting", &settings)),
             };
 
@@ -728,7 +730,7 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
         .unwrap_or_else(|| PathBuf::from("."));
 
     // project.lock: what the last builds downloaded, from now on downloads are checked against it
-    exit_on_error(lock::open(Path::new(script_path)));
+    exit_on_error(lock::open(Path::new(script_path), common::refresh::REFRESHED_AT.get().is_some()));
     let idea = exit_on_error(jvm::before_build(&project_dir, set_up_idea, release));
 
     let mut runtime = Runtime::new(project_dir.clone())
@@ -780,10 +782,19 @@ fn config(setting: Option<&str>, value: Option<&str>, unset: bool) -> Result<(),
             }
         }
 
+        let mirrors = settings.with_prefix(project::MIRROR);
+        for (prefix, mirror) in &mirrors {
+            println!("  {}{prefix} = {mirror}", project::MIRROR);
+        }
+
+        if mirrors.is_empty() {
+            println!("  {}<URL> is not set (where tools whose URL starts with it come from instead)", project::MIRROR);
+        }
+
         return Ok(());
     };
 
-    if !project::SETTINGS.iter().any(|(name, _)| *name == setting) {
+    if !project::SETTINGS.iter().any(|(name, _)| *name == setting) && !setting.starts_with(project::MIRROR) {
         // the same message as for a value
         return project::checked_setting(setting, "").map(|_| ());
     }

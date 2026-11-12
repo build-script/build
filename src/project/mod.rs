@@ -44,6 +44,9 @@ pub struct NewModule {
 }
 
 /// What the settings file can hold: name and meaning
+/// mirror.<URL> = <URL>: tools whose download URL starts with the first come from the second
+pub const MIRROR: &str = "mirror.";
+
 pub const SETTINGS: &[(&str, &str)] = &[
     (
         DOMAIN,
@@ -394,6 +397,15 @@ pub fn domain() -> Result<String, String> {
 pub fn checked_setting(name: &str, value: &str) -> Result<String, String> {
     match name {
         DOMAIN => return checked_domain(value),
+        mirror if mirror.starts_with(MIRROR) => {
+            let is_url = |text: &str| ["https://", "http://", "file://"].iter().any(|scheme| text.starts_with(scheme));
+
+            if !is_url(&mirror[MIRROR.len()..]) || !is_url(value) {
+                return Err(format!("{MIRROR}<URL> takes a URL for downloads starting with that one, like {MIRROR}https://go.dev/dl/ https://artifacts.example.com/go/"));
+            }
+
+            return Ok(value.to_string());
+        }
         REMEMBER_DOMAIN if value == "never" => return Ok(value.to_string()),
         REMEMBER_DOMAIN => {
             return Err(format!(
