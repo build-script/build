@@ -365,7 +365,7 @@ mod tests {
         lock::save().unwrap();
 
         // a tag that moved since the lock was written is an error
-        git(&["tag", "-f", "-a", "-m", "moved", "go-v1.4.2", &second]);
+        git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "tag", "-f", "-a", "-m", "moved", "go-v1.4.2", &second]);
         lock::open(&script, false).unwrap();
         let error = locate(&PluginSource::official("go@1.4", &url), &directory.join("other-cache")).unwrap_err();
         assert!(error.contains(&format!("project.lock has {first}")), "{error}");

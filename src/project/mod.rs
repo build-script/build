@@ -902,7 +902,8 @@ mod tests {
         };
         let example = || Ok("example.com".to_string());
         let project = root.join("hello");
-        let read = |file: &str| system::read_file(&project.join(file)).unwrap();
+        // git on Windows checks the templates out with \r\n
+        let read = |file: &str| system::read_file(&project.join(file)).unwrap().replace("\r\n", "\n");
 
         new_project("go", &project, None, example, &plugins).unwrap();
         assert_eq!(read("project.build"), "use go\n\nhello = build_go(\n    \"hello\",\n)\n");
