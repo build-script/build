@@ -575,6 +575,11 @@ fn main() {
             };
             let path = argument("new", path.as_deref(), "path of the project", &[]);
 
+            // a workspace can get its first module right away, then add goes on as usual
+            let first_module = project::is_workspace(&kind)
+                && io::stdin().is_terminal()
+                && matches!(exit_on_error(common::system::prompt("Add a first module to the workspace? (Y/n): ")).as_str(), "" | "y" | "yes");
+
             exit_on_error(project::new_project(
                 &kind,
                 Path::new(&path),
@@ -582,6 +587,20 @@ fn main() {
                 project::domain,
                 &project::PluginLookup::of_this_machine(),
             ));
+
+            if first_module {
+                let kind = chosen_kind("add", "kind of module", project::module_kind_choices());
+                let name = argument("add", None, "name of the module", &[]);
+
+                exit_on_error(project::add_module(
+                    &kind,
+                    &name,
+                    &Path::new(&path).join(DEFAULT_SCRIPT),
+                    package.as_deref(),
+                    project::domain,
+                    &project::PluginLookup::of_this_machine(),
+                ));
+            }
 
             return;
         }
@@ -1235,9 +1254,9 @@ mod tests {
         );
 
         assert_eq!(
-            parse(&["new", "multi", "apps/demo", "--package", "org.acme"]),
+            parse(&["new", "workspace", "apps/demo", "--package", "org.acme"]),
             Ok(Command::New {
-                kind: Some("multi".to_string()),
+                kind: Some("workspace".to_string()),
                 path: Some("apps/demo".to_string()),
                 package: Some("org.acme".to_string())
             }),

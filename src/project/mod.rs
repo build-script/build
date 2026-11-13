@@ -71,11 +71,21 @@ const DEFAULT_DOMAIN: &str = "example.com";
 /// The modules each kind of project starts with, of the JVM and of C and C++
 const PROJECT_KINDS: [&[(&str, &[(&str, Option<&str>)])]; 2] = [templates::PROJECT_KINDS, native::templates::PROJECT_KINDS];
 
+/// A project with only its script, the modules come with add
+const WORKSPACE: &str = "workspace";
+
 pub fn project_kinds() -> Vec<&'static str> {
-    return PROJECT_KINDS.iter()
+    let mut kinds: Vec<&str> = PROJECT_KINDS.iter()
         .flat_map(|kinds| kinds.iter())
         .map(|(kind, _)| *kind)
         .collect();
+
+    kinds.push(WORKSPACE);
+    return kinds;
+}
+
+pub fn is_workspace(kind: &str) -> bool {
+    return kind == WORKSPACE;
 }
 
 pub fn module_kinds() -> Vec<&'static str> {
@@ -97,6 +107,10 @@ pub fn module_kind_choices() -> Vec<(String, String)> {
 }
 
 fn about_kind(kind: &str) -> &'static str {
+    if kind == WORKSPACE {
+        return "a project.build to add modules to";
+    }
+
     return templates::ABOUT.iter()
         .chain(native::templates::ABOUT)
         .find(|(known, _)| *known == kind)
@@ -158,6 +172,10 @@ pub fn new_project(
 
     let name = checked_name(&path.file_name().unwrap_or_default().to_string_lossy())?;
 
+    if kind == WORKSPACE {
+        return new_workspace(path, &name);
+    }
+
     let Some((_, modules)) = PROJECT_KINDS.iter()
         .flat_map(|kinds| kinds.iter())
         .find(|(known, _)| *known == kind)
@@ -211,6 +229,16 @@ pub fn new_project(
 
     let package = if native { String::new() } else { format!(" with the package {base_package}") };
     println!("Created {kind} project {name} in {}{package}", path.display());
+
+    return Ok(());
+}
+
+/// A directory with an empty project.build, the modules of any kind come with add
+fn new_workspace(path: &Path, name: &str) -> Result<(), String> {
+    // clangd keeps its index in .cache/ of C and C++ modules
+    system::write_file(&path.join(".gitignore"), "build/\n.cache/\n")?;
+    system::write_file(&path.join("project.build"), "")?;
+    println!("Created workspace {name} in {}, build-script add <kind> <name> adds a module", path.display());
 
     return Ok(());
 }
@@ -694,7 +722,13 @@ mod tests {
         let root = ScratchDir::new("project");
 
 
-        new_project("multi", &root.join("demo"), None, example, &no_plugins()).unwrap();
+        // a workspace is only its script, without asking for the domain; the modules come with add
+        new_project("workspace", &root.join("demo"), None, || Err("not asked".to_string()), &no_plugins()).unwrap();
+        assert_eq!(system::read_file(&root.join("demo/project.build")).unwrap(), "");
+        assert_eq!(system::read_file(&root.join("demo/.gitignore")).unwrap(), "build/\n.cache/\n");
+
+        add_module("kotlin-library", "core", &root.join("demo/project.build"), None, example, &no_plugins()).unwrap();
+        add_module("kotlin-app", "app", &root.join("demo/project.build"), None, example, &no_plugins()).unwrap();
         let script = system::read_file(&root.join("demo/project.build")).unwrap();
         assert!(
             script.starts_with(
@@ -702,22 +736,13 @@ mod tests {
             ),
             "{script}"
         );
-        assert!(script.contains("app = build_kotlin(\n    \"app\",\n    list(core),\n    repositories,\n    main_class = \"com.example.demo.app.MainKt\",\n    directory = \"app\",\n)\n"), "{script}");
-
-        let main =
-            system::read_file(&root.join("demo/app/src/main/kotlin/com/example/demo/app/Main.kt"))
-                .unwrap();
-
-        assert!(
-            main.contains("import com.example.demo.core.greeting"),
-            "{main}"
-        );
+        assert!(script.contains("app = build_kotlin(\n    \"app\",\n    list(),\n    repositories,\n    main_class = \"com.example.demo.app.MainKt\",\n    directory = \"app\",\n)\n"), "{script}");
         assert!(
             root.join("demo/core/src/main/kotlin/com/example/demo/core/Greeting.kt")
                 .is_file()
         );
         assert!(
-            new_project("multi", &root.join("demo"), None, example, &no_plugins())
+            new_project("workspace", &root.join("demo"), None, example, &no_plugins())
                 .unwrap_err()
                 .contains("already exists")
         );

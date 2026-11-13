@@ -16,7 +16,6 @@ pub const ABOUT: &[(&str, &str)] = &[
     ("java", "a Java program"),
     ("kotlin", "a Kotlin program"),
     ("android", "an Android app with Compose"),
-    ("multi", "a Kotlin program and a library"),
     ("kotlin-app", "a Kotlin program"),
     ("kotlin-library", "a Kotlin library"),
     ("java-app", "a Java program"),
@@ -31,13 +30,6 @@ pub const PROJECT_KINDS: &[(&str, &[(&str, Option<&str>)])] = &[
     ("java", &[("java-app", None)]),
     ("kotlin", &[("kotlin-app", None)]),
     ("android", &[("android-app", None)]),
-    (
-        "multi",
-        &[
-            ("kotlin-library", Some("core")),
-            ("kotlin-app", Some("app")),
-        ],
-    ),
 ];
 
 /// Java and Kotlin keywords, which cannot be part of a package name
