@@ -174,18 +174,17 @@ impl Runtime {
         return self;
     }
 
-    /// path:line:column of a span, a plugin's path relative to the project when it is in there
+    /// path:line:column of a span, a plugin's path relative to the project when it is in there, with / like
+    /// scripts write it in use, also on Windows
     pub fn location(&self, span: Span) -> String {
         let Some(source) = self.sources.get(span.source) else {
             return format!("?:{}", span.start);
         };
 
-        let path = source.path
-            .strip_prefix(&self.context.project_dir)
-            .unwrap_or(&source.path);
+        let path = system::relative_with_slashes(&self.context.project_dir, &source.path);
         let (line, column) = line_column(&source.text, span.start);
 
-        return format!("{}:{line}:{column}", path.display());
+        return format!("{path}:{line}:{column}");
     }
 
     /// The error with where it happened. One in a plugin starts with where the script called it.
