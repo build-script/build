@@ -121,16 +121,19 @@ fn checkout_names(url: &str, reference: &str) -> (String, String) {
     let url_path = url.trim_end_matches('/')
         .trim_end_matches(".git");
 
-    let repository = url_path.split_once("://")
+    // a directory below the cache also for file://C:\plugins and git@host:owner/repository
+    let repository: Vec<&str> = url_path.split_once("://")
         .map_or(url_path, |(_, path)| path)
-        .trim_start_matches('/');
+        .split(['/', '\\', ':'])
+        .filter(|part| !part.is_empty() && *part != "." && *part != "..")
+        .collect();
 
     let version = match is_hash(reference) {
         true => reference[..12].to_string(),
         false => reference.replace('/', "-"),
     };
 
-    return (repository.to_string(), version);
+    return (repository.join("/"), version);
 }
 
 /// Where a module in a checkout of the script builds: below build/git/ of the project
@@ -247,6 +250,9 @@ mod tests {
         assert_ne!(checkout_names("https://github.com/llvm/llvm-project", "llvmorg-19.1.6"), checkout_names("https://github.com/llvm/llvm-project", "llvmorg-19.1.7"));
         assert_eq!(checkout_names("https://github.com/fmtlib/fmt/", "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f").1, "407c905e45ad");
         assert_eq!(checkout_names("file:///srv/library", "release/2.0"), ("srv/library".to_string(), "release-2.0".to_string()));
+        // never an absolute path, which would replace the cache when joined to it
+        assert_eq!(checkout_names("file://C:\\Users\\me\\plugins", "go-v1.0.0").0, "C/Users/me/plugins");
+        assert_eq!(checkout_names("git@github.com:fmtlib/fmt.git", "11.0.0").0, "git@github.com/fmtlib/fmt");
     }
 
     #[test]
