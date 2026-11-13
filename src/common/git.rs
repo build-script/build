@@ -88,6 +88,9 @@ pub fn remote_references(url: &str, patterns: &[&str]) -> Result<Vec<(String, St
 
     command.arg(url).args(patterns);
 
+    // the commit of an annotated tag comes as <tag>^{}, which a pattern of the tag alone does not match
+    command.args(patterns.iter().map(|pattern| format!("{pattern}^{{}}")));
+
     let output = system::command_output(&mut command, &format!("git ls-remote of {url}"))?;
     let mut references: Vec<(String, String)> = vec![];
 
@@ -276,6 +279,11 @@ mod tests {
 
         let missing = "0".repeat(40);
         assert!(checkout_to(&url, &missing, None, &dir.join("checkouts/missing"), &dir.join("library.git")).is_err());
+
+        // an annotated tag stands for the commit it points to, not for itself
+        git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "tag", "-a", "-m", "release", "v1.0.0"]);
+        assert_eq!(resolve(&url, "v1.0.0").unwrap(), commit);
+        assert!(resolve(&url, "v9.9.9").is_err());
 
         // a module in the checkout builds in the project
         CHECKOUTS.lock()
