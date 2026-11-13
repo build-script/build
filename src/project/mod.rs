@@ -805,9 +805,9 @@ mod tests {
         let release = |greeting: &str, tag: &str| {
             let write = |file: &str, content: &str| system::write_file(&repository.join("go").join(file), content).unwrap();
             write("plugin.build", "// Go programs\nbuild_go = fn(name: str, directory: str = \".\") -> module { build_command(name, list(\"true\")) }\n");
-            write("templates/app/module.build", "// a Go program\nbuild_go(\"{name}\")\n");
-            write("templates/app/go.mod", "module {domain}/{name}\n\ngo 1.27\n");
-            write("templates/app/main.go", &format!("package main // {greeting} from {{name}}\n"));
+            write("templates/app/module.build", "// a Go program\nbuild_go(\"{{build.name}}\")\n");
+            write("templates/app/go.mod", "module {{build.domain}}/{{build.name}}\n\ngo 1.27\n");
+            write("templates/app/main.go", &format!("package main // {greeting} from {{{{build.name}}}}\n"));
             git(&["add", "."]);
             git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", tag]);
             git(&["tag", tag]);

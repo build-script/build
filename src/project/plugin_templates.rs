@@ -1,5 +1,6 @@
 // Templates of plugins for `build new` and `build add`: templates/<name>/ next to their plugin.build, the
-// build call in module.build, the other files with {name}, {identifier}, {domain} and {package} replaced
+// build call in module.build, the other files with {{build.name}}, {{build.identifier}}, {{build.domain}} and
+// {{build.package}} replaced
 use std::path::{Path, PathBuf};
 
 use crate::common::system;
@@ -11,6 +12,12 @@ use super::ModuleTemplate;
 
 /// the template of a kind without :<template>
 const DEFAULT_TEMPLATE: &str = "app";
+
+/// What templates write where build-script fills in: {{build.name}}. Unusual in any language, and without a
+/// colon, which Windows does not take in file names.
+const PLACEHOLDER_START: &str = "{{build.";
+
+const PLACEHOLDERS: &[&str] = &["name", "identifier", "domain", "package"];
 
 /// Where plugins come from: the official list and the cache of their checkouts
 pub struct PluginLookup {
@@ -88,7 +95,8 @@ impl PluginKind {
 }
 
 /// What the template in `directory` makes of a module: its files with the placeholders replaced and the build
-/// call of module.build. The domain is asked for only when a file needs {domain} or {package}.
+/// call of module.build. The domain is asked for only when a file needs {{build.domain}} or {{build.package}}.
+/// A {{build.…}} that is none of the placeholders is an error, most likely a typo.
 pub fn module_template(
     use_argument: &str,
     template_name: &str,
@@ -103,10 +111,13 @@ pub fn module_template(
         contents.push((system::relative_with_slashes(directory, &file), system::read_file(&file)?));
     }
 
-    let mentions = |placeholder: &str| contents.iter().any(|(path, content): &(String, String)| path.contains(placeholder) || content.contains(placeholder));
-    let needs_package = package.is_none() && mentions("{package}");
+    let mentions = |placeholder: &str| {
+        let written = format!("{PLACEHOLDER_START}{placeholder}}}}}");
+        return contents.iter().any(|(path, content): &(String, String)| path.contains(&written) || content.contains(&written));
+    };
+    let needs_package = package.is_none() && mentions("package");
 
-    let domain = match mentions("{domain}") || needs_package {
+    let domain = match mentions("domain") || needs_package {
         true => domain()?,
         false => String::new(),
     };
@@ -122,20 +133,29 @@ pub fn module_template(
         .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
         .collect();
 
+    let values = [name, identifier.as_str(), domain.as_str(), package.as_str()];
     let replaced = |text: &str| {
-        return text.replace("{name}", name)
-            .replace("{identifier}", &identifier)
-            .replace("{domain}", &domain)
-            .replace("{package}", &package);
+        return PLACEHOLDERS.iter()
+            .zip(values)
+            .fold(text.to_string(), |text, (placeholder, value)| text.replace(&format!("{PLACEHOLDER_START}{placeholder}}}}}"), value));
     };
 
     let mut files = vec![];
     let mut call = None;
 
     for (path, content) in &contents {
+        let (path_replaced, content_replaced) = (replaced(path), replaced(content));
+
+        if let Some(unknown) = [&path_replaced, &content_replaced].iter().find_map(|text| unknown_placeholder(text)) {
+            let known: Vec<String> = PLACEHOLDERS.iter()
+                .map(|placeholder| format!("{PLACEHOLDER_START}{placeholder}}}}}"))
+                .collect();
+            return Err(format!("{unknown} in {path} of the template {template_name} is no placeholder ({})", known.join(", ")));
+        }
+
         match path == MODULE_BUILD {
-            true => call = Some(replaced(content)),
-            false => files.push((replaced(path), replaced(content))),
+            true => call = Some(content_replaced),
+            false => files.push((path_replaced, content_replaced)),
         }
     }
 
@@ -153,6 +173,14 @@ pub fn module_template(
     });
 }
 
+/// A {{build.…}} left after the placeholders are replaced, like {{build.nmae}}
+fn unknown_placeholder(text: &str) -> Option<String> {
+    let start = text.find(PLACEHOLDER_START)?;
+    let end = text[start..].find("}}").map_or(text.len(), |end| start + end + 2);
+
+    return Some(text[start..end].to_string());
+}
+
 /// The function of the one call in module.build and its arguments as they are written: the positional ones
 /// and the named ones
 fn parse_call(call: &str) -> Result<(String, Vec<String>, Vec<(String, String)>), String> {
@@ -161,11 +189,11 @@ fn parse_call(call: &str) -> Result<(String, Vec<String>, Vec<(String, String)>)
         .map_err(|error| error.variant.to_string())?;
 
     let [statement] = script.statements.as_slice() else {
-        return Err("it has to hold one call, like build_go(\"{name}\")".to_string());
+        return Err("it has to hold one call, like build_go(\"{{build.name}}\")".to_string());
     };
 
     let StatementType::Expression(Expression { variant: ExpressionType::FunctionCall { target, args }, .. }) = &statement.variant else {
-        return Err("it has to hold one call, like build_go(\"{name}\")".to_string());
+        return Err("it has to hold one call, like build_go(\"{{build.name}}\")".to_string());
     };
 
     let ExpressionType::Ident(function) = &target.variant else {
@@ -211,9 +239,10 @@ mod tests {
     fn templates_replace_placeholders_and_read_their_call() {
         let directory = ScratchDir::new("plugin-template");
         let write = |name: &str, content: &str| system::write_file(&directory.join(name), content).unwrap();
-        write("module.build", "// a Go program\nbuild_go(\"{name}\", flags = list(\"-race\"), version = \"1.27.4\")\n");
-        write("go.mod", "module {domain}/{name}\n\ngo 1.27\n");
-        write("cmd/{identifier}.go", "package main // {name}\n");
+        write("module.build", "// a Go program\nbuild_go(\"{{build.name}}\", flags = list(\"-race\"), version = \"1.27.4\")\n");
+        write("go.mod", "module {{build.domain}}/{{build.name}}\n\ngo 1.27\n");
+        // braces of the language stay as they are
+        write("cmd/{{build.identifier}}.go", "package main // {{build.name}}\nfunc main() { fmt.Printf(\"{name}\") }\n");
 
         let mut asked = false;
         let template = module_template("go", "app", &directory, "my-tool", None, || {
@@ -230,15 +259,21 @@ mod tests {
         let mut files = template.files.clone();
         files.sort();
         assert_eq!(files, [
-            ("cmd/my_tool.go".to_string(), "package main // my-tool\n".to_string()),
+            ("cmd/my_tool.go".to_string(), "package main // my-tool\nfunc main() { fmt.Printf(\"{name}\") }\n".to_string()),
             ("go.mod".to_string(), "module example.com/my-tool\n\ngo 1.27\n".to_string()),
         ]);
 
-        // without {domain} and {package} nobody is asked
-        write("go.mod", "module {name}\n");
+        // without {{build.domain}} and {{build.package}} nobody is asked
+        write("go.mod", "module {{build.name}}\n");
         let template = module_template("go", "library", &directory, "x", None, || Err("asked".to_string())).unwrap();
         assert!(!template.is_app);
 
+        // a typo is an error, not a placeholder left in the file
+        write("go.mod", "module {{build.nmae}}\n");
+        let error = module_template("go", "app", &directory, "x", None, || Ok(String::new())).err().unwrap();
+        assert!(error.starts_with("{{build.nmae}} in go.mod of the template app is no placeholder ({{build.name}}, "), "{error}");
+
+        write("go.mod", "module {{build.name}}\n");
         write("module.build", "x = 1\n");
         let error = module_template("go", "app", &directory, "x", None, || Ok(String::new())).err().unwrap();
         assert!(error.contains("it has to hold one call"), "{error}");
