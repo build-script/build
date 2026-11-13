@@ -11,7 +11,7 @@ use crate::plugins::{self, MODULE_BUILD, PluginSource};
 use super::ModuleTemplate;
 
 /// the template of a kind without :<template>
-const DEFAULT_TEMPLATE: &str = "app";
+pub const DEFAULT_TEMPLATE: &str = "app";
 
 /// What templates write where build-script fills in: {{build.name}}. Unusual in any language, and without a
 /// colon, which Windows does not take in file names.

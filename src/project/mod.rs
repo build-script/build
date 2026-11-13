@@ -82,6 +82,60 @@ pub fn module_kinds() -> Vec<&'static str> {
     return [templates::MODULE_KINDS, native::templates::MODULE_KINDS].concat();
 }
 
+/// The kinds of projects with what they are, for the choice of new
+pub fn project_kind_choices() -> Vec<(String, String)> {
+    return project_kinds().into_iter()
+        .map(|kind| (kind.to_string(), about_kind(kind).to_string()))
+        .collect();
+}
+
+/// The kinds of modules with what they are, for the choice of add
+pub fn module_kind_choices() -> Vec<(String, String)> {
+    return module_kinds().into_iter()
+        .map(|kind| (kind.to_string(), about_kind(kind).to_string()))
+        .collect();
+}
+
+fn about_kind(kind: &str) -> &'static str {
+    return templates::ABOUT.iter()
+        .chain(native::templates::ABOUT)
+        .find(|(known, _)| *known == kind)
+        .map_or("", |(_, about)| about);
+}
+
+/// The templates of the official plugins as kinds of new and add, with what they are. Why the list could
+/// not be had instead, like without a network.
+pub fn plugin_choices(plugins: &PluginLookup) -> Result<Vec<(String, String)>, String> {
+    // a note above the choice, the first line of what git said is enough
+    let found = crate::plugins::official_plugins(&plugins.official, &plugins.cache)
+        .map_err(|error| format!("the official plugins could not be listed: {}", error.lines().next().unwrap_or_default()))?;
+
+    return Ok(plugin_template_choices(found));
+}
+
+/// go for the template app of go, go:cli for its others; plugins without templates have none
+fn plugin_template_choices(found: Vec<(String, String, Vec<(String, String)>)>) -> Vec<(String, String)> {
+    let mut choices = vec![];
+
+    for (plugin, _, templates) in found {
+        for (template, about) in templates {
+            let kind = match template == plugin_templates::DEFAULT_TEMPLATE {
+                true => plugin.clone(),
+                false => format!("{plugin}:{template}"),
+            };
+
+            let about = match about.is_empty() {
+                true => "(plugin)".to_string(),
+                false => format!("{about} (plugin)"),
+            };
+
+            choices.push((kind, about));
+        }
+    }
+
+    return choices;
+}
+
 fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate> {
     return templates::module_template(kind, module).or_else(|| native::templates::module_template(kind, module));
 }
@@ -849,6 +903,30 @@ mod tests {
         let error = add_module("go:cli", "cli", &other.join("project.build"), None, example, &plugins).unwrap_err();
         assert!(error.contains("go has no template cli (templates: app)"), "{error}");
 
+        // the choice of new without a kind offers it
+        assert_eq!(plugin_choices(&plugins).unwrap(), [("go".to_string(), "a Go program (plugin)".to_string())]);
+
         lock::close();
+    }
+
+    #[test]
+    fn the_choice_of_kinds_says_what_they_are_and_offers_the_templates_of_plugins() {
+        // every kind of build-script has a word on what it is
+        for (kind, about) in project_kind_choices().into_iter().chain(module_kind_choices()) {
+            assert!(!about.is_empty(), "{kind} has no description");
+        }
+
+        let found = vec![
+            ("go".to_string(), "Go programs".to_string(), vec![("app".to_string(), "a Go program".to_string()), ("cli".to_string(), String::new())]),
+            ("notes".to_string(), "no templates".to_string(), vec![]),
+        ];
+        assert_eq!(plugin_template_choices(found), [
+            ("go".to_string(), "a Go program (plugin)".to_string()),
+            ("go:cli".to_string(), "(plugin)".to_string()),
+        ]);
+
+        // without the official list new goes on with the kinds of build-script
+        let error = plugin_choices(&no_plugins()).unwrap_err();
+        assert!(error.starts_with("the official plugins could not be listed: "), "{error}");
     }
 }

@@ -11,6 +11,20 @@ pub const MODULE_KINDS: &[&str] = &[
     "android-library",
 ];
 
+/// What each kind of project and module is, for the choice of new and add
+pub const ABOUT: &[(&str, &str)] = &[
+    ("java", "a Java program"),
+    ("kotlin", "a Kotlin program"),
+    ("android", "an Android app with Compose"),
+    ("multi", "a Kotlin program and a library"),
+    ("kotlin-app", "a Kotlin program"),
+    ("kotlin-library", "a Kotlin library"),
+    ("java-app", "a Java program"),
+    ("java-library", "a Java library"),
+    ("android-app", "an Android app with Compose"),
+    ("android-library", "an Android library with Compose"),
+];
+
 /// The modules each kind of project starts with, dependencies first: the
 /// kind of module and its directory, None for a module at the project root
 pub const PROJECT_KINDS: &[(&str, &[(&str, Option<&str>)])] = &[

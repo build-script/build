@@ -403,12 +403,25 @@ fn suggestion(word: &str, known: &[&str]) -> String {
 /// An argument the command was given, else chosen or typed in a terminal. Without one it exits with what
 /// is missing and the usage of the command. With `choices` a given one is one of them.
 fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -> String {
+    let choices: Vec<(&str, &str)> = choices.iter()
+        .map(|choice| (*choice, ""))
+        .collect();
+
+    return described_argument(command, given, label, &choices);
+}
+
+/// Like argument, the choices with what they are, which the terminal shows behind them
+fn described_argument(command: &str, given: Option<&str>, label: &str, described: &[(&str, &str)]) -> String {
+    let choices: Vec<&str> = described.iter()
+        .map(|(choice, _)| *choice)
+        .collect();
+
     if let Some(value) = given.filter(|value| choices.is_empty() || choices.contains(value)) {
         return value.to_string();
     }
 
     let problem = match given {
-        Some(value) => format!("{value} is no {label}{}", suggestion(value, choices)),
+        Some(value) => format!("{value} is no {label}{}", suggestion(value, &choices)),
         None => format!("{command} needs the {label}"),
     };
 
@@ -426,8 +439,26 @@ fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -
 
     return exit_on_error(match choices.is_empty() {
         true => terminal::ask(&question),
-        false => terminal::choose(&question, choices, given.unwrap_or("")),
+        false => terminal::choose(&question, described, given.unwrap_or("")),
     });
+}
+
+/// The kind new or add was not given, chosen in the terminal from those of build-script and the templates of
+/// the official plugins. Without a terminal the usage says what to give, the official list is not asked.
+fn chosen_kind(command: &str, label: &str, mut choices: Vec<(String, String)>) -> String {
+    if io::stdin().is_terminal() {
+        match project::plugin_choices(&project::PluginLookup::of_this_machine()) {
+            Ok(plugins) => choices.extend(plugins),
+            // new and add go on with the kinds of build-script, like without a network
+            Err(note) => println!("{}", terminal::paint(&note, Color::Dim)),
+        }
+    }
+
+    let choices: Vec<(&str, &str)> = choices.iter()
+        .map(|(kind, about)| (kind.as_str(), about.as_str()))
+        .collect();
+
+    return described_argument(command, None, label, &choices);
 }
 
 /// `name value` anywhere in the arguments: the value, and the arguments without both
@@ -539,8 +570,8 @@ fn main() {
         } => {
             // a kind build-script does not have is a plugin, like go
             let kind = match kind {
-                Some(kind) if !project::project_kinds().contains(&kind.as_str()) => kind.clone(),
-                _ => argument("new", kind.as_deref(), "kind of project", &project::project_kinds()),
+                Some(kind) => kind.clone(),
+                None => chosen_kind("new", "kind of project", project::project_kind_choices()),
             };
             let path = argument("new", path.as_deref(), "path of the project", &[]);
 
@@ -561,8 +592,8 @@ fn main() {
             package,
         } => {
             let kind = match kind {
-                Some(kind) if !project::module_kinds().contains(&kind.as_str()) => kind.clone(),
-                _ => argument("add", kind.as_deref(), "kind of module", &project::module_kinds()),
+                Some(kind) => kind.clone(),
+                None => chosen_kind("add", "kind of module", project::module_kind_choices()),
             };
             let name = argument("add", name.as_deref(), "name of the module", &[]);
 
