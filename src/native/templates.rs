@@ -46,15 +46,15 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
     let (platform, function) = if kind.starts_with("cpp-") { ("cpp", "build_cpp") } else { ("c", "build_c") };
 
     return Some(ModuleTemplate {
-        platform,
+        use_argument: platform.to_string(),
         // the ports come from vcpkg
         repositories: &[],
         is_app,
         files,
-        function,
+        function: function.to_string(),
         positional: vec![format!("\"{name}\""), format!("list({})", modules.join(", "))],
         named: match is_app {
-            true => vec![("program", "true".to_string())],
+            true => vec![("program".to_string(), "true".to_string())],
             false => vec![],
         },
     });

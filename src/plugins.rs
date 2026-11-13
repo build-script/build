@@ -10,6 +10,12 @@ pub const OFFICIAL_REPOSITORY: &str = "https://github.com/build-script/plugins";
 /// the file of a plugin in its directory
 const PLUGIN_FILE: &str = "plugin.build";
 
+/// next to plugin.build: a directory per template of `build new` and `build add`
+pub const TEMPLATES: &str = "templates";
+
+/// the build call of a template
+pub const MODULE_BUILD: &str = "module.build";
+
 /// What `use` names: a repository, the directory of the plugin in it and the tags of its releases
 #[derive(Debug, PartialEq)]
 pub struct PluginSource {
@@ -221,8 +227,34 @@ fn choose_release(source: &PluginSource, previous: Option<&str>) -> Result<(Stri
         .ok_or_else(|| format!("{} has neither releases nor a default branch", source.url));
 }
 
-/// The official plugins with the first comment of their plugin.build, of the default branch
-pub fn official_plugins(repository: &str, cache: &Path) -> Result<Vec<(String, String)>, String> {
+/// The templates of the plugin in `plugin_dir`: the directories below templates/ with a module.build
+pub fn template_names(plugin_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(plugin_dir.join(TEMPLATES))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().join(MODULE_BUILD).is_file())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+
+    names.sort();
+    return names;
+}
+
+/// The first comment of a file: what a plugin or a template is for
+fn first_comment(file: &Path) -> String {
+    return std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("//"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+}
+
+/// The official plugins of the default branch: their names, the first comment of their plugin.build and
+/// their templates with the first comment of their module.build
+pub fn official_plugins(repository: &str, cache: &Path) -> Result<Vec<(String, String, Vec<(String, String)>)>, String> {
     let head = git::remote_references(repository, &["HEAD"])?;
     let Some((_, commit)) = head.into_iter().next() else {
         return Err(format!("{repository} has no default branch"));
@@ -234,14 +266,19 @@ pub fn official_plugins(repository: &str, cache: &Path) -> Result<Vec<(String, S
     for entry in std::fs::read_dir(&checkout).into_iter().flatten().flatten() {
         let file = entry.path().join(PLUGIN_FILE);
 
-        let Ok(content) = std::fs::read_to_string(&file) else { continue };
-        let about = content.lines()
-            .find_map(|line| line.strip_prefix("//"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        if !file.is_file() {
+            continue;
+        }
 
-        plugins.push((entry.file_name().to_string_lossy().to_string(), about));
+        let templates = template_names(&entry.path())
+            .into_iter()
+            .map(|name| {
+                let about = first_comment(&entry.path().join(TEMPLATES).join(&name).join(MODULE_BUILD));
+                return (name, about);
+            })
+            .collect();
+
+        plugins.push((entry.file_name().to_string_lossy().to_string(), first_comment(&file), templates));
     }
 
     plugins.sort();
@@ -348,7 +385,7 @@ mod tests {
         assert!(missing.contains("has no zig/plugin.build"), "{missing}");
 
         let names = official_plugins(&url, &cache).unwrap();
-        assert_eq!(names, [("go".to_string(), "Go programs".to_string())]);
+        assert_eq!(names, [("go".to_string(), "Go programs".to_string(), vec![])]);
         lock::close();
     }
 }

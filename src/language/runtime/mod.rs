@@ -430,7 +430,7 @@ impl Runtime {
             let file = crate::plugins::locate(&source, &system::cache_dir("git")).map_err(|message| {
                 // the list helps with a misspelled name, when it can be had
                 let official = crate::plugins::official_plugins(&repository, &system::cache_dir("git"))
-                    .map(|plugins| plugins.into_iter().map(|(name, _)| name).collect())
+                    .map(|plugins| plugins.into_iter().map(|(name, ..)| name).collect())
                     .unwrap_or_default();
                 let name = name.to_string();
                 return RuntimeError::new(RuntimeErrorType::UnknownPlugin { name, official, message }, span);

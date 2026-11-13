@@ -128,8 +128,8 @@ fn command_usage(command: &str) -> String {
         .collect();
 
     let choices = match command {
-        "new" => vec![format!("<kind>: {}", project::project_kinds().join(", "))],
-        "add" => vec![format!("<kind>: {}", project::module_kinds().join(", "))],
+        "new" => vec![format!("<kind>: {}, or a plugin like go, go:<template>", project::project_kinds().join(", "))],
+        "add" => vec![format!("<kind>: {}, or a plugin like go, go:<template>", project::module_kinds().join(", "))],
         "install" => vec![
             "<library>: group:artifact[:version] of Maven, or a vcpkg port for a C or C++ module".to_string(),
             format!("<list>: {}, without one dependencies", lists.join(", ")),
@@ -463,9 +463,10 @@ fn help() -> String {
   clean   removes the build directories build-script wrote below the script's
           directory, the downloads stay; --cache removes the downloads and what was
           made of them, the JDKs, SDKs and toolchains stay
-  new     creates a project in a new directory: {}
+  new     creates a project in a new directory: {},
+          or from the template of a plugin: go, go:<template>, someone/repository
   add     adds a module in a directory next to the script and its build call to the
-          script: {}
+          script: {}, or a plugin like for new
   install adds a Maven library to the dependencies of the module, the newest version
           unless one is given, once it resolved for the module, or a vcpkg port to a C or
           C++ module; --module picks one in scripts with several, these pick another
@@ -473,7 +474,8 @@ fn help() -> String {
           {}
   config  shows or changes what new and add remember, like your domain:
           {}
-  plugins lists the official plugins, use <name> in a script loads one
+  plugins lists the official plugins with their templates: use <name> in a script loads
+          one, new <name> <path> starts a project from its template
 
 The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.
 build --version shows the version.",
@@ -535,7 +537,11 @@ fn main() {
             path,
             package,
         } => {
-            let kind = argument("new", kind.as_deref(), "kind of project", &project::project_kinds());
+            // a kind build-script does not have is a plugin, like go
+            let kind = match kind {
+                Some(kind) if !project::project_kinds().contains(&kind.as_str()) => kind.clone(),
+                _ => argument("new", kind.as_deref(), "kind of project", &project::project_kinds()),
+            };
             let path = argument("new", path.as_deref(), "path of the project", &[]);
 
             exit_on_error(project::new_project(
@@ -543,6 +549,7 @@ fn main() {
                 Path::new(&path),
                 package.as_deref(),
                 project::domain,
+                &project::PluginLookup::of_this_machine(),
             ));
 
             return;
@@ -553,7 +560,10 @@ fn main() {
             script,
             package,
         } => {
-            let kind = argument("add", kind.as_deref(), "kind of module", &project::module_kinds());
+            let kind = match kind {
+                Some(kind) if !project::module_kinds().contains(&kind.as_str()) => kind.clone(),
+                _ => argument("add", kind.as_deref(), "kind of module", &project::module_kinds()),
+            };
             let name = argument("add", name.as_deref(), "name of the module", &[]);
 
             exit_on_error(project::add_module(
@@ -562,6 +572,7 @@ fn main() {
                 Path::new(script),
                 package.as_deref(),
                 project::domain,
+                &project::PluginLookup::of_this_machine(),
             ));
 
             return;
@@ -790,14 +801,18 @@ fn list_plugins() -> Result<(), String> {
     let repository = plugins::official_repository();
     let found = plugins::official_plugins(&repository, &common::system::cache_dir("git"))?;
     let width = found.iter()
-        .map(|(name, _)| name.len())
+        .map(|(name, ..)| name.len())
         .max()
         .unwrap_or(0);
 
-    println!("Plugins of {repository}, use <name> in a script loads one:");
+    println!("Plugins of {repository}, use <name> in a script loads one, new <name> <path> starts a project:");
 
-    for (name, about) in found {
+    for (name, about, templates) in found {
         println!("  {name:<width$}  {about}");
+
+        for (template, about) in templates {
+            println!("  {:<width$}    new {name}:{template}  {about}", "");
+        }
     }
 
     return Ok(());
@@ -1295,7 +1310,7 @@ mod tests {
         assert_eq!(
             command_usage("new"),
             format!(
-                "usage: build new <kind> <path> [--package <package>]\n       <kind>: {}",
+                "usage: build new <kind> <path> [--package <package>]\n       <kind>: {}, or a plugin like go, go:<template>",
                 project::project_kinds().join(", ")
             )
         );

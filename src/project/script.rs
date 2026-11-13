@@ -22,7 +22,8 @@ pub fn with_module(
         format!("line {line}: {}", error.variant)
     })?;
 
-    let mut uses: Vec<(&str, usize)> = vec![];
+    // what each use names, a plugin of a repository or a file in quotes like the script writes it
+    let mut uses: Vec<(String, usize)> = vec![];
     let mut variables: Vec<&str> = vec![];
     let mut module_names: Vec<&str> = vec![];
     let mut repositories: Option<(&Expression, usize)> = None;
@@ -31,11 +32,13 @@ pub fn with_module(
     for statement in &script.statements {
         let expression = match &statement.variant {
             StatementType::Use(platform) => {
-                uses.push((platform.name.as_str(), statement.span.end));
+                uses.push((platform.name.clone(), statement.span.end));
                 continue;
             }
-            // what a plugin builds is not known without running it
-            StatementType::UsePlugin(_) => continue,
+            StatementType::UsePlugin(plugin) => {
+                uses.push((format!("\"{plugin}\""), statement.span.end));
+                continue;
+            }
             StatementType::Expression(expression) => expression,
         };
 
@@ -136,7 +139,7 @@ pub fn with_module(
     }
 
     let needs_use = !uses.iter()
-        .any(|(platform, _)| *platform == template.platform);
+        .any(|(argument, _)| *argument == template.use_argument);
 
     let has_statements = !script.statements.is_empty();
 
@@ -146,7 +149,7 @@ pub fn with_module(
             let mut text = String::new();
 
             if needs_use {
-                text.push_str(&format!("\nuse {}", template.platform));
+                text.push_str(&format!("\nuse {}", template.use_argument));
             }
 
             if let Some(repositories) = &new_repositories {
@@ -156,7 +159,7 @@ pub fn with_module(
             edits.push((*end, text));
         }
         None if has_statements => {
-            let mut text = format!("use {}\n", template.platform);
+            let mut text = format!("use {}\n", template.use_argument);
 
             if let Some(repositories) = &new_repositories {
                 text.push_str(&format!("\n{repositories}\n"));
@@ -172,7 +175,7 @@ pub fn with_module(
                 "\n".to_string()
             };
 
-            text.push_str(&format!("use {}\n", template.platform));
+            text.push_str(&format!("use {}\n", template.use_argument));
 
             if let Some(repositories) = &new_repositories {
                 text.push_str(&format!("\n{repositories}\n"));
@@ -590,14 +593,14 @@ mod tests {
         is_app: bool,
     ) -> ModuleTemplate {
         return ModuleTemplate {
-            platform,
+            use_argument: platform.to_string(),
             repositories,
             is_app,
             files: vec![],
             function: if platform == "android" {
-                "build_android_library"
+                "build_android_library".to_string()
             } else {
-                "build_kotlin"
+                "build_kotlin".to_string()
             },
             positional: vec!["\"lib\"".to_string(), "list()".to_string()],
             named: vec![],
