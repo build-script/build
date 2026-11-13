@@ -54,10 +54,8 @@ pub enum RuntimeErrorType {
         function: String,
         param: String,
         expected: Type,
-        got: Type,
-    },
-    UnknownPlatform {
-        name: String,
+        /// the type of the value, or the string itself where the type has variants
+        got: String,
     },
     BuiltinFailed {
         name: String,
@@ -67,10 +65,21 @@ pub enum RuntimeErrorType {
     ReturnTypeMismatch {
         function: String,
         expected: Type,
-        got: Type,
+        got: String,
     },
     UnknownType {
         name: String,
+    },
+    /// a variant written twice in a union: "auto" | "local" | "auto"
+    DuplicateVariant {
+        variant: Type,
+        union: Type,
+    },
+    /// a variant beside str or any, which accept it anyway: "auto" | str
+    RedundantVariant {
+        variant: Type,
+        wider: Type,
+        union: Type,
     },
     DuplicateParameter {
         function: String,
@@ -85,17 +94,57 @@ pub enum RuntimeErrorType {
         what: &'static str,
         got: Type,
     },
+    PluginNotFound {
+        plugin: String,
+        path: String,
+    },
+    /// use "owner/repository" whose plugin could not be had
+    PluginFailed {
+        plugin: String,
+        message: String,
+    },
+    /// use with a name that is neither a platform nor an official plugin
+    UnknownPlugin {
+        name: String,
+        /// the names of the official list, empty when it could not be had
+        official: Vec<String>,
+        /// why the official list has none of that name
+        message: String,
+    },
+    /// a plugin uses a plugin that uses it
+    PluginCycle {
+        plugin: String,
+    },
+    /// what a plugin defines is defined already
+    PluginNameTaken {
+        plugin: String,
+        name: String,
+    },
+    /// a plugin does not parse, the span is in its file
+    PluginParse {
+        message: String,
+    },
+    /// a module built while a plugin is loaded
+    ModuleInPlugin {
+        function: String,
+    },
 }
 
 #[derive(Debug)]
 pub struct RuntimeError {
     pub variant: RuntimeErrorType,
     pub span: Span,
+    /// for an error in a plugin: the function the script called and where, the script's line is shown first
+    pub called_from: Option<(String, Span)>,
 }
 
 impl RuntimeError {
     pub fn new(variant: RuntimeErrorType, span: Span) -> Self {
-        return RuntimeError { variant, span };
+        return RuntimeError {
+            variant,
+            span,
+            called_from: None,
+        };
     }
 
     pub fn invalid_binary_operands(
@@ -126,7 +175,7 @@ impl RuntimeError {
                 function: function.to_string(),
                 param: param.to_string(),
                 expected: expected.clone(),
-                got: value.type_of(),
+                got: expected.describe_mismatch(value),
             },
             span,
         );
@@ -221,13 +270,6 @@ impl fmt::Display for RuntimeError {
                     "{function}: argument '{param}' must be {expected}, got {got}"
                 );
             }
-            RuntimeErrorType::UnknownPlatform { name } => {
-                return write!(
-                    f,
-                    "unknown platform '{name}' (available: {})",
-                    platform_names().join(", ")
-                );
-            }
             RuntimeErrorType::BuiltinFailed { name, message } => {
                 return write!(f, "{name}: {message}");
             }
@@ -239,8 +281,18 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorType::UnknownType { name } => {
                 return write!(
                     f,
-                    "unknown type '{name}' (types: str, int, bool, module, any, unit, list<...>, fn(...) -> ..., a | b)"
+                    "unknown type '{name}' (types: str, int, bool, module, any, unit, list<...>, fn(...) -> ..., a | b, \"a variant\")"
                 );
+            }
+            RuntimeErrorType::DuplicateVariant { variant, union } => {
+                return write!(f, "{variant} is listed twice in {union}");
+            }
+            RuntimeErrorType::RedundantVariant {
+                variant,
+                wider,
+                union,
+            } => {
+                return write!(f, "{wider} already accepts {variant}, leave the variant out of {union}");
             }
             RuntimeErrorType::DuplicateParameter { function, param } => {
                 return write!(f, "{function}: parameter '{param}' is declared twice");
@@ -253,6 +305,28 @@ impl fmt::Display for RuntimeError {
                     f,
                     "{function}: calls nest too deeply, does it call itself without end?"
                 );
+            }
+            RuntimeErrorType::PluginNotFound { plugin, path } => {
+                return write!(f, "no plugin {plugin}: {path} does not exist");
+            }
+            RuntimeErrorType::PluginFailed { plugin, message } => return write!(f, "{plugin}: {message}"),
+            RuntimeErrorType::UnknownPlugin { name, official, message } => {
+                let official = match official.is_empty() {
+                    true => format!("the official list: {message}"),
+                    false => format!("official plugins: {}", official.join(", ")),
+                };
+
+                return write!(f, "{name} is neither a platform nor an official plugin (platforms: {}; {official})", platform_names().join(", "));
+            }
+            RuntimeErrorType::PluginCycle { plugin } => {
+                return write!(f, "{plugin} uses itself through the plugins it uses");
+            }
+            RuntimeErrorType::PluginNameTaken { plugin, name } => {
+                return write!(f, "{plugin} defines {name}, which is defined already; a plugin keeps names starting with _ to itself");
+            }
+            RuntimeErrorType::PluginParse { message } => return write!(f, "{message}"),
+            RuntimeErrorType::ModuleInPlugin { function } => {
+                return write!(f, "{function}: plugins define functions, their modules come from the scripts that call them");
             }
         }
     }

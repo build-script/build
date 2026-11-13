@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::command::{self, CommandOutput};
 use crate::jvm::{self, JvmOutput};
 use crate::native::NativeOutput;
 use crate::language::lexer::Span;
@@ -31,6 +32,8 @@ pub struct PendingModule {
     /// what builds it and where the script calls it, for its error
     pub function: &'static str,
     pub span: Span,
+    /// built by a function of a plugin: that function and where the script called it
+    pub called_from: Option<(String, Span)>,
     result: Mutex<Option<Result<Arc<BuiltModule>, BuildFailure>>>,
     done: Condvar,
 }
@@ -48,6 +51,8 @@ pub enum BuildFailure {
 pub enum ModuleOutput {
     Jvm(JvmOutput),
     Native(NativeOutput),
+    /// of build_command
+    Command(CommandOutput),
 }
 
 /// Starts what a module built and returns the exit code for the process
@@ -55,14 +60,16 @@ pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
     match &module.output {
         ModuleOutput::Jvm(output) => return jvm::launch(module, output, args),
         ModuleOutput::Native(output) => return crate::native::launch(module, output, args),
+        ModuleOutput::Command(output) => return command::launch(module, output, args),
     }
 }
 
 impl PendingModule {
-    pub fn new(function: &'static str, span: Span) -> Arc<Self> {
+    pub fn new(function: &'static str, span: Span, called_from: Option<(String, Span)>) -> Arc<Self> {
         return Arc::new(PendingModule {
             function,
             span,
+            called_from,
             result: Mutex::new(None),
             done: Condvar::new(),
         });
@@ -70,7 +77,7 @@ impl PendingModule {
 
     /// Of a build function that built it right away
     pub fn built(module: Arc<BuiltModule>) -> Arc<Self> {
-        let pending = Self::new("", Span::new(0, 0));
+        let pending = Self::new("", Span::new(0, 0), None);
         pending.finish(Ok(module));
 
         return pending;
@@ -129,6 +136,7 @@ impl BuiltModule {
         match &self.output {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),
             ModuleOutput::Native(output) => return output.program.is_some(),
+            ModuleOutput::Command(output) => return !output.run.is_empty(),
         }
     }
 }

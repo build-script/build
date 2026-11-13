@@ -1,13 +1,14 @@
 // New projects and modules: `build new` and `build add`, from the templates of the language
 // categories, and libraries for modules: `build install`
 mod install;
+mod plugin_templates;
 mod script;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use crate::common::git;
+use crate::common::{git, lock};
 use crate::common::settings::Settings;
 use crate::common::system;
 use crate::common::up_to_date;
@@ -16,21 +17,24 @@ use crate::language::runtime;
 use crate::native;
 
 pub use install::{DEPENDENCIES, DEPENDENCY_KINDS, install};
+pub use plugin_templates::PluginLookup;
+
+use plugin_templates::PluginKind;
 
 /// What a kind of module brings into a project: its files and its build call
 pub struct ModuleTemplate {
-    /// the platform whose `use` brings the build function
-    pub platform: &'static str,
+    /// what the `use` that brings the build function names: kotlin, a plugin like go or "someone/zig"
+    pub use_argument: String,
     /// what the repositories list needs for the module's dependencies
     pub repositories: &'static [&'static str],
     /// apps come after the libraries in the script, so they can depend on them
     pub is_app: bool,
     /// relative to the module directory, with their content
     pub files: Vec<(String, String)>,
-    pub function: &'static str,
-    /// the arguments before the repositories
+    pub function: String,
+    /// the arguments before the repositories, as the script writes them
     pub positional: Vec<String>,
-    pub named: Vec<(&'static str, String)>,
+    pub named: Vec<(String, String)>,
 }
 
 pub struct NewModule {
@@ -44,6 +48,9 @@ pub struct NewModule {
 }
 
 /// What the settings file can hold: name and meaning
+/// mirror.<URL> = <URL>: tools whose download URL starts with the first come from the second
+pub const MIRROR: &str = "mirror.";
+
 pub const SETTINGS: &[(&str, &str)] = &[
     (
         DOMAIN,
@@ -64,39 +71,99 @@ const DEFAULT_DOMAIN: &str = "example.com";
 /// The modules each kind of project starts with, of the JVM and of C and C++
 const PROJECT_KINDS: [&[(&str, &[(&str, Option<&str>)])]; 2] = [templates::PROJECT_KINDS, native::templates::PROJECT_KINDS];
 
+/// A project with only its script, the modules come with add
+const WORKSPACE: &str = "workspace";
+
 pub fn project_kinds() -> Vec<&'static str> {
-    return PROJECT_KINDS.iter()
+    let mut kinds: Vec<&str> = PROJECT_KINDS.iter()
         .flat_map(|kinds| kinds.iter())
         .map(|(kind, _)| *kind)
         .collect();
+
+    kinds.push(WORKSPACE);
+    return kinds;
+}
+
+pub fn is_workspace(kind: &str) -> bool {
+    return kind == WORKSPACE;
 }
 
 pub fn module_kinds() -> Vec<&'static str> {
     return [templates::MODULE_KINDS, native::templates::MODULE_KINDS].concat();
 }
 
+/// The kinds of projects with what they are, for the choice of new
+pub fn project_kind_choices() -> Vec<(String, String)> {
+    return project_kinds().into_iter()
+        .map(|kind| (kind.to_string(), about_kind(kind).to_string()))
+        .collect();
+}
+
+/// The kinds of modules with what they are, for the choice of add
+pub fn module_kind_choices() -> Vec<(String, String)> {
+    return module_kinds().into_iter()
+        .map(|kind| (kind.to_string(), about_kind(kind).to_string()))
+        .collect();
+}
+
+fn about_kind(kind: &str) -> &'static str {
+    if kind == WORKSPACE {
+        return "a project.build to add modules to";
+    }
+
+    return templates::ABOUT.iter()
+        .chain(native::templates::ABOUT)
+        .find(|(known, _)| *known == kind)
+        .map_or("", |(_, about)| about);
+}
+
+/// The templates of the official plugins as kinds of new and add, with what they are. Why the list could
+/// not be had instead, like without a network.
+pub fn plugin_choices(plugins: &PluginLookup) -> Result<Vec<(String, String)>, String> {
+    // a note above the choice, the first line of what git said is enough
+    let found = crate::plugins::official_plugins(&plugins.official, &plugins.cache)
+        .map_err(|error| format!("the official plugins could not be listed: {}", error.lines().next().unwrap_or_default()))?;
+
+    return Ok(plugin_template_choices(found));
+}
+
+/// go for the template app of go, go:cli for its others; plugins without templates have none
+fn plugin_template_choices(found: Vec<(String, String, Vec<(String, String)>)>) -> Vec<(String, String)> {
+    let mut choices = vec![];
+
+    for (plugin, _, templates) in found {
+        for (template, about) in templates {
+            let kind = match template == plugin_templates::DEFAULT_TEMPLATE {
+                true => plugin.clone(),
+                false => format!("{plugin}:{template}"),
+            };
+
+            let about = match about.is_empty() {
+                true => "(plugin)".to_string(),
+                false => format!("{about} (plugin)"),
+            };
+
+            choices.push((kind, about));
+        }
+    }
+
+    return choices;
+}
+
 fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate> {
     return templates::module_template(kind, module).or_else(|| native::templates::module_template(kind, module));
 }
 
-/// A new directory with a project.build and the modules of the kind, like cargo new.
-/// `package` names the sources, else the project below the domain `domain` gives.
+/// A new directory with a project.build and the modules of the kind, like cargo new. A kind that is
+/// none of build-script is a plugin with templates, like go. `package` names the sources, else the
+/// project below the domain `domain` gives.
 pub fn new_project(
     kind: &str,
     path: &Path,
     package: Option<&str>,
     domain: impl FnOnce() -> Result<String, String>,
+    plugins: &PluginLookup,
 ) -> Result<(), String> {
-    let Some((_, modules)) = PROJECT_KINDS.iter()
-        .flat_map(|kinds| kinds.iter())
-        .find(|(known, _)| *known == kind)
-    else {
-        return Err(format!(
-            "unknown project kind '{kind}' (known: {})",
-            project_kinds().join(", ")
-        ));
-    };
-
     let is_empty_dir = fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none());
 
     if path.exists() && !is_empty_dir {
@@ -104,6 +171,17 @@ pub fn new_project(
     }
 
     let name = checked_name(&path.file_name().unwrap_or_default().to_string_lossy())?;
+
+    if kind == WORKSPACE {
+        return new_workspace(path, &name);
+    }
+
+    let Some((_, modules)) = PROJECT_KINDS.iter()
+        .flat_map(|kinds| kinds.iter())
+        .find(|(known, _)| *known == kind)
+    else {
+        return new_plugin_project(kind, path, &name, package, domain, plugins);
+    };
 
     // C and C++ have no packages, clangd keeps its index in .cache/
     let native = native::templates::PROJECT_KINDS.iter().any(|(known, _)| *known == kind);
@@ -155,14 +233,82 @@ pub fn new_project(
     return Ok(());
 }
 
-/// A new module in a directory next to the script, its build call in the script. Without
-/// `package` its package is project and module below the domain `domain` gives.
+/// A directory with an empty project.build, the modules of any kind come with add
+fn new_workspace(path: &Path, name: &str) -> Result<(), String> {
+    // clangd keeps its index in .cache/ of C and C++ modules
+    system::write_file(&path.join(".gitignore"), "build/\n.cache/\n")?;
+    system::write_file(&path.join("project.build"), "")?;
+    println!("Created workspace {name} in {}, build-script add <kind> <name> adds a module", path.display());
+
+    return Ok(());
+}
+
+/// A project of one module from the template of a plugin, like new go hello. The release of the plugin goes
+/// into project.lock, the first build takes the same.
+fn new_plugin_project(
+    kind: &str,
+    path: &Path,
+    name: &str,
+    package: Option<&str>,
+    domain: impl FnOnce() -> Result<String, String>,
+    plugins: &PluginLookup,
+) -> Result<(), String> {
+    lock::open(&path.join("project.build"), false)?;
+
+    let (plugin, template_name, template) = plugin_template(kind, name, package, domain, plugins, &project_kinds())?;
+    let module = NewModule {
+        name: name.to_string(),
+        directory: None,
+        package: String::new(),
+        dependencies: vec![],
+    };
+    let script = script::with_module("", &variable_name(name), &module, &template)?;
+
+    let mut files = vec![(PathBuf::from(".gitignore"), "build/\n".to_string())];
+    files.extend(template.files.into_iter().map(|(file, content)| (PathBuf::from(file), content)));
+    files.push((PathBuf::from("project.build"), script));
+
+    for (file, content) in &files {
+        system::write_file(&path.join(file), content)?;
+    }
+
+    lock::save()?;
+    println!("Created {kind} project {name} in {} from the template {template_name} of {plugin}", path.display());
+
+    return Ok(());
+}
+
+/// The template of the plugin `kind` names, with how `use` names the plugin and the template's name
+fn plugin_template(
+    kind: &str,
+    name: &str,
+    package: Option<&str>,
+    domain: impl FnOnce() -> Result<String, String>,
+    plugins: &PluginLookup,
+    builtin_kinds: &[&str],
+) -> Result<(String, String, ModuleTemplate), String> {
+    let found = PluginKind::parse(kind, &plugins.official)
+        .and_then(|plugin| plugin.template_dir(&plugins.cache).map(|(template_name, directory)| (plugin, template_name, directory)));
+
+    let (plugin, template_name, directory) = found.map_err(|error| {
+        return format!("{kind} is neither a kind of build-script ({}) nor a plugin with templates: {error}", builtin_kinds.join(", "));
+    })?;
+
+    let template = plugin_templates::module_template(&plugin.use_argument, &template_name, &directory, name, package, domain)?;
+
+    return Ok((plugin.use_argument, template_name, template));
+}
+
+/// A new module in a directory next to the script, its build call in the script. A kind that is none of
+/// build-script is a plugin with templates. Without `package` its package is project and module below the
+/// domain `domain` gives.
 pub fn add_module(
     kind: &str,
     name: &str,
     script_file: &Path,
     package: Option<&str>,
     domain: impl FnOnce() -> Result<String, String>,
+    plugins: &PluginLookup,
 ) -> Result<(), String> {
     let name = checked_name(name)?;
 
@@ -176,35 +322,45 @@ pub fn add_module(
         return Err(format!("{} already exists", module_dir.display()));
     }
 
-    if !module_kinds().contains(&kind) {
-        return Err(format!(
-            "unknown module kind '{kind}' (known: {})",
-            module_kinds().join(", ")
-        ));
-    }
-
-    let native = native::templates::MODULE_KINDS.contains(&kind);
-
     let source = system::read_file(script_file)?;
+    let builtin = module_kinds().contains(&kind);
 
-    let project_name = fs::canonicalize(project_dir)
-        .ok()
-        .and_then(|dir| {
-            dir.file_name()
-                .map(|name| name.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "project".to_string());
+    let (module, template) = match builtin {
+        true => {
+            let native = native::templates::MODULE_KINDS.contains(&kind);
 
-    let package = new_package(package, native, &[&project_name, &name], domain)?;
+            let project_name = fs::canonicalize(project_dir)
+                .ok()
+                .and_then(|dir| {
+                    dir.file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                })
+                .unwrap_or_else(|| "project".to_string());
 
-    let module = NewModule {
-        name: name.clone(),
-        directory: Some(name.clone()),
-        package,
-        dependencies: vec![],
+            let module = NewModule {
+                name: name.clone(),
+                directory: Some(name.clone()),
+                package: new_package(package, native, &[&project_name, &name], domain)?,
+                dependencies: vec![],
+            };
+
+            let template = module_template(kind, &module).expect("module kinds have templates");
+            (module, template)
+        }
+        false => {
+            // the release the project builds with, or the newest that goes into the lock
+            lock::open(script_file, false)?;
+
+            let (_, _, template) = plugin_template(kind, &name, package, domain, plugins, &module_kinds())?;
+            let module = NewModule {
+                name: name.clone(),
+                directory: Some(name.clone()),
+                package: String::new(),
+                dependencies: vec![],
+            };
+            (module, template)
+        }
     };
-
-    let template = module_template(kind, &module).expect("module kinds have templates");
 
     let variable = variable_name(&name);
     let script = script::with_module(&source, &variable, &module, &template)
@@ -216,7 +372,14 @@ pub fn add_module(
 
     system::write_file(script_file, &script)?;
 
-    let package = if native { String::new() } else { format!(" with the package {}", module.package) };
+    if !builtin {
+        lock::save()?;
+    }
+
+    let package = match module.package.is_empty() {
+        true => String::new(),
+        false => format!(" with the package {}", module.package),
+    };
     println!("Added {kind} module {name} in {} to {}{package}", module_dir.display(), script_file.display());
     if !template.is_app {
         println!(
@@ -394,6 +557,15 @@ pub fn domain() -> Result<String, String> {
 pub fn checked_setting(name: &str, value: &str) -> Result<String, String> {
     match name {
         DOMAIN => return checked_domain(value),
+        mirror if mirror.starts_with(MIRROR) => {
+            let is_url = |text: &str| ["https://", "http://", "file://"].iter().any(|scheme| text.starts_with(scheme));
+
+            if !is_url(&mirror[MIRROR.len()..]) || !is_url(value) {
+                return Err(format!("{MIRROR}<URL> takes a URL for downloads starting with that one, like {MIRROR}https://go.dev/dl/ https://artifacts.example.com/go/"));
+            }
+
+            return Ok(value.to_string());
+        }
         REMEMBER_DOMAIN if value == "never" => return Ok(value.to_string()),
         REMEMBER_DOMAIN => {
             return Err(format!(
@@ -537,12 +709,26 @@ mod tests {
         assert!(!root.join("lib/build/fingerprints").exists());
     }
 
+    /// The official list is not there: no plugin is found
+    fn no_plugins() -> PluginLookup {
+        return PluginLookup {
+            official: "file:///nonexistent/build-script-plugins".to_string(),
+            cache: std::env::temp_dir().join("build-script-no-plugins"),
+        };
+    }
+
     #[test]
     fn new_projects_and_added_modules_are_written() {
         let root = ScratchDir::new("project");
 
 
-        new_project("multi", &root.join("demo"), None, example).unwrap();
+        // a workspace is only its script, without asking for the domain; the modules come with add
+        new_project("workspace", &root.join("demo"), None, || Err("not asked".to_string()), &no_plugins()).unwrap();
+        assert_eq!(system::read_file(&root.join("demo/project.build")).unwrap(), "");
+        assert_eq!(system::read_file(&root.join("demo/.gitignore")).unwrap(), "build/\n.cache/\n");
+
+        add_module("kotlin-library", "core", &root.join("demo/project.build"), None, example, &no_plugins()).unwrap();
+        add_module("kotlin-app", "app", &root.join("demo/project.build"), None, example, &no_plugins()).unwrap();
         let script = system::read_file(&root.join("demo/project.build")).unwrap();
         assert!(
             script.starts_with(
@@ -550,22 +736,13 @@ mod tests {
             ),
             "{script}"
         );
-        assert!(script.contains("app = build_kotlin(\n    \"app\",\n    list(core),\n    repositories,\n    main_class = \"com.example.demo.app.MainKt\",\n    directory = \"app\",\n)\n"), "{script}");
-
-        let main =
-            system::read_file(&root.join("demo/app/src/main/kotlin/com/example/demo/app/Main.kt"))
-                .unwrap();
-
-        assert!(
-            main.contains("import com.example.demo.core.greeting"),
-            "{main}"
-        );
+        assert!(script.contains("app = build_kotlin(\n    \"app\",\n    list(),\n    repositories,\n    main_class = \"com.example.demo.app.MainKt\",\n    directory = \"app\",\n)\n"), "{script}");
         assert!(
             root.join("demo/core/src/main/kotlin/com/example/demo/core/Greeting.kt")
                 .is_file()
         );
         assert!(
-            new_project("multi", &root.join("demo"), None, example)
+            new_project("workspace", &root.join("demo"), None, example, &no_plugins())
                 .unwrap_err()
                 .contains("already exists")
         );
@@ -577,6 +754,7 @@ mod tests {
             &root.join("demo/project.build"),
             None,
             || Ok("mvmo.dev".to_string()),
+            &no_plugins(),
         )
         .unwrap();
         let script = system::read_file(&root.join("demo/project.build")).unwrap();
@@ -602,7 +780,8 @@ mod tests {
                 "ui",
                 &root.join("demo/project.build"),
                 None,
-                example
+                example,
+                &no_plugins(),
             )
             .unwrap_err()
             .contains("already exists")
@@ -613,14 +792,15 @@ mod tests {
                 "legacy",
                 &root.join("demo/project.build"),
                 None,
-                example
+                example,
+                &no_plugins(),
             )
             .unwrap_err()
-            .contains("unknown module kind")
+            .contains("cobol is neither a kind of build-script")
         );
 
         // Java modules get javac only, without Kotlin
-        new_project("java", &root.join("plain"), None, example).unwrap();
+        new_project("java", &root.join("plain"), None, example, &no_plugins()).unwrap();
         let script = system::read_file(&root.join("plain/project.build")).unwrap();
         assert!(script.starts_with("use java\n\nrepositories = list(maven_central())\n\nplain = build_java(\n    \"plain\",\n"), "{script}");
         add_module(
@@ -629,6 +809,7 @@ mod tests {
             &root.join("plain/project.build"),
             None,
             example,
+            &no_plugins(),
         )
         .unwrap();
         let script = system::read_file(&root.join("plain/project.build")).unwrap();
@@ -640,10 +821,11 @@ mod tests {
             &root.join("hello-app"),
             Some("org.acme.hello"),
             || Err("not asked".to_string()),
+            &no_plugins(),
         )
         .unwrap();
         assert!(
-            new_project("android", &root.join("bad"), Some("org.acme.new"), example)
+            new_project("android", &root.join("bad"), Some("org.acme.new"), example, &no_plugins())
                 .unwrap_err()
                 .contains("not a package name")
         );
@@ -667,9 +849,9 @@ mod tests {
         let root = ScratchDir::new("native-project");
         let not_asked = || Err("not asked".to_string());
 
-        new_project("cpp", &root.join("hello"), None, not_asked).unwrap();
+        new_project("cpp", &root.join("hello"), None, not_asked, &no_plugins()).unwrap();
         let script_file = root.join("hello/project.build");
-        add_module("cpp-library", "my-lib", &script_file, None, not_asked).unwrap();
+        add_module("cpp-library", "my-lib", &script_file, None, not_asked, &no_plugins()).unwrap();
 
         // the library goes before the program, which is an app with program = true
         let script = system::read_file(&script_file).unwrap();
@@ -684,9 +866,92 @@ mod tests {
         assert_eq!(system::read_file(&root.join("hello/.gitignore")).unwrap(), "build/\n.cache/\n");
 
         // a C library brings use c and build_c
-        add_module("c-library", "codec", &script_file, None, not_asked).unwrap();
+        add_module("c-library", "codec", &script_file, None, not_asked, &no_plugins()).unwrap();
         let script = system::read_file(&script_file).unwrap();
         assert!(script.starts_with("use cpp\nuse c\n"), "{script}");
         assert!(script.contains("codec = build_c(\n    \"codec\",\n"), "{script}");
+    }
+
+    #[test]
+    fn plugins_bring_templates_for_new_and_add() {
+        let _turn = lock::TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = ScratchDir::new("plugin-new");
+        let repository = root.join("plugins");
+
+        let git = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&repository).args(args).output().unwrap();
+        };
+        let release = |greeting: &str, tag: &str| {
+            let write = |file: &str, content: &str| system::write_file(&repository.join("go").join(file), content).unwrap();
+            write("plugin.build", "// Go programs\nbuild_go = fn(name: str, directory: str = \".\") -> module { build_command(name, list(\"true\")) }\n");
+            write("templates/app/module.build", "// a Go program\nbuild_go(\"{{build.name}}\")\n");
+            write("templates/app/go.mod", "module {{build.domain}}/{{build.name}}\n\ngo 1.27\n");
+            write("templates/app/main.go", &format!("package main // {greeting} from {{{{build.name}}}}\n"));
+            git(&["add", "."]);
+            git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", tag]);
+            git(&["tag", tag]);
+        };
+
+        system::create_dir(&repository).unwrap();
+        git(&["init", "--quiet"]);
+        release("Hello", "go-v1.0.0");
+
+        let plugins = PluginLookup {
+            official: format!("file://{}", repository.display()),
+            cache: root.join("cache"),
+        };
+        let example = || Ok("example.com".to_string());
+        let project = root.join("hello");
+        let read = |file: &str| system::read_file(&project.join(file)).unwrap();
+
+        new_project("go", &project, None, example, &plugins).unwrap();
+        assert_eq!(read("project.build"), "use go\n\nhello = build_go(\n    \"hello\",\n)\n");
+        assert_eq!(read("go.mod"), "module example.com/hello\n\ngo 1.27\n");
+        assert_eq!(read("main.go"), "package main // Hello from hello\n");
+        assert_eq!(read(".gitignore"), "build/\n");
+        assert!(read("project.lock").contains("ref=go-v1.0.0"), "{}", read("project.lock"));
+
+        // a newer release does not change what the project builds with: add takes the release of the lock
+        release("Hi", "go-v1.1.0");
+        add_module("go", "worker", &project.join("project.build"), None, example, &plugins).unwrap();
+        assert!(read("project.build").ends_with("worker = build_go(\n    \"worker\",\n    directory = \"worker\",\n)\n"), "{}", read("project.build"));
+        assert_eq!(read("worker/main.go"), "package main // Hello from worker\n");
+        assert_eq!(read("worker/go.mod"), "module example.com/worker\n\ngo 1.27\n");
+
+        // a script without use go gets it
+        let other = root.join("other");
+        system::write_file(&other.join("project.build"), "x = 1\n").unwrap();
+        add_module("go", "tool", &other.join("project.build"), None, example, &plugins).unwrap();
+        let script = system::read_file(&other.join("project.build")).unwrap();
+        assert!(script.starts_with("use go\n\nx = 1\n"), "{script}");
+
+        let error = add_module("go:cli", "cli", &other.join("project.build"), None, example, &plugins).unwrap_err();
+        assert!(error.contains("go has no template cli (templates: app)"), "{error}");
+
+        // the choice of new without a kind offers it
+        assert_eq!(plugin_choices(&plugins).unwrap(), [("go".to_string(), "a Go program (plugin)".to_string())]);
+
+        lock::close();
+    }
+
+    #[test]
+    fn the_choice_of_kinds_says_what_they_are_and_offers_the_templates_of_plugins() {
+        // every kind of build-script has a word on what it is
+        for (kind, about) in project_kind_choices().into_iter().chain(module_kind_choices()) {
+            assert!(!about.is_empty(), "{kind} has no description");
+        }
+
+        let found = vec![
+            ("go".to_string(), "Go programs".to_string(), vec![("app".to_string(), "a Go program".to_string()), ("cli".to_string(), String::new())]),
+            ("notes".to_string(), "no templates".to_string(), vec![]),
+        ];
+        assert_eq!(plugin_template_choices(found), [
+            ("go".to_string(), "a Go program (plugin)".to_string()),
+            ("go:cli".to_string(), "(plugin)".to_string()),
+        ]);
+
+        // without the official list new goes on with the kinds of build-script
+        let error = plugin_choices(&no_plugins()).unwrap_err();
+        assert!(error.starts_with("the official plugins could not be listed: "), "{error}");
     }
 }

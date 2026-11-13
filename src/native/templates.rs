@@ -4,6 +4,16 @@ use crate::project::{ModuleTemplate, NewModule};
 
 pub const MODULE_KINDS: &[&str] = &["cpp-app", "cpp-library", "c-app", "c-library"];
 
+/// What each kind of project and module is, for the choice of new and add
+pub const ABOUT: &[(&str, &str)] = &[
+    ("cpp", "a C++ program"),
+    ("c", "a C program"),
+    ("cpp-app", "a C++ program"),
+    ("cpp-library", "a C++ library"),
+    ("c-app", "a C program"),
+    ("c-library", "a C library"),
+];
+
 /// Like those of the JVM: the kind of each module and its directory, None for the project root
 pub const PROJECT_KINDS: &[(&str, &[(&str, Option<&str>)])] =
     &[("cpp", &[("cpp-app", None)]), ("c", &[("c-app", None)])];
@@ -46,15 +56,15 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
     let (platform, function) = if kind.starts_with("cpp-") { ("cpp", "build_cpp") } else { ("c", "build_c") };
 
     return Some(ModuleTemplate {
-        platform,
+        use_argument: platform.to_string(),
         // the ports come from vcpkg
         repositories: &[],
         is_app,
         files,
-        function,
+        function: function.to_string(),
         positional: vec![format!("\"{name}\""), format!("list({})", modules.join(", "))],
         named: match is_app {
-            true => vec![("program", "true".to_string())],
+            true => vec![("program".to_string(), "true".to_string())],
             false => vec![],
         },
     });

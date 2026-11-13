@@ -3,8 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::common::system;
-use crate::jvm::maven::lock;
+use crate::common::{lock, system};
 use crate::jvm::maven::metadata::{self, SnapshotFile};
 use crate::jvm::maven::MavenRepository;
 

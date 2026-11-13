@@ -107,6 +107,8 @@ struct TestSetup<'a> {
 struct Dependencies {
     ports: Vec<String>,
     modules: Vec<Arc<BuiltModule>>,
+    /// of build_command: their directories are include directories, their sources compile with the module
+    commands: Vec<Arc<BuiltModule>>,
 }
 
 fn c_builtins() -> Vec<(&'static str, Value)> {
@@ -210,7 +212,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let source_patterns: Vec<String> = args.get("sources")?;
     let exclude_patterns: Vec<String> = args.get("exclude")?;
     // with the sources the private headers
-    let source_roots = compile::source_roots(&directory, &source_patterns);
+    let source_roots = system::source_roots(&directory, &source_patterns);
 
     // headers like CMake generates them, and those of TableGen, written before the sources compile
     let generated_dir = build_dir.join("generated");
@@ -234,6 +236,10 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     let dependencies = Dependencies::read(args, "dependencies")?;
     let test_dependencies = Dependencies::read(args, "test_dependencies")?;
+
+    // what commands generated: headers the modules depending on it may include too
+    let (generated_flags, generated_sources) = dependencies.generated(language);
+    public_flags.extend(generated_flags);
 
     // one install for the module and its tests
     let ports = [dependencies.ports.clone(), test_dependencies.ports.clone()].concat();
@@ -301,6 +307,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         objects_dir: objects_dir.clone(),
         tests: false,
         candidates: OnceLock::new(),
+        generated_sources,
     };
 
     // a module that names its sources names its tests too, modules may share a directory
@@ -313,9 +320,11 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     // the tests see the headers next to them
     let (test_compile_flags, test_link_flags) = test_dependencies.flags(installed.as_ref(), release);
+    let (test_generated_flags, test_generated_sources) = test_dependencies.generated(language);
     let mut test_flags = compilation.flags.clone();
-    test_flags.extend(compile::source_roots(&directory, &test_source_patterns).iter().map(|dir| format!("-I{}", dir.display())));
+    test_flags.extend(system::source_roots(&directory, &test_source_patterns).iter().map(|dir| format!("-I{}", dir.display())));
     test_flags.extend(test_compile_flags);
+    test_flags.extend(test_generated_flags);
     let test_flags = without_repeated_flags(test_flags);
 
     let test_compilation = Compilation {
@@ -325,6 +334,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         objects_dir: objects_dir.join("test"),
         tests: true,
         candidates: OnceLock::new(),
+        generated_sources: test_generated_sources,
         ..compilation
     };
 
@@ -448,7 +458,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         return matches!(&module.output, ModuleOutput::Native(output) if !output.link_flags.is_empty());
     });
 
-    let android = (shared && ports.is_empty() && !links_modules).then(|| AndroidSources {
+    // what commands generated is built for this machine only
+    let android = (shared && ports.is_empty() && !links_modules && dependencies.commands.is_empty()).then(|| AndroidSources {
         name: name.clone(),
         language,
         module_dir: directory.clone(),
@@ -610,18 +621,39 @@ impl Dependencies {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
 
-                    if !matches!(module.output, ModuleOutput::Native(_)) {
-                        let name = &module.name;
-                        return Err(format!("{name} is no C or C++ module, build_cpp depends on those"));
+                    match module.output {
+                        ModuleOutput::Native(_) => dependencies.modules.push(module),
+                        // never in modules: what links through them only knows C and C++ modules
+                        ModuleOutput::Command(_) => dependencies.commands.push(module),
+                        ModuleOutput::Jvm(_) => {
+                            let name = &module.name;
+                            return Err(format!("{name} is no C or C++ module, build_cpp depends on those"));
+                        }
                     }
-
-                    dependencies.modules.push(module);
                 }
                 other => return Err(format!("internal error: dependency of type {}", other.type_of())),
             }
         }
 
         return Ok(dependencies);
+    }
+
+    /// -I of the directories of the commands, and the sources of the language they wrote
+    fn generated(&self, language: Language) -> (Vec<String>, Vec<PathBuf>) {
+        let mut flags = vec![];
+        let mut sources = vec![];
+
+        for command in &self.commands {
+            let ModuleOutput::Command(output) = &command.output else { continue };
+            flags.push(format!("-I{}", output.output_dir.display()));
+
+            sources.extend(output.outputs
+                .iter()
+                .filter(|file| file.extension().is_some_and(|extension| language.extensions().iter().any(|known| extension == *known)))
+                .cloned());
+        }
+
+        return (flags, sources);
     }
 
     /// -I and -D, and what to link: of the modules, then of the ports

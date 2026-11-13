@@ -350,11 +350,11 @@ fn build_functions_need_use() {
         "build_kotlin has no parameter 'mainClass', it is called main_class"
     );
 
-    let error = run("use cobol").err().unwrap();
-    assert!(matches!(
-        error.variant,
-        RuntimeErrorType::UnknownPlatform { .. }
-    ));
+    // neither a platform nor in the official list, which is not there either
+    let runtime = Runtime::new(".").with_official_plugins("file:///nonexistent/build-script-plugins");
+    let error = run_in(runtime, "use cobol").err().unwrap();
+    assert!(matches!(&error.variant, RuntimeErrorType::UnknownPlugin { name, .. } if name == "cobol"));
+    assert!(error.to_string().starts_with("cobol is neither a platform nor an official plugin (platforms: kotlin"), "{error}");
 }
 
 #[test]
@@ -490,6 +490,75 @@ fn functions_check_their_types() {
         error("apply = fn (f: fn(str) -> str) { f(\"x\") }\napply(fn (n: int) -> int { n })"),
         RuntimeErrorType::TypeMismatch { .. }
     ));
+}
+
+#[test]
+fn variants_accept_only_their_strings() {
+    let pick = "pick = fn (name: str, toolchain: \"auto\" | \"local\" = \"auto\") -> str { toolchain }\n";
+    let runtime = run(&format!("{pick}a = pick(\"x\")\nb = pick(\"x\", \"local\")\nc = pick(\"x\", toolchain = \"auto\")")).unwrap();
+    assert_eq!((string(&runtime, "a"), string(&runtime, "b"), string(&runtime, "c")), ("auto".into(), "local".into(), "auto".into()));
+
+    let error = |source: &str| run(&format!("{pick}{source}")).err().expect(source);
+    let message = |source: &str| error(source).to_string();
+
+    assert_eq!(message("pick(\"x\", \"remote\")"), "pick: argument 'toolchain' must be \"auto\" | \"local\", got \"remote\"");
+    assert!(message("pick(\"x\", \"Local\")").ends_with("got \"Local\", did you mean \"local\"?"));
+    assert!(message("pick(\"x\", \"locla\")").ends_with("did you mean \"local\"?"));
+    assert!(message("pick(\"x\", 1)").ends_with("got int"));
+
+    // a default must be one of the variants already where the function is defined
+    assert!(matches!(
+        error("other = fn (mode: \"a\" | \"b\" = \"c\") { mode }").variant,
+        RuntimeErrorType::TypeMismatch { got, .. } if got == "\"c\""
+    ));
+
+    assert_eq!(
+        message("level = fn () -> \"debug\" | \"release\" { \"test\" }\nlevel()"),
+        "level must return \"debug\" | \"release\", got \"test\""
+    );
+    assert_eq!(
+        message("modes = fn (modes: list<\"fast\" | \"small\">) { modes }\nmodes(list(\"fast\", \"smal\"))"),
+        "modes: argument 'modes' must be list<\"fast\" | \"small\">, got a list with \"smal\", did you mean \"small\"?"
+    );
+    assert_eq!(
+        message("twice = fn (mode: \"a\" | \"b\" | \"a\") { mode }"),
+        "\"a\" is listed twice in \"a\" | \"b\" | \"a\""
+    );
+    assert_eq!(
+        message("wide = fn (mode: \"a\" | str) { mode }"),
+        "str already accepts \"a\", leave the variant out of \"a\" | str"
+    );
+
+    // the order of the variants does not change the shape of a function
+    let runtime = run("apply = fn (f: fn(\"a\" | \"b\") -> str) -> str { f(\"a\") }\nr = apply(fn (x: \"b\" | \"a\") -> str { x })").unwrap();
+    assert_eq!(string(&runtime, "r"), "a");
+}
+
+#[test]
+fn builtins_take_variants() {
+    let mut runtime = Runtime::new(".");
+    let mode = Type::Union(vec![Type::Variant("fast".into()), Type::Variant("small".into())]);
+    let signature = FunctionParameters::new()
+        .with_default("mode", mode, "fast")
+        .returns(Type::String);
+    let (name, value) = builtin("optimize", signature, |_, args| Ok(args.get::<String>("mode")?.into()));
+    runtime.define(name, value);
+
+    let runtime = run_in(runtime, "a = optimize()\nb = optimize(\"small\")").unwrap();
+    assert_eq!((string(&runtime, "a"), string(&runtime, "b")), ("fast".into(), "small".into()));
+
+    let mut runtime = Runtime::new(".");
+    let (name, value) = builtin(
+        "optimize",
+        FunctionParameters::new()
+            .required("mode", Type::Union(vec![Type::Variant("fast".into()), Type::Variant("small".into())]))
+            .returns(Type::String),
+        |_, args| Ok(args.get::<String>("mode")?.into()),
+    );
+    runtime.define(name, value);
+
+    let error = run_in(runtime, "optimize(\"big\")").err().unwrap();
+    assert_eq!(error.to_string(), "optimize: argument 'mode' must be \"fast\" | \"small\", got \"big\"");
 }
 
 #[test]
@@ -686,4 +755,221 @@ fn built_modules_are_remembered_for_run() {
 
     let error = launch(&built[0], &[]).unwrap_err();
     assert!(error.contains("core cannot be run"), "{error}");
+}
+
+/// The modules a script in `directory` built, or the first error
+#[cfg(unix)]
+fn build_in(directory: &std::path::Path, source: &str, tests: TestSelection) -> Result<Vec<Arc<BuiltModule>>, String> {
+    let script = Parser::new(source)
+        .parse_script()
+        .expect("script should parse");
+    let mut runtime = Runtime::new(directory).with_tests(tests);
+
+    runtime.run(&script).map_err(|error| error.to_string())?;
+    return runtime.finish().map_err(|errors| errors[0].to_string());
+}
+
+#[cfg(unix)]
+#[test]
+fn commands_run_again_only_when_what_they_depend_on_changed() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command");
+    // the runtime takes the project directory as the system names it, /private/var for /var on macOS
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |name: &str| project.join(name);
+    system::write_file(&file("input.txt"), "a").unwrap();
+    system::write_file(&file("ignored.txt"), "1").unwrap();
+
+    let copy = "build_command(\"copy\", list(\"sh\", \"-c\", \"cat input.txt > {output}/copy.txt; echo run >> runs.log\"), \
+                inputs = list(\"*.txt\"), exclude = list(\"ignored.txt\"), outputs = list(\"{output}/copy.txt\"))";
+    let runs = || system::read_file(&file("runs.log")).unwrap().lines().count();
+
+    let built = build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!((runs(), built[0].artifact.clone()), (1, file("build/commands/copy/copy.txt")));
+    assert_eq!(system::read_file(&built[0].artifact).unwrap(), "a");
+
+    build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!(runs(), 1, "up to date");
+
+    system::write_file(&file("ignored.txt"), "2").unwrap();
+    build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!(runs(), 1, "an excluded file is no input");
+
+    system::write_file(&file("input.txt"), "b").unwrap();
+    build_in(&directory, copy, TestSelection::None).unwrap();
+    assert_eq!(runs(), 2, "a changed input");
+
+    // a generator built first, at its place in the command; a changed generator builds the table again
+    let generator = |text: &str| {
+        format!(
+            "generator = build_command(\"generator\", list(\"sh\", \"-c\", \"printf '#!/bin/sh\\\\necho {text} > $1\\\\n' > {{output}}/generate; \
+             chmod +x {{output}}/generate\"), outputs = list(\"{{output}}/generate\"))\n\
+             build_command(\"table\", list(generator, \"{{output}}/table.h\"), outputs = list(\"{{output}}/table.h\"))"
+        )
+    };
+
+    build_in(&directory, &generator("one"), TestSelection::None).unwrap();
+    assert_eq!(system::read_file(&file("build/commands/table/table.h")).unwrap(), "one\n");
+
+    build_in(&directory, &generator("two"), TestSelection::None).unwrap();
+    assert_eq!(system::read_file(&file("build/commands/table/table.h")).unwrap(), "two\n");
+
+    let error = build_in(&directory, "build_command(\"lazy\", list(\"sh\", \"-c\", \"true\"), outputs = list(\"{output}/out.txt\"))", TestSelection::None)
+        .unwrap_err();
+    assert!(error.ends_with("sh did not write build/commands/lazy/out.txt"), "{error}");
+
+    let error = build_in(&directory, "build_command(\"a/b\", list(\"true\"))", TestSelection::None).unwrap_err();
+    assert!(error.contains("\"a/b\" cannot name a command"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn commands_take_an_environment_a_path_and_run_and_test() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command-environment");
+    let file = |name: &str| directory.join(name);
+    system::write_file(&file("tools/hello"), "#!/bin/sh\necho hello from the path > \"$1\"\n").unwrap();
+    std::process::Command::new("chmod")
+        .args(["+x", "tools/hello"])
+        .current_dir(&*directory)
+        .status()
+        .unwrap();
+
+    let source = "build_command(\"greeting\", list(\"sh\", \"-c\", \"echo $GREETING > {output}/greeting; hello {output}/hello\"), \
+                  environment = list(\"GREETING=one\", \"GREETING=two\"), path = list(\"tools\"), \
+                  outputs = list(\"{output}/greeting\", \"{output}/hello\"), run = list(\"sh\", \"-c\", \"exit $1\", \"sh\"))";
+    let built = build_in(&directory, source, TestSelection::None).unwrap();
+
+    assert_eq!(system::read_file(&file("build/commands/greeting/greeting")).unwrap(), "two\n", "the later entry wins");
+    assert_eq!(system::read_file(&file("build/commands/greeting/hello")).unwrap(), "hello from the path\n");
+    assert!(built[0].can_launch());
+    assert_eq!(launch(&built[0], &["7".to_string()]), Ok(7), "run takes the arguments after --");
+
+    let report = "<testsuite><testcase name=\\\"a\\\"/><testcase name=\\\"b\\\"><failure/></testcase></testsuite>";
+    let tested = |test: &str| {
+        let source = format!("build_command(\"checked\", list(\"true\"), test = list(\"sh\", \"-c\", \"{test}\"), test_timeout = 1)");
+        let built = build_in(&directory, &source, TestSelection::All).unwrap();
+        return built[0].tests[0].tests.run("checked");
+    };
+
+    assert_eq!(tested("true"), TestOutcome::Passed(None));
+    assert_eq!(tested("true"), TestOutcome::UpToDate, "passed before");
+    assert!(matches!(tested("exit 1"), TestOutcome::Failed { .. }));
+    assert!(matches!(tested("sleep 5"), TestOutcome::Failed { error, .. } if error.contains("timed out")));
+
+    let counted = tested(&format!("echo '{report}' > {{test_reports}}/results.xml; exit 1"));
+    assert!(matches!(counted, TestOutcome::Failed { counts: Some(TestCounts { tests: 2, failed: 1, .. }), .. }), "{counted:?}");
+
+    // without build test the tests are not prepared
+    let built = build_in(&directory, "build_command(\"checked\", list(\"true\"), test = list(\"true\"))", TestSelection::None).unwrap();
+    assert!(built[0].tests.is_empty());
+}
+
+#[test]
+fn scripts_ask_for_the_system_files_and_patterns() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("prelude");
+    system::write_file(&directory.join(".nvmrc"), "v22.11.0\n").unwrap();
+
+    let source = "architecture = architecture()\n\
+                  program = executable(\"go\")\n\
+                  version = match(read_file(\".nvmrc\"), \"v?(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)\")\n\
+                  whole = match(\"go1.27.4\", \"\\\\d+\\\\.\\\\d+\")\n\
+                  none = match(\"no version\", \"\\\\d+\")\n\
+                  missing = read_file(\".python-version\", default = \"3.13\")";
+    let runtime = run_in(Runtime::new(&*directory), source).unwrap();
+
+    assert!(["aarch64", "x86_64"].contains(&string(&runtime, "architecture").as_str()));
+    assert_eq!(string(&runtime, "program"), format!("go{}", std::env::consts::EXE_SUFFIX));
+    assert_eq!(string(&runtime, "version"), "22.11.0");
+    assert_eq!(string(&runtime, "whole"), "1.27");
+    assert_eq!(string(&runtime, "none"), "");
+    assert_eq!(string(&runtime, "missing"), "3.13");
+
+    let message = |source: &str| run(source).err().expect(source).to_string();
+    assert_eq!(message("fail(\"go has no toolchain for this system\")"), "fail: go has no toolchain for this system");
+    assert!(message("match(\"x\", \"(\")").starts_with("match: ( is no regular expression"));
+    assert!(message("cache_directory(\"../maven\")").contains("cannot name a directory of the cache"));
+}
+
+/// A runtime for a script in `directory` whose errors name project.build and the plugins by their paths
+fn plugin_runtime(directory: &std::path::Path, source: &str) -> (Runtime, Result<(), String>) {
+    let project = system::canonical_path(directory).unwrap();
+    let script = Parser::new(source)
+        .parse_script()
+        .expect("script should parse");
+    let mut runtime = Runtime::new(&project).with_script(&project.join("project.build"), source);
+
+    let result = runtime.run(&script)
+        .map_err(|error| runtime.describe(&error))
+        .and_then(|_| runtime.finish().map(|_| ()).map_err(|errors| runtime.describe(&errors[0])));
+
+    return (runtime, result);
+}
+
+#[test]
+fn plugins_define_their_functions_in_a_scope_of_their_own() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("plugins");
+    let write = |name: &str, content: &str| system::write_file(&directory.join(name), content).unwrap();
+    write("plugins/greet.build", "use cpp\n_prefix = \"Hello, \"\ngreeting = fn (name: str) -> str { _prefix + name }\nhere = plugin_directory\nleak = fn () -> str { secret }\n");
+
+    let (runtime, result) = plugin_runtime(&directory, "secret = \"x\"\nuse \"./plugins/greet.build\"\nuse \"./plugins/greet.build\"\nmessage = greeting(\"Go\")");
+    result.unwrap();
+    assert_eq!(string(&runtime, "message"), "Hello, Go");
+    assert_eq!(string(&runtime, "here"), system::canonical_path(&directory.join("plugins")).unwrap().display().to_string());
+
+    // only what it assigns, without _: neither its helpers, nor its platforms, nor plugin_directory
+    for name in ["_prefix", "build_cpp", "plugin_directory"] {
+        assert!(runtime.scope.lock().unwrap().get(name).is_none(), "{name}");
+    }
+
+    // a plugin never sees the variables of the script
+    let (_, result) = plugin_runtime(&directory, "secret = \"x\"\nuse \"./plugins/greet.build\"\nleak()");
+    assert!(result.unwrap_err().contains("secret"));
+
+    let (_, result) = plugin_runtime(&directory, "greeting = \"mine\"\nuse \"./plugins/greet.build\"");
+    assert!(result.unwrap_err().ends_with("./plugins/greet.build defines greeting, which is defined already; a plugin keeps names starting with _ to itself"));
+
+    write("plugins/a.build", "use \"./b.build\"\n");
+    write("plugins/b.build", "use \"./a.build\"\n");
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/a.build\"");
+    assert!(result.unwrap_err().contains("./a.build uses itself through the plugins it uses"));
+
+    write("plugins/eager.build", "built = build_command(\"eager\", list(\"true\"))\n");
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/eager.build\"");
+    assert!(result.unwrap_err().contains("build_command: plugins define functions, their modules come from the scripts that call them"));
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/missing.build\"");
+    assert!(result.unwrap_err().contains("no plugin ./plugins/missing.build"));
+
+    let (_, result) = plugin_runtime(&directory, "use \"someone\"");
+    assert!(result.unwrap_err().contains("someone names no repository"));
+}
+
+#[test]
+fn errors_in_plugins_name_the_script_and_the_plugin() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("plugin-errors");
+    let write = |name: &str, content: &str| system::write_file(&directory.join(name), content).unwrap();
+    write("plugins/tools.build", "broken = fn () -> str {\n    undefined_name\n}\nfails = fn () -> module {\n    build_command(\"fails\", list(\"no-such-program-of-build-script\"))\n}\n");
+    write("plugins/bad.build", "x = (\n");
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/tools.build\"\nbroken()");
+    let error = result.unwrap_err();
+    assert!(error.starts_with("project.build:2:1: broken: "), "{error}");
+    assert!(error.ends_with("(in plugins/tools.build:2:5)"), "{error}");
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/tools.build\"\n\nfails()");
+    let error = result.unwrap_err();
+    assert!(error.starts_with("project.build:3:1: fails: build_command: could not start no-such-program-of-build-script"), "{error}");
+    assert!(error.ends_with("(in plugins/tools.build:5:5)"), "{error}");
+
+    let (_, result) = plugin_runtime(&directory, "use \"./plugins/bad.build\"");
+    assert!(result.unwrap_err().starts_with("plugins/bad.build:2:1: expected an expression"));
 }

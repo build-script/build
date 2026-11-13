@@ -108,6 +108,8 @@ pub struct Dependencies {
     pub modules: Vec<Arc<BuiltModule>>,
     /// shared libraries of build_cpp, for System.loadLibrary
     pub native: Vec<Arc<BuiltModule>>,
+    /// of build_command: their jars on the classpath, their Java and Kotlin files compiled with the module
+    pub commands: Vec<Arc<BuiltModule>>,
 }
 
 pub struct ResolvedDependencies {
@@ -270,6 +272,21 @@ pub fn module_directory(context: &BuildScriptContext, args: &Arguments) -> Resul
     return Ok(directory);
 }
 
+/// The jars commands wrote
+fn command_jars(commands: &[Arc<BuiltModule>]) -> Vec<PathBuf> {
+    return commands.iter()
+        .filter_map(|command| match &command.output {
+            ModuleOutput::Command(output) => Some(output.outputs.iter().filter(|file| is_source(file, &["jar"])).cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+}
+
+fn is_source(file: &Path, extensions: &[&str]) -> bool {
+    return file.extension().is_some_and(|extension| extensions.iter().any(|known| extension == *known));
+}
+
 /// The Kotlin and the Java files below the directories, in one walk through them
 pub fn kotlin_and_java_sources(directories: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let extension_is =
@@ -387,11 +404,21 @@ impl ModuleBuildInputs {
         let directory = module_directory(context, args)?;
 
         // generated sources are absolute paths, joining keeps them as they are
-        let source_dirs = args.get::<Vec<String>>("source_dirs")?
+        let mut source_dirs: Vec<PathBuf> = args.get::<Vec<String>>("source_dirs")?
             .iter()
             .chain(&args.get::<Vec<String>>("generated_sources")?)
             .map(|source_dir| directory.join(source_dir))
             .collect();
+
+        // the Java and Kotlin files commands wrote, like generate_sources
+        source_dirs.extend(dependencies.commands
+            .iter()
+            .filter_map(|command| match &command.output {
+                ModuleOutput::Command(output) if output.outputs.iter().any(|file| is_source(file, &["java", "kt"])) => {
+                    Some(output.output_dir.clone())
+                }
+                _ => None,
+            }));
 
         return Ok(ModuleBuildInputs {
             name: args.get("name")?,
@@ -447,7 +474,8 @@ impl ModuleBuildInputs {
 
         let kotlin_tools = self.resolve_tools(&mut tools)?;
         let (roots, platforms) = self.runtime_dependencies();
-        let libraries = resolver.resolve_with_platforms(&roots, &platforms)?;
+        let mut libraries = resolver.resolve_with_platforms(&roots, &platforms)?;
+        libraries.extend(command_jars(&self.dependencies.commands));
 
         // compile only: whatever the runtime classpath does not have already
         let mut compile_only =
@@ -458,6 +486,8 @@ impl ModuleBuildInputs {
         for module in BuiltModule::transitive(&self.compile_only.modules) {
             compile_only.extend(module.jvm().classes.clone());
         }
+
+        compile_only.extend(command_jars(&self.compile_only.commands));
 
         return Ok(ResolvedDependencies {
             tools: kotlin_tools,
@@ -582,6 +612,11 @@ impl ModuleBuildInputs {
             fingerprint.add(&module.name);
             fingerprint.add_files(&[module.artifact.clone()])?;
 
+            // a command may write several jars and sources
+            if let ModuleOutput::Command(output) = &module.output {
+                fingerprint.add_files(&output.outputs)?;
+            }
+
             // a shared library of build_cpp counts by its file
             let ModuleOutput::Jvm(output) = &module.output else { continue };
             fingerprint.add(output);
@@ -650,6 +685,8 @@ impl Dependencies {
                         ModuleOutput::Native(_) => {
                             return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
                         }
+                        // never in modules: the JVM builds take the jvm() of every module there
+                        ModuleOutput::Command(_) => dependencies.commands.push(module),
                     }
                 }
                 other => {

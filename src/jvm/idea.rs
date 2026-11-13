@@ -7,7 +7,7 @@ use std::sync::Arc;
 use quick_xml::escape::escape;
 
 use crate::common::system;
-use crate::language::runtime::{Arguments, BuiltModule};
+use crate::language::runtime::{Arguments, BuiltModule, ModuleOutput};
 
 use super::jdk::Jdk;
 use super::ksp::SymbolProcessors;
@@ -233,7 +233,12 @@ pub fn write_project(project_dir: &Path, built: Option<&[Arc<BuiltModule>]>) -> 
             .to_string_lossy()
             .to_string();
 
-        if !built.iter().any(|module| absolute(&module.directory) == project) && !names.contains(&root) {
+        // a command in the project directory has no IntelliJ module, the root module stays
+        let in_project = built.iter()
+            .filter(|module| !matches!(module.output, ModuleOutput::Command(_)))
+            .any(|module| absolute(&module.directory) == project);
+
+        if !in_project && !names.contains(&root) {
             system::write_file_if_changed(&module_file(project_dir, &root), ROOT_MODULE)?;
             names.push(root);
         }

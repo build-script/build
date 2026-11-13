@@ -90,6 +90,7 @@ pub fn build(
             objects_dir: sources.build_dir.join("obj").join(name).join(format!("android-{abi}")).join(build_type),
             tests: false,
             candidates: OnceLock::new(),
+            generated_sources: vec![],
         };
 
         let (objects, _) = compilation.run()?;

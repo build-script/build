@@ -15,6 +15,8 @@ pub enum Color {
     Primary,
     Secondary,
     Failure,
+    /// for what explains, like what a choice is
+    Dim,
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,6 +41,7 @@ pub fn paint(text: &str, color: Color) -> String {
         Color::Primary => "38;5;208",
         Color::Secondary => "38;5;220",
         Color::Failure => "31",
+        Color::Dim => "2",
     };
 
     return format!("\x1b[{code}m{text}\x1b[0m");
@@ -84,11 +87,17 @@ pub fn ask(question: &str) -> Result<String, String> {
     }
 }
 
-/// One of `choices`, those matching `filter` first in view. Without a terminal that reads key by key,
-/// like on Windows, from a numbered list.
-pub fn choose(question: &str, choices: &[&str], filter: &str) -> Result<String, String> {
+/// One of `choices`, those matching `filter` first in view: a value and what it is, "" for nothing to say.
+/// The filter goes by the value. Without a terminal that reads key by key, like on Windows, from a numbered
+/// list.
+pub fn choose(question: &str, choices: &[(&str, &str)], filter: &str) -> Result<String, String> {
+    let width = choices.iter()
+        .map(|(value, _)| value.chars().count())
+        .max()
+        .unwrap_or(0);
+
     let Some(_raw_mode) = io::stdout().is_terminal().then(RawMode::enter).flatten() else {
-        return choose_by_number(question, choices);
+        return choose_by_number(question, choices, width);
     };
 
     let mut stdout = io::stdout();
@@ -106,10 +115,12 @@ pub fn choose(question: &str, choices: &[&str], filter: &str) -> Result<String, 
         let question_line = format!("{question}: {filter}");
         screen.push_str(&question_line);
 
-        for (index, choice) in matches.iter().enumerate().skip(first).take(SHOWN_CHOICES) {
+        for (index, (value, about)) in matches.iter().enumerate().skip(first).take(SHOWN_CHOICES) {
+            let about = described(about, width.saturating_sub(value.chars().count()));
+
             match index == selected {
-                true => screen.push_str(&format!("\n{}", paint(&format!("> {choice}"), Color::Primary))),
-                false => screen.push_str(&format!("\n  {choice}")),
+                true => screen.push_str(&format!("\n{}{about}", paint(&format!("> {value}"), Color::Primary))),
+                false => screen.push_str(&format!("\n  {value}{about}")),
             }
         }
 
@@ -134,7 +145,7 @@ pub fn choose(question: &str, choices: &[&str], filter: &str) -> Result<String, 
             match key {
                 Key::Up => selected = selected.saturating_sub(1),
                 Key::Down => selected = (selected + 1).min(matches.len().saturating_sub(1)),
-                Key::Enter if !matches.is_empty() => break 'keys Some(matches[selected].to_string()),
+                Key::Enter if !matches.is_empty() => break 'keys Some(matches[selected].0.to_string()),
                 Key::Cancel => break 'keys None,
                 Key::Erase => {
                     filter.pop();
@@ -157,11 +168,11 @@ pub fn choose(question: &str, choices: &[&str], filter: &str) -> Result<String, 
 }
 
 /// The choices in a list, the answer their number or one of them
-fn choose_by_number(question: &str, choices: &[&str]) -> Result<String, String> {
+fn choose_by_number(question: &str, choices: &[(&str, &str)], width: usize) -> Result<String, String> {
     println!("{question}:");
 
-    for (index, choice) in choices.iter().enumerate() {
-        println!("  {}) {choice}", index + 1);
+    for (index, (value, about)) in choices.iter().enumerate() {
+        println!("  {}) {value}{}", index + 1, described(about, width.saturating_sub(value.chars().count())));
     }
 
     loop {
@@ -170,29 +181,38 @@ fn choose_by_number(question: &str, choices: &[&str]) -> Result<String, String> 
             .ok()
             .and_then(|number| choices.get(number.wrapping_sub(1)));
 
-        match by_number.or_else(|| choices.iter().find(|choice| **choice == answer)) {
-            Some(choice) => return Ok(choice.to_string()),
+        match by_number.or_else(|| choices.iter().find(|(value, _)| *value == answer)) {
+            Some((value, _)) => return Ok(value.to_string()),
             None => println!("{answer} is none of them"),
         }
     }
 }
 
-/// The choices that have the characters of the filter in their order, like fzf: the one that is the
+/// What a choice is, dimmed behind it and aligned with the others: `padding` spaces fill up to the longest
+fn described(about: &str, padding: usize) -> String {
+    if about.is_empty() {
+        return String::new();
+    }
+
+    return format!("{}  {}", " ".repeat(padding), paint(about, Color::Dim));
+}
+
+/// The choices whose values have the characters of the filter in their order, like fzf: the one that is the
 /// filter first, then those it starts, then the others in their order
-fn matching<'a>(choices: &[&'a str], filter: &str) -> Vec<&'a str> {
+fn matching<'a>(choices: &[(&'a str, &'a str)], filter: &str) -> Vec<(&'a str, &'a str)> {
     let filter = filter.to_ascii_lowercase();
 
-    let mut matches: Vec<&str> = choices.iter()
+    let mut matches: Vec<(&str, &str)> = choices.iter()
         .copied()
-        .filter(|choice| {
-            let mut rest = choice.chars();
+        .filter(|(value, _)| {
+            let mut rest = value.chars();
             return filter.chars().all(|wanted| rest.any(|char| char.eq_ignore_ascii_case(&wanted)));
         })
         .collect();
 
-    matches.sort_by_key(|choice| {
-        let choice = choice.to_ascii_lowercase();
-        return (choice != filter, !choice.starts_with(&filter));
+    matches.sort_by_key(|(value, _)| {
+        let value = value.to_ascii_lowercase();
+        return (value != filter, !value.starts_with(&filter));
     });
 
     return matches;
@@ -295,12 +315,24 @@ mod tests {
 
     #[test]
     fn choices_match_like_in_fzf() {
-        let kinds = ["java", "kotlin", "android", "multi", "cpp", "c"];
+        let kinds = ["java", "kotlin", "android", "multi", "cpp", "c"].map(|kind| (kind, ""));
+        let values = |matches: Vec<(&str, &str)>| matches.iter().map(|(value, _)| value.to_string()).collect::<Vec<_>>();
 
-        assert_eq!(matching(&kinds, "c"), ["c", "cpp"]);
-        assert_eq!(matching(&kinds, "KTN"), ["kotlin"]);
-        assert_eq!(matching(&kinds, "a"), ["android", "java"]);
+        assert_eq!(values(matching(&kinds, "c")), ["c", "cpp"]);
+        assert_eq!(values(matching(&kinds, "KTN")), ["kotlin"]);
+        assert_eq!(values(matching(&kinds, "a")), ["android", "java"]);
         assert_eq!(matching(&kinds, "").len(), kinds.len());
         assert!(matching(&kinds, "rust").is_empty());
+
+        // what a choice is does not count for the filter
+        let described = [("go", "a Go program (plugin)"), ("cpp", "a C++ program")];
+        assert_eq!(values(matching(&described, "prog")), Vec::<String>::new());
+        assert_eq!(values(matching(&described, "go")), ["go"]);
+    }
+
+    #[test]
+    fn what_choices_are_is_aligned_behind_them() {
+        assert_eq!(described("a Go program", 4), "      a Go program");
+        assert_eq!(described("", 4), "");
     }
 }

@@ -1,41 +1,117 @@
-// Sources from git, pinned to a commit: `git(url, commit)` of the scripts. The objects and the checkouts of a
-// repository are shared by all projects in the cache. What modules in a checkout build stays in the project
-// that uses it, in build/git/<repository>/<commit>/.
+// Sources from git, pinned to a commit: `git(url, commit)` of the scripts, a tag by the commit project.lock
+// keeps. The objects and the checkouts of a repository are shared by all projects in the cache. What modules
+// in a checkout build stays in the project that uses it, in build/git/<repository>/<commit>/.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-use super::system;
+use super::{lock, system};
 
-/// File in a checkout with its url and commit
+/// File in a checkout with its url, reference and commit
 const MARKER: &str = ".build-script-git";
 
 /// The checkouts the script uses, with where their modules build in the project
 static CHECKOUTS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 
-/// <cache>/git/checkouts/<repository>/<commit>. `reference` is a commit, better its whole hash, or a tag.
-/// Checked out once on the machine, the next builds take it as it is.
+/// <cache>/git/checkouts/<repository>/<commit>. `reference` is a commit, better its whole hash, or a tag
+/// or branch, which project.lock keeps at the commit it pointed to. Checked out once on the machine, the
+/// next builds take it as it is.
 pub fn checkout(url: &str, reference: &str, project_dir: &Path) -> Result<PathBuf, String> {
-    let (repository, version) = checkout_names(url, reference);
-    let cache = system::cache_dir("git");
+    let (repository, _) = checkout_names(url, reference);
+    let key = format!("git:{repository}@{reference}");
 
-    let target = cache.join("checkouts")
-        .join(&repository)
-        .join(&version);
+    let commit = match is_hash(reference) {
+        true => reference.to_string(),
+        false => match lock::locked_value(&key).as_deref().and_then(|value| value.strip_prefix("commit=")) {
+            Some(commit) => commit.to_string(),
+            None => resolve(url, reference)?,
+        },
+    };
 
-    let checkout = checkout_to(url, reference, &target, &cache.join(format!("{repository}.git")))?;
+    let checkout = checkout_pinned(url, reference, &commit, &system::cache_dir("git"))?;
+
+    if !is_hash(reference) {
+        lock::keep_value(&key, &format!("commit={commit}"));
+    }
 
     let outputs = system::build_dir(project_dir)
         .join("git")
         .join(&repository)
-        .join(&version);
+        .join(checkout.file_name().unwrap_or_default());
 
     CHECKOUTS.lock()
         .unwrap()
         .push((checkout.clone(), outputs));
 
     return Ok(checkout);
+}
+
+/// <cache>/checkouts/<repository>/<reference>-<commit>: `reference` fetched, it has to point to `commit`, a
+/// tag that moved is an error
+pub fn checkout_pinned(url: &str, reference: &str, commit: &str, cache: &Path) -> Result<PathBuf, String> {
+    let (repository, version) = checkout_names(url, reference);
+
+    let version = match is_hash(reference) {
+        true => version,
+        false => format!("{version}-{}", &commit[..commit.len().min(12)]),
+    };
+
+    let target = cache.join("checkouts")
+        .join(&repository)
+        .join(version);
+
+    return checkout_to(url, reference, Some(commit), &target, &cache.join(format!("{repository}.git")));
+}
+
+/// The commit a tag or branch points to now
+fn resolve(url: &str, reference: &str) -> Result<String, String> {
+    let references = remote_references(url, &[reference])?;
+
+    return references.into_iter()
+        .find(|(name, _)| name == reference || name.ends_with(&format!("/{reference}")))
+        .map(|(_, commit)| commit)
+        .ok_or_else(|| format!("{url} has no tag or branch {reference}"));
+}
+
+/// The references of the repository, tags by name like refs/tags/v1.2.0 with the commit they point to, also
+/// an annotated tag; `patterns` like git ls-remote takes them, none for every tag
+pub fn remote_references(url: &str, patterns: &[&str]) -> Result<Vec<(String, String)>, String> {
+    let mut command = Command::new("git");
+    command.arg("ls-remote")
+        .env("GIT_TERMINAL_PROMPT", "0");
+
+    // options before the repository, after it they are patterns
+    if patterns.is_empty() {
+        command.arg("--tags");
+    }
+
+    command.arg(url).args(patterns);
+
+    // the commit of an annotated tag comes as <tag>^{}, which a pattern of the tag alone does not match
+    command.args(patterns.iter().map(|pattern| format!("{pattern}^{{}}")));
+
+    let output = system::command_output(&mut command, &format!("git ls-remote of {url}"))?;
+    let mut references: Vec<(String, String)> = vec![];
+
+    for line in output.lines() {
+        let Some((commit, name)) = line.split_once('\t') else { continue };
+
+        // an annotated tag comes twice, as itself and as the commit it points to
+        match name.strip_suffix("^{}") {
+            Some(tag) => match references.iter_mut().find(|(known, _)| known == tag) {
+                Some(known) => known.1 = commit.to_string(),
+                None => references.push((tag.to_string(), commit.to_string())),
+            },
+            None => references.push((name.to_string(), commit.to_string())),
+        }
+    }
+
+    return Ok(references);
+}
+
+fn is_hash(reference: &str) -> bool {
+    return reference.len() == 40 && reference.chars().all(|char| char.is_ascii_hexdigit());
 }
 
 /// The repository, https://github.com/llvm/llvm-project becomes github.com/llvm/llvm-project, and the
@@ -49,8 +125,7 @@ fn checkout_names(url: &str, reference: &str) -> (String, String) {
         .map_or(url_path, |(_, path)| path)
         .trim_start_matches('/');
 
-    let is_hash = reference.len() == 40 && reference.chars().all(|char| char.is_ascii_hexdigit());
-    let version = match is_hash {
+    let version = match is_hash(reference) {
         true => reference[..12].to_string(),
         false => reference.replace('/', "-"),
     };
@@ -90,9 +165,10 @@ pub fn remove_untracked(directory: &Path) -> Result<(), String> {
     return system::run_command_quietly(&mut command, "git clean");
 }
 
-/// Into `target`, with the objects of the repository in `objects`
-fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Result<PathBuf, String> {
-    let pinned = format!("{url} {reference}");
+/// Into `target`, with the objects of the repository in `objects`. With `expected` the reference has to
+/// point to that commit.
+fn checkout_to(url: &str, reference: &str, expected: Option<&str>, target: &Path, objects: &Path) -> Result<PathBuf, String> {
+    let pinned = format!("{url} {reference} {}", expected.unwrap_or_default());
 
     if fs::read_to_string(target.join(MARKER)).is_ok_and(|found| found == pinned) {
         return Ok(target.to_path_buf());
@@ -103,7 +179,9 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
             let mut command = Command::new("git");
             command.arg("--git-dir")
                 .arg(objects)
-                .args(args);
+                .args(args)
+                // a repository that is not there or private fails instead of asking for a password
+                .env("GIT_TERMINAL_PROMPT", "0");
             return command;
         };
 
@@ -113,9 +191,8 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
         }
 
         // a commit the cache has needs no fetch, a tag may have moved
-        let is_hash = reference.len() == 40 && reference.chars().all(|char| char.is_ascii_hexdigit());
         let commit_object = format!("{reference}^{{commit}}");
-        let cached = is_hash && system::command_succeeds(&mut in_objects(&["cat-file", "-e", &commit_object]));
+        let cached = is_hash(reference) && system::command_succeeds(&mut in_objects(&["cat-file", "-e", &commit_object]));
 
         let commit = match cached {
             true => reference.to_string(),
@@ -129,8 +206,14 @@ fn checkout_to(url: &str, reference: &str, target: &Path, objects: &Path) -> Res
             }
         };
 
-        if is_hash && !commit.eq_ignore_ascii_case(reference) {
+        if is_hash(reference) && !commit.eq_ignore_ascii_case(reference) {
             return Err(format!("{url} gave {commit} for the commit {reference}"));
+        }
+
+        if let Some(expected) = expected && !commit.eq_ignore_ascii_case(expected) {
+            return Err(format!(
+                "{reference} of {url} is at {commit} now, project.lock has {expected}: build --refresh takes the new one"
+            ));
         }
 
         // a plain tree of the sources, without .git, unpacked next to it: a tag like v1.2.3 has dots
@@ -189,13 +272,18 @@ mod tests {
         let commit = git(&["rev-parse", "HEAD"]);
 
         let url = format!("file://{}", repository.display());
-        let checkout = checkout_to(&url, &commit, &dir.join("checkouts/library"), &dir.join("library.git")).unwrap();
+        let checkout = checkout_to(&url, &commit, None, &dir.join("checkouts/library"), &dir.join("library.git")).unwrap();
 
         assert!(checkout.join("include/library.h").is_file());
         assert!(!checkout.join(".git").exists());
 
         let missing = "0".repeat(40);
-        assert!(checkout_to(&url, &missing, &dir.join("checkouts/missing"), &dir.join("library.git")).is_err());
+        assert!(checkout_to(&url, &missing, None, &dir.join("checkouts/missing"), &dir.join("library.git")).is_err());
+
+        // an annotated tag stands for the commit it points to, not for itself
+        git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "tag", "-a", "-m", "release", "v1.0.0"]);
+        assert_eq!(resolve(&url, "v1.0.0").unwrap(), commit);
+        assert!(resolve(&url, "v9.9.9").is_err());
 
         // a module in the checkout builds in the project
         CHECKOUTS.lock()

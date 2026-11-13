@@ -1,13 +1,17 @@
+mod command;
 mod common;
 mod jvm;
 mod language;
 mod native;
+mod plugins;
 mod project;
+mod tool;
 
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use common::lock;
 use common::settings::Settings;
 use common::terminal::{self, Color};
 use language::lexer::line_column;
@@ -26,6 +30,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("install", "install <library> [<script>] [--module <name>] [<list>]"),
     ("clean", "clean [<script>] | clean --cache"),
     ("config", "config [<setting> [<value>]] | config --unset <setting>"),
+    ("plugins", "plugins"),
 ];
 
 /// What take_build_options takes before the commands get their arguments
@@ -96,6 +101,8 @@ enum Command {
         value: Option<String>,
         unset: bool,
     },
+    /// lists the plugins of the official list
+    Plugins,
 }
 
 /// Every command, then the options of those that build
@@ -121,8 +128,8 @@ fn command_usage(command: &str) -> String {
         .collect();
 
     let choices = match command {
-        "new" => vec![format!("<kind>: {}", project::project_kinds().join(", "))],
-        "add" => vec![format!("<kind>: {}", project::module_kinds().join(", "))],
+        "new" => vec![format!("<kind>: {}, or a plugin like go, go:<template>", project::project_kinds().join(", "))],
+        "add" => vec![format!("<kind>: {}, or a plugin like go, go:<template>", project::module_kinds().join(", "))],
         "install" => vec![
             "<library>: group:artifact[:version] of Maven, or a vcpkg port for a C or C++ module".to_string(),
             format!("<list>: {}, without one dependencies", lists.join(", ")),
@@ -204,6 +211,12 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         "add" => return parse_add(&arguments),
         "install" => return parse_install(&arguments),
         "config" => return parse_config(&arguments),
+        "plugins" => {
+            return match arguments.rest {
+                [] => Ok(Command::Plugins),
+                _ => Err(arguments.wrong("plugins takes no arguments".to_string())),
+            };
+        }
         _ => return Err(no_command(command)),
     }
 }
@@ -390,12 +403,25 @@ fn suggestion(word: &str, known: &[&str]) -> String {
 /// An argument the command was given, else chosen or typed in a terminal. Without one it exits with what
 /// is missing and the usage of the command. With `choices` a given one is one of them.
 fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -> String {
+    let choices: Vec<(&str, &str)> = choices.iter()
+        .map(|choice| (*choice, ""))
+        .collect();
+
+    return described_argument(command, given, label, &choices);
+}
+
+/// Like argument, the choices with what they are, which the terminal shows behind them
+fn described_argument(command: &str, given: Option<&str>, label: &str, described: &[(&str, &str)]) -> String {
+    let choices: Vec<&str> = described.iter()
+        .map(|(choice, _)| *choice)
+        .collect();
+
     if let Some(value) = given.filter(|value| choices.is_empty() || choices.contains(value)) {
         return value.to_string();
     }
 
     let problem = match given {
-        Some(value) => format!("{value} is no {label}{}", suggestion(value, choices)),
+        Some(value) => format!("{value} is no {label}{}", suggestion(value, &choices)),
         None => format!("{command} needs the {label}"),
     };
 
@@ -413,8 +439,26 @@ fn argument(command: &str, given: Option<&str>, label: &str, choices: &[&str]) -
 
     return exit_on_error(match choices.is_empty() {
         true => terminal::ask(&question),
-        false => terminal::choose(&question, choices, given.unwrap_or("")),
+        false => terminal::choose(&question, described, given.unwrap_or("")),
     });
+}
+
+/// The kind new or add was not given, chosen in the terminal from those of build-script and the templates of
+/// the official plugins. Without a terminal the usage says what to give, the official list is not asked.
+fn chosen_kind(command: &str, label: &str, mut choices: Vec<(String, String)>) -> String {
+    if io::stdin().is_terminal() {
+        match project::plugin_choices(&project::PluginLookup::of_this_machine()) {
+            Ok(plugins) => choices.extend(plugins),
+            // new and add go on with the kinds of build-script, like without a network
+            Err(note) => println!("{}", terminal::paint(&note, Color::Dim)),
+        }
+    }
+
+    let choices: Vec<(&str, &str)> = choices.iter()
+        .map(|(kind, about)| (kind.as_str(), about.as_str()))
+        .collect();
+
+    return described_argument(command, None, label, &choices);
 }
 
 /// `name value` anywhere in the arguments: the value, and the arguments without both
@@ -450,9 +494,10 @@ fn help() -> String {
   clean   removes the build directories build-script wrote below the script's
           directory, the downloads stay; --cache removes the downloads and what was
           made of them, the JDKs, SDKs and toolchains stay
-  new     creates a project in a new directory: {}
+  new     creates a project in a new directory: {},
+          or from the template of a plugin: go, go:<template>, someone/repository
   add     adds a module in a directory next to the script and its build call to the
-          script: {}
+          script: {}, or a plugin like for new
   install adds a Maven library to the dependencies of the module, the newest version
           unless one is given, once it resolved for the module, or a vcpkg port to a C or
           C++ module; --module picks one in scripts with several, these pick another
@@ -460,6 +505,8 @@ fn help() -> String {
           {}
   config  shows or changes what new and add remember, like your domain:
           {}
+  plugins lists the official plugins with their templates: use <name> in a script loads
+          one, new <name> <path> starts a project from its template
 
 The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.
 build --version shows the version.",
@@ -498,7 +545,7 @@ fn main() {
     }
 
     if options.refresh {
-        jvm::maven::refresh();
+        common::refresh::refresh();
     }
 
     let request = match &command {
@@ -521,15 +568,39 @@ fn main() {
             path,
             package,
         } => {
-            let kind = argument("new", kind.as_deref(), "kind of project", &project::project_kinds());
+            // a kind build-script does not have is a plugin, like go
+            let kind = match kind {
+                Some(kind) => kind.clone(),
+                None => chosen_kind("new", "kind of project", project::project_kind_choices()),
+            };
             let path = argument("new", path.as_deref(), "path of the project", &[]);
+
+            // a workspace can get its first module right away, then add goes on as usual
+            let first_module = project::is_workspace(&kind)
+                && io::stdin().is_terminal()
+                && matches!(exit_on_error(common::system::prompt("Add a first module to the workspace? (Y/n): ")).as_str(), "" | "y" | "yes");
 
             exit_on_error(project::new_project(
                 &kind,
                 Path::new(&path),
                 package.as_deref(),
                 project::domain,
+                &project::PluginLookup::of_this_machine(),
             ));
+
+            if first_module {
+                let kind = chosen_kind("add", "kind of module", project::module_kind_choices());
+                let name = argument("add", None, "name of the module", &[]);
+
+                exit_on_error(project::add_module(
+                    &kind,
+                    &name,
+                    &Path::new(&path).join(DEFAULT_SCRIPT),
+                    package.as_deref(),
+                    project::domain,
+                    &project::PluginLookup::of_this_machine(),
+                ));
+            }
 
             return;
         }
@@ -539,7 +610,10 @@ fn main() {
             script,
             package,
         } => {
-            let kind = argument("add", kind.as_deref(), "kind of module", &project::module_kinds());
+            let kind = match kind {
+                Some(kind) => kind.clone(),
+                None => chosen_kind("add", "kind of module", project::module_kind_choices()),
+            };
             let name = argument("add", name.as_deref(), "name of the module", &[]);
 
             exit_on_error(project::add_module(
@@ -548,6 +622,7 @@ fn main() {
                 Path::new(script),
                 package.as_deref(),
                 project::domain,
+                &project::PluginLookup::of_this_machine(),
             ));
 
             return;
@@ -561,9 +636,10 @@ fn main() {
                 .map(|(name, _)| *name)
                 .collect();
 
-            // config alone shows them all, config --unset asks which
+            // config alone shows them all, config --unset asks which; mirrors have names of their own
             let setting = match (setting, unset) {
                 (None, false) => None,
+                (Some(mirror), _) if mirror.starts_with(project::MIRROR) => Some(mirror.clone()),
                 _ => Some(argument("config", setting.as_deref(), "setting", &settings)),
             };
 
@@ -600,6 +676,11 @@ fn main() {
         }
         Command::CleanCache => {
             exit_on_error(project::clean_cache());
+
+            return;
+        }
+        Command::Plugins => {
+            exit_on_error(list_plugins());
 
             return;
         }
@@ -725,9 +806,12 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
         .map(|parent| parent.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let idea = exit_on_error(jvm::before_build(Path::new(script_path), &project_dir, set_up_idea, release));
+    // project.lock: what the last builds downloaded, from now on downloads are checked against it
+    exit_on_error(lock::open(Path::new(script_path), common::refresh::REFRESHED_AT.get().is_some()));
+    let idea = exit_on_error(jvm::before_build(&project_dir, set_up_idea, release));
 
     let mut runtime = Runtime::new(project_dir.clone())
+        .with_script(Path::new(script_path), &source)
         .with_tests(tests)
         .with_test_arguments(test_arguments)
         .with_jobs(jobs)
@@ -742,6 +826,11 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
         .ok()
         .filter(|_| evaluated.is_ok());
 
+    // a failed build may not have come to every download
+    if worked.is_some() && let Err(error) = lock::save() {
+        eprintln!("{error}");
+    }
+
     jvm::after_build(&project_dir, idea, set_up_idea, worked);
 
     let errors = match (evaluated, built) {
@@ -751,11 +840,32 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     };
 
     for error in errors {
-        let (line, column) = line_column(&source, error.span.start);
-        eprintln!("{script_path}:{line}:{column}: {error}");
+        eprintln!("{}", runtime.describe(&error));
     }
 
     std::process::exit(1);
+}
+
+/// The plugins of the official list with what they build
+fn list_plugins() -> Result<(), String> {
+    let repository = plugins::official_repository();
+    let found = plugins::official_plugins(&repository, &common::system::cache_dir("git"))?;
+    let width = found.iter()
+        .map(|(name, ..)| name.len())
+        .max()
+        .unwrap_or(0);
+
+    println!("Plugins of {repository}, use <name> in a script loads one, new <name> <path> starts a project:");
+
+    for (name, about, templates) in found {
+        println!("  {name:<width$}  {about}");
+
+        for (template, about) in templates {
+            println!("  {:<width$}    new {name}:{template}  {about}", "");
+        }
+    }
+
+    return Ok(());
 }
 
 /// The settings file and what it holds, or one setting shown, set or removed
@@ -771,10 +881,19 @@ fn config(setting: Option<&str>, value: Option<&str>, unset: bool) -> Result<(),
             }
         }
 
+        let mirrors = settings.with_prefix(project::MIRROR);
+        for (prefix, mirror) in &mirrors {
+            println!("  {}{prefix} = {mirror}", project::MIRROR);
+        }
+
+        if mirrors.is_empty() {
+            println!("  {}<URL> is not set (where tools whose URL starts with it come from instead)", project::MIRROR);
+        }
+
         return Ok(());
     };
 
-    if !project::SETTINGS.iter().any(|(name, _)| *name == setting) {
+    if !project::SETTINGS.iter().any(|(name, _)| *name == setting) && !setting.starts_with(project::MIRROR) {
         // the same message as for a value
         return project::checked_setting(setting, "").map(|_| ());
     }
@@ -817,7 +936,7 @@ fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -
         match name {
             Some(name) => eprintln!("run: {}", no_module_named(built, name)),
             None => eprintln!(
-                "run: the script built nothing to run (build_kotlin with a main_class, or build_android)"
+                "run: the script built nothing to run (build_kotlin with a main_class, build_cpp with program = true, build_android or build_command with run)"
             ),
         }
         return 1;
@@ -1135,9 +1254,9 @@ mod tests {
         );
 
         assert_eq!(
-            parse(&["new", "multi", "apps/demo", "--package", "org.acme"]),
+            parse(&["new", "workspace", "apps/demo", "--package", "org.acme"]),
             Ok(Command::New {
-                kind: Some("multi".to_string()),
+                kind: Some("workspace".to_string()),
                 path: Some("apps/demo".to_string()),
                 package: Some("org.acme".to_string())
             }),
@@ -1241,7 +1360,7 @@ mod tests {
         assert_eq!(
             command_usage("new"),
             format!(
-                "usage: build new <kind> <path> [--package <package>]\n       <kind>: {}",
+                "usage: build new <kind> <path> [--package <package>]\n       <kind>: {}, or a plugin like go, go:<template>",
                 project::project_kinds().join(", ")
             )
         );
