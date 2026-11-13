@@ -719,6 +719,8 @@ mod tests {
 
     #[test]
     fn new_projects_and_added_modules_are_written() {
+        // cobol is looked for as a plugin, which opens the lock of the process
+        let _turn = lock::TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = ScratchDir::new("project");
 
 
@@ -798,6 +800,7 @@ mod tests {
             .unwrap_err()
             .contains("cobol is neither a kind of build-script")
         );
+        lock::close();
 
         // Java modules get javac only, without Kotlin
         new_project("java", &root.join("plain"), None, example, &no_plugins()).unwrap();
