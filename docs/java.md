@@ -1,6 +1,6 @@
 # Java
 
-`use java` brings `build_java`
+`use java` brings `build_java`, which compiles Java with javac into a jar.
 
 ```kotlin
 use java
@@ -15,10 +15,10 @@ app = build_java(
 )
 ```
 
-The module goes to `build/libs/<name>.jar`, its libraries to `build/libs/lib/`. The manifest names them, so with a `main_class` the jar starts with `java -jar`.
-`build_java` returns the module, other modules can depend on it.
+The module is built into `build/libs/<name>.jar`, its libraries are copied to `build/libs/lib/`. The manifest lists them, so a jar with a `main_class` starts with `java -jar`.
+`build_java` returns the module, so other modules can depend on it.
 
-Everything on this page also holds for [Kotlin](kotlin.md) and, where it fits, for [Android](android.md).
+Everything on this page also applies to [Kotlin](kotlin.md) and, where it makes sense, to [Android](android.md).
 
 ## Parameters
 
@@ -27,7 +27,7 @@ Everything on this page also holds for [Kotlin](kotlin.md) and, where it fits, f
 | `name`                       | required             | Name of the module and of its jar                                                            |
 | `dependencies`               | required             | Coordinates, platforms and modules, like `implementation` in Gradle                          |
 | `repositories`               | required             | Where to look for Maven artifacts                                                            |
-| `main_class`                 | none                 | Main class, makes the module startable with `run`                                            |
+| `main_class`                 | none                 | Main class, which makes the module startable with `run`                                      |
 | `fat_jar`                    | `false`              | Also builds `build/libs/<name>-all.jar` with the libraries inside, see [Fat jars](#fat-jars) |
 | `relocate`                   | `[]`                 | `"from=to"`: packages of the libraries moved inside the fat jar                              |
 | `compile_only`               | `[]`                 | Only to compile against, like `compileOnly` in Gradle                                        |
@@ -45,7 +45,7 @@ Everything on this page also holds for [Kotlin](kotlin.md) and, where it fits, f
 | `test_annotation_processors` | `[]`                 | javac processors of the tests                                                                |
 | `test_main_class`            | none                 | Runs the tests with this class instead of the JUnit Platform                                 |
 
-> A `.kt` file in the sources is a error, such module's are built with [build_kotlin](kotlin.md).
+> A `.kt` file among the sources is an error: modules with Kotlin are built with [build_kotlin](kotlin.md).
 
 ## Dependencies and repositories
 
@@ -65,13 +65,16 @@ dependencies = list(
 )
 ```
 
-Libraries are resolved like Gradle does it, from POMs and Gradle module metadata: the highest requested version wins, BOMs and constraints apply, exclusions count, and Kotlin Multiplatform and AndroidX libraries get their variant for the JVM or for Android.
+Libraries are resolved the way Gradle does it, from POMs and Gradle module metadata: the highest requested version wins, BOMs and constraints apply, exclusions count, and Kotlin Multiplatform and AndroidX libraries get their variant for the JVM or for Android.
 A module passes its libraries on to the modules that depend on it.
 
-`maven(url)` also takes a dir relative to the script. `maven_local()` is `~/.m2/repository`.
+`maven(url)` also takes a directory relative to the script. `maven_local()` is `~/.m2/repository`.
 
-**Credentials** come from environment variables. The script only names them, the values are read when something is downloaded and go to curl on stdin.
-They show up in no script, no log and no process list:
+**Downloads** are checked against the `.sha1` the repository keeps next to every file, before they go into the cache. A file that does not match stops the build, and a repository without checksums is trusted, as Maven does.
+[project.lock](commands.md#projectlock) next to the script keeps the SHA-256 of every file, so every machine builds with the same files.
+
+**Credentials** come from environment variables. The script only names them, the values are read when something is downloaded and go only to that server: a redirect to another host does not get them.
+They never show up in a script, a log or the process list:
 
 ```kotlin
 maven(
@@ -82,13 +85,13 @@ maven(
 ```
 
 **SNAPSHOTs** resolve to the newest build of the repository, by its `maven-metadata.xml`:
-`spigot-api:26.3-R0.1-SNAPSHOT` becomes `spigot-api-26.3-R0.1-20261004.024323-9.jar`. The metadata is kept a day, `--refresh` asks again.
-A newer build builds the modules that use it again.
+`spigot-api:26.3-R0.1-SNAPSHOT` becomes `spigot-api-26.3-R0.1-20261004.024323-9.jar`. `project.lock` keeps that build, `--refresh` takes the newest again.
+A newer build rebuilds the modules that use it.
 
 ## Tests
 
-`build-script test` compiles `src/test/java` against the module and runs it on the JUnit Platform.
-List only the test framework, build-script adds the engine:
+`build test` compiles `src/test/java` against the module and runs it on the JUnit Platform.
+List only the test framework, build-script adds its engine:
 
 | Framework               | Runs with                                    |
 |-------------------------|----------------------------------------------|
@@ -99,11 +102,11 @@ List only the test framework, build-script adds the engine:
 
 Any other engine runs once it is in `test_dependencies`. Reports go to `build/test-results`. Tests that passed and whose inputs did not change do not run again.
 
-A framework without an engine runs with `test_main_class`: that class of the tests starts with the test classpath, and its exit code decides.
+A framework without an engine runs with `test_main_class`: that class starts with the classpath of the tests, and its exit code decides.
 
 ## Annotation processors
 
-They run with javac on the Java sources, like Dagger, Lombok or MapStruct:
+Processors like Dagger, Lombok or MapStruct run with javac on the Java sources:
 
 ```kotlin
 compile_only = list("org.projectlombok:lombok:1.18.42"),
@@ -114,7 +117,7 @@ A processor can also be a module of the script.
 
 ## Resources
 
-Resources are put together in `build/resources/main`, like Gradle's `processResources`, and land in the jar next to the classes:
+Resources are collected in `build/resources/main`, like with Gradle's `processResources`, and end up in the jar next to the classes:
 
 ```kotlin
 resource_files = list("README.md=../docs/README.md", "scripts=./docs/scripts"),
@@ -149,7 +152,8 @@ build_java(
 )
 ```
 
-`{output}` stands for the output directory, `inputs` count for the up-to-date check. A generator without a command line gets a small Java driver with `tool_sources`.
+`{output}` stands for the output directory, and `inputs` count for the up-to-date check. A generator without a command line can be driven by a small Java class in `tool_sources`.
+For generators that are not on Maven, see [build_command](plugins.md#build_command).
 
 ## JDKs
 
@@ -166,7 +170,7 @@ The bytecode level matches the JDK, like `jvmToolchain(...)` in Gradle.
 ## Fat jars
 
 With `fat_jar = true` the module also gets `build/libs/<name>-all.jar`, like the shadow plugin of Gradle: its classes and resources, those of the modules it depends on and its libraries.
-`compile_only` stays outside, which suits plugins whose server brings the API.
+`compile_only` libraries stay out, which suits plugins whose server provides the API.
 
 ```kotlin
 plugin = build_java(
@@ -180,7 +184,7 @@ plugin = build_java(
 ```
 
 - `run` starts the fat jar. Modules depending on the module get its plain jar. There is no `build/libs/lib/` then.
-- The first jar wins: the module, then its modules, then the libraries. Classes that are in several jars with another content are counted in the log.
+- When several jars have the same file, the first one wins: the module, then its modules, then the libraries. Classes that differ between jars are counted in the log.
 - `META-INF/services` files are concatenated.
 - Signatures, manifests and `module-info.class` of the libraries are left out. `META-INF/versions` stays, the manifest then says `Multi-Release: true`.
 - `relocate` moves packages in the bytecode, in string constants, in resource paths and in the service files, with [jar-relocator](https://github.com/lucko/jar-relocator). Plugins that bring the same library then do not clash.

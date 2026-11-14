@@ -1,7 +1,7 @@
 # Android
 
 `use android` brings `build_android` for apps and `build_android_library` for library modules.
-They build Kotlin and Java like [build_kotlin](kotlin.md) and take its parameters from `compile_only` on, the test parameters included.
+They compile Kotlin and Java like [build_kotlin](kotlin.md) and take its parameters from `compile_only` on, including the test parameters.
 
 ```kotlin
 use android
@@ -32,9 +32,9 @@ app = build_android(
 ```
 
 `build_android` builds a signed debug apk into `build/outputs/apk/debug/<name>-debug.apk`: resources with aapt2, Kotlin and Java against `android.jar`, dex with d8, and the Java resources, assets and native libraries of the app and of all its libraries.
-`build_android_library` builds a library that apps use like an aar. `build-script build --release` builds for release, see [Release builds](#release-builds).
+`build_android_library` builds a library that apps use like an aar. `build --release` builds for release, see [Release builds](#release-builds).
 
-> The debug source set (`src/debug/...`) lies over `src/main`, like with the Android Gradle plugin.
+> The debug source set (`src/debug/...`) overlays `src/main`, as with the Android Gradle plugin.
 
 ## Parameters
 
@@ -57,6 +57,8 @@ app = build_android(
 | `android_test_dependencies`   | `[]`                                             | Libraries of the instrumented tests, like `androidTestImplementation`                     |
 | `android_test_source_dirs`    | `src/androidTest/kotlin`, `src/androidTest/java` | Instrumented tests                                                                        |
 | `test_instrumentation_runner` | `"androidx.test.runner.AndroidJUnitRunner"`      | Runner of the instrumented tests                                                          |
+
+> Native libraries come from `jniLibs`, from `cmake`, or from shared libraries of `build_c` and `build_cpp` among the `dependencies`, which the app builds for its ABIs and its `min_sdk`, see [cpp.md](cpp.md#shared-libraries-and-jni).
 
 Only `build_android`:
 
@@ -83,7 +85,7 @@ Only `build_android_library`:
 
 ## Release builds
 
-A release build only happens on purpose: `build-script build --release` or `run --release`. The script only says how to build it, never whether. Tests always run against debug builds.
+A release build only happens on purpose: `build --release` or `run --release`. The script only says how to build it, never whether. Tests always run against debug builds.
 
 ```kotlin
 app = build_android(
@@ -100,13 +102,13 @@ app = build_android(
 ```
 
 ```bash
-ANDROID_KEYSTORE_PASSWORD=... build-script build --release
+ANDROID_KEYSTORE_PASSWORD=... build --release
 ```
 
 What changes for release:
 
 - The app is not debuggable, `BuildConfig.DEBUG` is `false` and `BUILD_TYPE` is `"release"`.
-- `src/release` lies over `src/main` instead of `src/debug`.
+- `src/release` overlays `src/main` instead of `src/debug`.
 - Native libraries are built by CMake as `Release`.
 - R8 shrinks, optimizes and renames the code of the app and of all its libraries, then dexes it. The mapping of the renamed classes goes to `build/outputs/mapping/release/mapping.txt`, all rules together to `configuration.txt` next to it. `minify = false` dexes with d8 instead.
 - The apk is signed with the release key. Without a `keystore` it stays unsigned, `<name>-release-unsigned.apk`, and `run --release` refuses it.
@@ -133,7 +135,7 @@ A variable that is not set is an error.
 ## How the app is put together
 
 - Library manifests are merged into the app's manifest. Entries with `tools:node="remove"` are left out, other `tools:` attributes are dropped.
-- R classes are written like the Gradle plugin does it: one per package, with the ids of the app. A library may use resources only the app brings, references are checked when the app is linked.
+- R classes are written the way the Gradle plugin writes them: one per package, with the ids of the app. A library may use resources only the app brings, references are checked when the app is linked.
 - View bindings, BuildConfig and AIDL interfaces are generated like with the Gradle plugin.
 - Libraries are dexed once and kept until one of them changes. Every build dexes only the own classes and those of the library modules.
 

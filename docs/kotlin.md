@@ -24,7 +24,7 @@ This page only shows what Kotlin adds.
 
 ## Parameters
 
-Along the parameters of [build_java](java.md#parameters):
+In addition to the parameters of [build_java](java.md#parameters):
 
 | Parameter        | Default    | Meaning                                              |
 |------------------|------------|------------------------------------------------------|
@@ -39,7 +39,7 @@ Along the parameters of [build_java](java.md#parameters):
 
 The sources are in `src/main/kotlin` and `src/main/java`, the tests in `src/test/kotlin` and `src/test/java`. Tests see the `internal` declarations of their module.
 
-Kotlin's own libs can leave out the version, they get the module's Kotlin version:
+Kotlin's own libraries can leave out the version and get the module's Kotlin version:
 `"org.jetbrains.kotlin:kotlin-reflect"`.
 
 ## Compiler plugins
@@ -83,7 +83,7 @@ KSP runs incrementally: with the same processors, options and classpath it only 
 
 ## Tests
 
-`kotlin-test` binds to the framework the tests use, like the Kotlin Gradle plugin does it.
+`kotlin-test` binds to the framework the tests use, as with the Kotlin Gradle plugin.
 
 ```kotlin
 test_dependencies = list("org.jetbrains.kotlin:kotlin-test"),
