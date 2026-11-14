@@ -71,3 +71,21 @@ jobs:
             -v "$PWD/hello:/hello" -w /hello debian:stable-slim \
             sh -c '! test -s /etc/ssl/certs/ca-certificates.crt && build run' | tee run.log
           grep -F '["bare","linux"]' run.log
+
+  # build-script/website shows the docs, the version and the commit of main: once main is green, it deploys again.
+  # The token is a fine-grained one with Contents read and write on build-script/website only; without it the site
+  # catches up with its daily deploy.
+  website:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, bare-linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Deploy of build-script/website
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::no secret WEBSITE_DISPATCH_TOKEN, the site deploys with its daily build"
+            exit 0
+          fi
+          gh api repos/build-script/website/dispatches -f event_type=build-script -f "client_payload[commit]=$GITHUB_SHA"
