@@ -1,0 +1,8 @@
+use cpp
+
+// curl comes with TLS and zlib, nlohmann-json is only headers
+build_cpp(
+    "urls",
+    list("curl", "nlohmann-json"),
+    program = true,
+)

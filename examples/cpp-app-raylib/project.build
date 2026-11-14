@@ -1,0 +1,4 @@
+use cpp
+
+// raylib draws with OpenGL, on macOS through Cocoa, IOKit and CoreVideo
+build_cpp("window", list("raylib"), program = true)

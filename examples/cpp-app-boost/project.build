@@ -1,0 +1,4 @@
+use cpp
+
+// boost has no pkg-config files: build-script links the libraries of the port
+build_cpp("options", list("boost-program-options"), program = true)
