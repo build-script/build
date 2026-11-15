@@ -1,5 +1,5 @@
-// What every script has without `use`: print, type, env, git, the system, files, the time, list,
-// build_command and tool
+// What every script has without `use`: print, type, env, git, the target and the machine, files, the time,
+// list, build_command and tool
 use std::path::Path;
 
 use super::*;
@@ -11,13 +11,18 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
             FunctionParameters::new()
                 .variadic("values", Type::Any)
                 .returns(Type::Unit),
-            |_, args| {
+            |context, args| {
                 let parts: Vec<String> = args
                     .rest::<Value>()?
                     .iter()
                     .map(|value| value.to_string())
                     .collect();
-                println!("{}", parts.join(" "));
+
+                // the script runs once per target, a line says which one besides the machine
+                match context.target {
+                    Some(target) => println!("[{}] {}", target.name(), parts.join(" ")),
+                    None => println!("{}", parts.join(" ")),
+                }
                 Ok(Value::Unit)
             },
         ),
@@ -74,19 +79,29 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                 return Ok(checkout.display().to_string().into());
             },
         ),
+        // of the target the script is built for: the machine, or another system
+        builtin(
+            "target",
+            FunctionParameters::new().returns(Type::String),
+            // like "linux-aarch64", "macos-aarch64" or "windows-x86_64"
+            |context, _| Ok(context.target().name().into()),
+        ),
         builtin(
             "operating_system",
             FunctionParameters::new().returns(Type::String),
-            // "macos", "linux" or "windows"
-            |_, _| Ok(std::env::consts::OS.into()),
+            // "macos", "linux", "windows" or "android"
+            |context, _| match context.target {
+                Some(target) => Ok(target.os.name().into()),
+                None => Ok(host_operating_system()),
+            },
         ),
         builtin(
             "architecture",
             FunctionParameters::new().returns(Type::String),
-            // "aarch64" or "x86_64"
-            |_, _| match system::host_architecture()? {
-                system::HostArchitecture::Aarch64 => Ok("aarch64".into()),
-                system::HostArchitecture::X86_64 => Ok("x86_64".into()),
+            // "aarch64", "x86_64", "armv7" or "x86"
+            |context, _| match context.target {
+                Some(target) => Ok(target.arch.name().into()),
+                None => host_architecture(),
             },
         ),
         builtin(
@@ -94,8 +109,34 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
             FunctionParameters::new()
                 .required("name", Type::String)
                 .returns(Type::String),
-            // with .exe on Windows
-            |_, args| Ok(format!("{}{}", args.get::<String>("name")?, std::env::consts::EXE_SUFFIX).into()),
+            // with .exe for Windows
+            |context, args| match context.target {
+                Some(target) => Ok(target.os.executable(&args.get::<String>("name")?).into()),
+                None => host_executable(args),
+            },
+        ),
+        // of the machine build-script runs on, for the tools a build downloads and runs
+        builtin(
+            "host_target",
+            FunctionParameters::new().returns(Type::String),
+            |_, _| Ok(Target::host().name().into()),
+        ),
+        builtin(
+            "host_operating_system",
+            FunctionParameters::new().returns(Type::String),
+            |_, _| Ok(host_operating_system()),
+        ),
+        builtin(
+            "host_architecture",
+            FunctionParameters::new().returns(Type::String),
+            |_, _| host_architecture(),
+        ),
+        builtin(
+            "host_executable",
+            FunctionParameters::new()
+                .required("name", Type::String)
+                .returns(Type::String),
+            |_, args| host_executable(args),
         ),
         builtin(
             "cache_directory",
@@ -180,4 +221,22 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
     functions.extend(crate::command::builtins());
     functions.extend(crate::tool::builtins());
     return functions;
+}
+
+/// "macos", "linux" or "windows", as Rust names the system build-script was built for
+fn host_operating_system() -> Value {
+    return std::env::consts::OS.into();
+}
+
+/// "aarch64" or "x86_64", an error on other processors
+fn host_architecture() -> Result<Value, String> {
+    match system::host_architecture()? {
+        system::HostArchitecture::Aarch64 => return Ok("aarch64".into()),
+        system::HostArchitecture::X86_64 => return Ok("x86_64".into()),
+    }
+}
+
+/// With .exe on Windows
+fn host_executable(args: &Arguments) -> Result<Value, String> {
+    return Ok(format!("{}{}", args.get::<String>("name")?, std::env::consts::EXE_SUFFIX).into());
 }

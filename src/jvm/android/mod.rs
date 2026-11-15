@@ -20,7 +20,7 @@ use crate::jvm::module::{
 };
 use crate::jvm::testing::{UnitTests, unit_test_parameters};
 use crate::language::runtime::{
-    Arguments, BuildScriptContext, FunctionParameters, FunctionSignature, ModuleTests, TestOutcome,
+    Arguments, BuildScriptContext, FunctionParameters, FunctionSignature, ModuleTests, Placement, TestOutcome,
     TestSuite, Type, Value, builtin,
 };
 
@@ -178,7 +178,9 @@ fn android_parameters(parameters: FunctionParameters) -> FunctionSignature {
         Type::String,
         DEFAULT_TEST_RUNNER,
     )
-    .returns(Type::Module);
+    .returns(Type::Module)
+    // an apk holds the libraries of its ABIs
+    .placed(Placement::HostOnly);
 }
 
 /// An apk in build/outputs/apk/<build type>/: aapt2, kotlinc against android.jar, d8 or

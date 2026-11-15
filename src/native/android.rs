@@ -6,19 +6,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::common::system::{self, HostOperatingSystem};
+use crate::common::target::Target;
 use crate::common::up_to_date::InputFingerprint;
 use crate::jvm::android;
 
 use super::compile::{self, Compilation, Language};
-use super::toolchain::{NativeTarget, Toolchain};
-
-/// ABI and the target of clang without its API level
-const TARGETS: &[(&str, &str)] = &[
-    ("arm64-v8a", "aarch64-linux-android"),
-    ("armeabi-v7a", "armv7a-linux-androideabi"),
-    ("x86", "i686-linux-android"),
-    ("x86_64", "x86_64-linux-android"),
-];
+use super::toolchain::Toolchain;
 
 /// What a shared library of build_cpp compiles for Android
 #[derive(Debug, Hash)]
@@ -62,17 +55,14 @@ pub fn build(
     let output_dir = sources.build_dir.join("android").join(build_type);
 
     for abi in abis {
-        let Some((_, target)) = TARGETS.iter().find(|(known, _)| known == abi) else {
-            return Err(format!("{abi} is no Android ABI"));
-        };
-
-        let target = format!("--target={target}{min_sdk}");
+        let target = Target::of_android_abi(abi).ok_or_else(|| format!("{abi} is no Android ABI"))?;
+        let clang_target = format!("--target={}{min_sdk}", target.ndk_triple().unwrap_or_default());
         let tool = |name: &str| bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).display().to_string();
         let toolchain = Toolchain {
             zig: false,
-            target: NativeTarget::Android,
-            c_compiler: vec![tool("clang"), target.clone()],
-            cpp_compiler: vec![tool("clang++"), target],
+            target,
+            c_compiler: vec![tool("clang"), clang_target.clone()],
+            cpp_compiler: vec![tool("clang++"), clang_target],
             archiver: vec![tool("llvm-ar")],
             environment: vec![],
         };
@@ -82,6 +72,7 @@ pub fn build(
             language: sources.language,
             toolchain: &toolchain,
             module_dir: &sources.module_dir,
+            build_dir: &sources.build_dir,
             source_patterns: &sources.source_patterns,
             exclude_patterns: &sources.exclude_patterns,
             flags: sources.flags.clone(),

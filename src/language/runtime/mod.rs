@@ -1,4 +1,5 @@
 // Runtime: evaluates build scripts, `use` loads the build functions of a platform
+pub mod configurations;
 mod error;
 mod functions;
 mod modules;
@@ -11,7 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::common::semaphore::Semaphore;
-use crate::common::system;
+use crate::common::target::Target;
+use crate::common::{system, terminal};
 use crate::jvm;
 use crate::language::lexer::{Span, line_column};
 use crate::language::parser::{
@@ -24,9 +26,9 @@ use functions::{BuiltinFunction, CallArgument, FunctionParameter, UserFunction, 
 
 pub use error::{RuntimeError, RuntimeErrorType};
 pub use functions::{
-    Arguments, FromValue, FunctionParameters, FunctionSignature, ParameterDefault, builtin,
+    Arguments, FromValue, FunctionParameters, FunctionSignature, ParameterDefault, Placement, builtin,
 };
-pub use modules::{BuildFailure, BuiltModule, ModuleOutput, PendingModule, launch};
+pub use modules::{BuildFailure, BuiltModule, ModuleCall, ModuleOutput, PendingModule, launch};
 pub use testing::{ModuleTests, TestCounts, TestOutcome, TestRun, TestRunner, TestSuite};
 pub use values::{Type, Value};
 
@@ -49,6 +51,38 @@ pub struct BuildScriptContext {
     pub release: bool,
     /// modules write their module files for IntelliJ, see `build idea`
     pub idea: bool,
+    /// what the script is evaluated for: none for the machine build-script runs on, or another target
+    pub target: Option<Target>,
+}
+
+impl BuildScriptContext {
+    /// The target the script is evaluated for, the machine itself when it is none
+    pub fn target(&self) -> Target {
+        return self.target.unwrap_or_else(Target::host);
+    }
+
+    /// build/ of a module, build/<target>/ for another target than the machine: the same names for every
+    /// target, side by side
+    pub fn build_dir(&self, module_dir: &Path) -> PathBuf {
+        let build_dir = system::build_dir(module_dir);
+
+        match self.target {
+            Some(target) => return build_dir.join(target.name()),
+            None => return build_dir,
+        }
+    }
+}
+
+/// Which modules an evaluation builds where the script calls them, the others only once something needs them
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Requests {
+    /// what the script names: on the machine the modules without targets or with its own among them, for
+    /// another target the modules with that one
+    Declared,
+    /// every module: build --target names this one, or run and test, which need the machine's
+    All,
+    /// only the modules built once for every target, like jars: build --target without the machine
+    HostOnly,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,8 +99,14 @@ pub struct Runtime {
     /// true, false and the core functions: the script and every plugin have a scope of their own below it
     core: SharedScope,
     context: BuildScriptContext,
-    /// every module a builtin returned, in build order, maybe still building
+    /// every module a builtin returned, in build order, maybe still building or never requested
     built: Vec<Arc<PendingModule>>,
+    /// the name of every module the script called and where, also those another evaluation builds
+    module_names: Vec<(String, Span)>,
+    /// for another target: the modules of the machine's evaluation, built once for every target or run by builds
+    host_modules: Vec<Arc<PendingModule>>,
+    requests: Requests,
+    /// shared by the evaluations of every target
     jobs: Arc<Semaphore>,
     call_depth: usize,
     /// the script and the plugins, what the sources of spans count: the script is 0
@@ -147,8 +187,12 @@ impl Runtime {
                 test_arguments: vec![],
                 release: false,
                 idea: false,
+                target: None,
             },
             built: vec![],
+            module_names: vec![],
+            host_modules: vec![],
+            requests: Requests::Declared,
             jobs: Arc::new(Semaphore::new(default_jobs())),
             call_depth: 0,
             plugins: HashMap::new(),
@@ -187,13 +231,19 @@ impl Runtime {
         return format!("{path}:{line}:{column}");
     }
 
-    /// The error with where it happened. One in a plugin starts with where the script called it.
+    /// The error with where it happened. One in a plugin starts with where the script called it, one of the
+    /// evaluation for another target than the machine says which.
     pub fn describe(&self, error: &RuntimeError) -> String {
+        let target = match self.context.target {
+            Some(target) => format!(" [{}]", target.name()),
+            None => String::new(),
+        };
+
         match &error.called_from {
             Some((function, call)) => {
-                return format!("{}: {function}: {error} (in {})", self.location(*call), self.location(error.span));
+                return format!("{}{target}: {function}: {error} (in {})", self.location(*call), self.location(error.span));
             }
-            None => return format!("{}: {error}", self.location(error.span)),
+            None => return format!("{}{target}: {error}", self.location(error.span)),
         }
     }
 
@@ -217,9 +267,37 @@ impl Runtime {
         return self;
     }
 
+    /// Another target than the machine, its own name is the machine
+    pub fn with_target(mut self, target: Option<Target>) -> Self {
+        self.context.target = target.filter(|target| !target.is_host());
+        return self;
+    }
+
     pub fn with_jobs(mut self, jobs: usize) -> Self {
         self.jobs = Arc::new(Semaphore::new(jobs));
         return self;
+    }
+
+    pub fn with_requests(mut self, requests: Requests) -> Self {
+        self.requests = requests;
+        return self;
+    }
+
+    /// The evaluation for another target after that of the machine: its modules built once for every target
+    /// and the programs builds run come from there, it takes its jobs from the same slots
+    pub fn after_machine(mut self, machine: &Runtime) -> Self {
+        self.host_modules = machine.built.clone();
+        self.jobs = machine.jobs.clone();
+        return self;
+    }
+
+    /// The targets besides the machine that modules of the script name, in the order of build --help
+    pub fn declared_targets(&self) -> Vec<Target> {
+        return crate::common::target::TARGETS.iter()
+            .filter(|target| !target.is_host())
+            .filter(|target| self.built.iter().any(|module| module.targets.contains(&target.name())))
+            .copied()
+            .collect();
     }
 
     pub fn run(&mut self, script: &Script) -> Result<(), RuntimeError> {
@@ -809,6 +887,8 @@ impl Runtime {
                 "module" => return Ok(Type::Module),
                 "any" => return Ok(Type::Any),
                 "unit" => return Ok(Type::Unit),
+                // one of the names of build --target, for plugins that take targets
+                "target" => return Ok(Type::target()),
                 _ => {
                     return Err(RuntimeError::new(
                         RuntimeErrorType::UnknownType { name: name.clone() },
@@ -901,7 +981,7 @@ impl Runtime {
             }
         };
 
-        let args = bind(name, &signature.parameters, arguments, span)?;
+        let mut args = bind(name, &signature.parameters, arguments, span)?;
 
         // modules build on threads of their own, the script goes on meanwhile
         if matches!(signature.returns, Type::Module) {
@@ -915,20 +995,50 @@ impl Runtime {
                 .first()
                 .filter(|(_, call)| call.source != span.source)
                 .cloned();
-            // the name says which module run, test and later other targets mean
+            // the name says which module run, test and the evaluations for other targets mean
             let module_name: String = args.get("name").unwrap_or_default();
+            self.claim_module_name(&module_name, called_from.as_ref().map(|(_, call)| *call).unwrap_or(span), span)?;
 
-            if let Some(first) = self.built.iter().find(|built| !module_name.is_empty() && built.name == module_name) {
-                let first = self.location(first.called_from.as_ref().map(|(_, call)| *call).unwrap_or(first.span));
-                return Err(RuntimeError::new(
-                    RuntimeErrorType::DuplicateModule { name: module_name, first },
-                    span,
-                ));
+            let targets: Vec<String> = match signature.parameters.fixed.iter().any(|param| param.name == "targets") {
+                true => args.get("targets").map_err(|message| RuntimeError::builtin_failed(name, message, span))?,
+                false => vec![],
+            };
+
+            if let Some(target) = self.context.target {
+                if signature.placement == Placement::HostOnly {
+                    return self.module_of_machine(name, &module_name, target, span).map(Value::Module);
+                }
+
+                self.take_programs_of_machine(&signature, &mut args, name, target, span)?;
+
+                // a command without targets that is the same for every target, like a generator, runs once: one
+                // that names its targets has a module of its own for each of them
+                if signature.placement == Placement::UnlessUnchanged
+                    && targets.is_empty()
+                    && let Some(machine) = self.unchanged_module_of_machine(name, &module_name, &args)
+                {
+                    if self.requested_at_call(signature.placement, &targets) {
+                        machine.request();
+                    }
+                    return Ok(Value::Module(machine));
+                }
             }
 
-            let module = self.pending_module(name, span, called_from, module_name, function, args);
+            let requested = self.requested_at_call(signature.placement, &targets);
+            let call = ModuleCall {
+                function: name,
+                span,
+                called_from,
+                name: module_name,
+                arguments: Some(args.clone()),
+                targets,
+            };
+            let module = self.pending_module(call, function, args);
             self.built.push(module.clone());
-            module.request();
+
+            if requested {
+                module.request();
+            }
 
             return Ok(Value::Module(module));
         }
@@ -948,22 +1058,124 @@ impl Runtime {
         return Ok(result);
     }
 
+    /// A name of its own for every module of an evaluation: run, test and the other targets go by them
+    fn claim_module_name(&mut self, name: &str, location: Span, span: Span) -> Result<(), RuntimeError> {
+        if name.is_empty() {
+            return Ok(());
+        }
+
+        if let Some((_, first)) = self.module_names.iter().find(|(claimed, _)| claimed == name) {
+            return Err(RuntimeError::new(
+                RuntimeErrorType::DuplicateModule { name: name.to_string(), first: self.location(*first) },
+                span,
+            ));
+        }
+
+        self.module_names.push((name.to_string(), location));
+        return Ok(());
+    }
+
+    /// Whether a module is built right where the script calls it. The others build only once something
+    /// needs them: `run`, `test`, or a module of another target that runs or links them.
+    fn requested_at_call(&self, placement: Placement, targets: &[String]) -> bool {
+        let names = |target: Target| targets.iter().any(|name| *name == target.name());
+
+        match (self.context.target, self.requests) {
+            // built once for every target, by the machine's evaluation
+            (None, _) if placement == Placement::HostOnly => return true,
+            (None, Requests::Declared) => return targets.is_empty() || names(Target::host()),
+            (Some(target), Requests::Declared) => return names(target),
+            (_, Requests::All) => return true,
+            (_, Requests::HostOnly) => return false,
+        }
+    }
+
+    /// For another target: the module built once for every target, that of the machine
+    fn module_of_machine(&self, function: &str, name: &str, target: Target, span: Span) -> Result<Arc<PendingModule>, RuntimeError> {
+        let error = |message: String| Err(RuntimeError::builtin_failed(function, message, span));
+
+        match self.host_modules.iter().find(|module| module.name == name) {
+            Some(module) if module.function == function => return Ok(module.clone()),
+            Some(module) => return error(format!("{name} is built by {} for this machine", module.function)),
+            None => return error(format!(
+                "{name} is built once for every target, by the evaluation for this machine, but the script builds it only for {}",
+                target.name()
+            )),
+        }
+    }
+
+    /// For another target: the modules that run while the build goes on, like the program of a command, are
+    /// those of the machine with their names
+    fn take_programs_of_machine(
+        &self,
+        signature: &FunctionSignature,
+        args: &mut Arguments,
+        function: &str,
+        target: Target,
+        span: Span,
+    ) -> Result<(), RuntimeError> {
+        fn replaced(value: &Value, host_modules: &[Arc<PendingModule>]) -> Result<Value, String> {
+            match value {
+                Value::Module(module) if host_modules.iter().any(|machine| Arc::ptr_eq(machine, module)) => return Ok(value.clone()),
+                Value::Module(module) => match host_modules.iter().find(|machine| machine.name == module.name) {
+                    Some(machine) => return Ok(Value::Module(machine.clone())),
+                    None => return Err(module.name.clone()),
+                },
+                Value::List(items) => {
+                    let items = items.iter()
+                        .map(|item| replaced(item, host_modules))
+                        .collect::<Result<_, _>>()?;
+                    return Ok(Value::List(items));
+                }
+                other => return Ok(other.clone()),
+            }
+        }
+
+        for (parameter, value) in &mut args.values {
+            let Some(current) = value.as_ref().filter(|_| signature.runs_on_host.contains(&parameter.as_str())) else {
+                continue;
+            };
+
+            *value = Some(replaced(current, &self.host_modules).map_err(|module| RuntimeError::builtin_failed(
+                function,
+                format!("{module} runs while the build goes on, the machine needs one, but the script builds it only for {}", target.name()),
+                span,
+            ))?);
+        }
+
+        return Ok(());
+    }
+
+    /// For another target: the machine's module of the name when its call is the same, it runs once
+    fn unchanged_module_of_machine(&self, function: &str, name: &str, args: &Arguments) -> Option<Arc<PendingModule>> {
+        let machine = self.host_modules.iter().find(|module| module.name == name && module.function == function)?;
+        let theirs = machine.arguments.as_ref()?;
+
+        let same = |left: &Option<Value>, right: &Option<Value>| match (left, right) {
+            (Some(left), Some(right)) => Self::values_equal(left, right).unwrap_or(false),
+            (None, None) => true,
+            _ => false,
+        };
+
+        let unchanged = theirs.values.len() == args.values.len()
+            && theirs.values.iter().zip(&args.values).all(|((_, left), (_, right))| same(left, right))
+            && theirs.rest.len() == args.rest.len()
+            && theirs.rest.iter().zip(&args.rest).all(|(left, right)| Self::values_equal(left, right).unwrap_or(false));
+
+        return unchanged.then(|| machine.clone());
+    }
+
     /// A module the build function builds on a thread of its own once the module is requested: after the
     /// modules it depends on, without holding a job while it waits for them
-    fn pending_module(
-        &self,
-        function_name: &'static str,
-        span: Span,
-        called_from: Option<(String, Span)>,
-        module_name: String,
-        function: BuiltinFunction,
-        args: Arguments,
-    ) -> Arc<PendingModule> {
+    fn pending_module(&self, call: ModuleCall, function: BuiltinFunction, args: Arguments) -> Arc<PendingModule> {
         let context = self.context.clone();
         let jobs = self.jobs.clone();
         let dependencies = args.pending_modules();
+        let label = self.context.target.map(|target| target.name());
 
-        return PendingModule::new(function_name, span, called_from, module_name, dependencies, move |module| {
+        return PendingModule::new(call, dependencies, move |module| {
+            terminal::set_target_label(label);
+
             let dependencies_built = args.pending_modules()
                 .iter()
                 .all(|dependency| dependency.wait().is_ok());

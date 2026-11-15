@@ -13,10 +13,11 @@ use std::sync::Arc;
 
 use common::lock;
 use common::settings::Settings;
+use common::target::Target;
 use common::terminal::{self, Color};
 use language::lexer::line_column;
 use language::parser::Parser;
-use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection};
+use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection, configurations};
 
 /// Every command and its arguments, in the order of the usage
 const COMMANDS: &[(&str, &str)] = &[
@@ -34,11 +35,12 @@ const COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// What take_build_options takes before the commands get their arguments
-const BUILD_OPTIONS: &[&str] = &["--jobs", "--refresh", "--release"];
+const BUILD_OPTIONS: &[&str] = &["--jobs", "--refresh", "--release", "--target"];
 
 const BUILD_OPTIONS_USAGE: &str = "build, run and test take --jobs <n>, the number of modules built at the same time;
 they and install take --refresh, which asks the repositories again for the newest
-versions and SNAPSHOTs; build and run take --release, which builds Android apps for release";
+versions and SNAPSHOTs; build and run take --release, which builds Android apps for release;
+build takes --target <name>, once per target, for those instead of the targets the script names";
 
 /// what commands without a script argument build
 const DEFAULT_SCRIPT: &str = "project.build";
@@ -544,6 +546,11 @@ fn main() {
         std::process::exit(2);
     }
 
+    if !options.targets.is_empty() && !matches!(command, Command::Build { .. }) {
+        eprintln!("--target only goes with build: run and test build for this machine");
+        std::process::exit(2);
+    }
+
     if options.refresh {
         common::refresh::refresh();
     }
@@ -684,7 +691,14 @@ fn main() {
 
             return;
         }
-        Command::Build { script } | Command::Run { script, .. } => BuildRequest::of(script),
+        Command::Build { script } => BuildRequest {
+            targets: options.targets.clone(),
+            ..BuildRequest::of(script)
+        },
+        Command::Run { script, .. } => BuildRequest {
+            for_the_machine: true,
+            ..BuildRequest::of(script)
+        },
         Command::Idea { script } => BuildRequest {
             set_up_idea: true,
             ..BuildRequest::of(script)
@@ -692,6 +706,7 @@ fn main() {
         Command::Test { script, module, args } => BuildRequest {
             tests: module.clone().map_or(TestSelection::All, TestSelection::Module),
             test_arguments: args.clone(),
+            for_the_machine: true,
             ..BuildRequest::of(script)
         },
     };
@@ -717,14 +732,35 @@ struct BuildOptions {
     refresh: bool,
     /// Android apps are built for release
     release: bool,
+    /// --target, those instead of the targets the script names
+    targets: Vec<Target>,
 }
 
-/// `--jobs <n>`, `--refresh` and `--release`, before the arguments of a program after `--`
+/// `--jobs <n>`, `--refresh`, `--release` and `--target <name>`, before the arguments of a program after `--`
 fn take_build_options(args: &[String]) -> Result<(BuildOptions, Vec<String>), String> {
     let program_args = args.iter()
         .position(|arg| arg == "--")
         .unwrap_or(args.len());
-    let (jobs, own) = take_option(&args[..program_args], "--jobs")?;
+    let (jobs, mut own) = take_option(&args[..program_args], "--jobs")?;
+    let mut targets = vec![];
+
+    loop {
+        let (target, rest) = take_option(&own, "--target")?;
+        let Some(name) = target else {
+            break;
+        };
+
+        let target = Target::named(&name).ok_or_else(|| {
+            let names = Target::names();
+            let known: Vec<&str> = names.iter().map(String::as_str).collect();
+            return format!("{name} is no target{}\nthe targets: {}", suggestion(&name, &known), names.join(", "));
+        })?;
+
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+        own = rest;
+    }
 
     let refresh = own.iter().any(|arg| arg == "--refresh");
     let release = own.iter().any(|arg| arg == "--release");
@@ -749,6 +785,7 @@ fn take_build_options(args: &[String]) -> Result<(BuildOptions, Vec<String>), St
             jobs,
             refresh,
             release,
+            targets,
         },
         own,
     ));
@@ -762,6 +799,10 @@ struct BuildRequest<'a> {
     test_arguments: Vec<String>,
     /// build idea: every build after keeps IntelliJ current
     set_up_idea: bool,
+    /// build --target: those instead of the targets the script names
+    targets: Vec<Target>,
+    /// run and test: every module for the machine, which runs them, and no other targets
+    for_the_machine: bool,
 }
 
 impl<'a> BuildRequest<'a> {
@@ -771,13 +812,15 @@ impl<'a> BuildRequest<'a> {
             tests: TestSelection::None,
             test_arguments: vec![],
             set_up_idea: false,
+            targets: vec![],
+            for_the_machine: false,
         };
     }
 }
 
 /// The modules the script built, the builds of independent modules ran in parallel
 fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<BuiltModule>> {
-    let BuildRequest { script: script_path, tests, test_arguments, set_up_idea } = request;
+    let BuildRequest { script: script_path, tests, test_arguments, set_up_idea, targets, for_the_machine } = request;
 
     let source = std::fs::read_to_string(script_path).unwrap_or_else(|error| {
         match error.kind() {
@@ -810,40 +853,36 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     exit_on_error(lock::open(Path::new(script_path), common::refresh::REFRESHED_AT.get().is_some()));
     let idea = exit_on_error(jvm::before_build(&project_dir, set_up_idea, release));
 
-    let mut runtime = Runtime::new(project_dir.clone())
-        .with_script(Path::new(script_path), &source)
-        .with_tests(tests)
-        .with_test_arguments(test_arguments)
-        .with_jobs(jobs)
-        .with_release(release)
-        .with_idea(idea);
-    let evaluated = runtime.run(&script);
-
-    // builds that started before an error finish, none of their tools keep running
-    let built = runtime.finish();
-
-    let worked = built.as_deref()
-        .ok()
-        .filter(|_| evaluated.is_ok());
+    // the tests run on the machine, the evaluations for other targets build without them
+    let wanted = configurations::Wanted { targets: &targets, for_the_machine };
+    let evaluations = configurations::evaluate(&script, wanted, |target| {
+        Runtime::new(project_dir.clone())
+            .with_script(Path::new(script_path), &source)
+            .with_tests(if target.is_none() { tests.clone() } else { TestSelection::None })
+            .with_test_arguments(test_arguments.clone())
+            .with_jobs(jobs)
+            .with_release(release)
+            .with_idea(idea)
+            .with_target(target)
+    });
+    let built = evaluations.finish();
 
     // a failed build may not have come to every download
-    if worked.is_some() && let Err(error) = lock::save() {
+    if built.is_ok() && let Err(error) = lock::save() {
         eprintln!("{error}");
     }
 
-    jvm::after_build(&project_dir, idea, set_up_idea, worked);
+    jvm::after_build(&project_dir, idea, set_up_idea, built.as_deref().ok());
 
-    let errors = match (evaluated, built) {
-        (Ok(()), Ok(modules)) => return modules,
-        (Err(error), _) => vec![error],
-        (Ok(()), Err(errors)) => errors,
-    };
-
-    for error in errors {
-        eprintln!("{}", runtime.describe(&error));
+    match built {
+        Ok(modules) => return modules,
+        Err(errors) => {
+            for error in errors {
+                eprintln!("{error}");
+            }
+            std::process::exit(1);
+        }
     }
-
-    std::process::exit(1);
 }
 
 /// The plugins of the official list with what they build
@@ -1454,11 +1493,19 @@ mod tests {
                 BuildOptions {
                     jobs: Some(3),
                     refresh: true,
-                    release: true
+                    release: true,
+                    targets: vec![],
                 },
                 args(&["build"])
             ))
         );
+
+        // once per target, a misspelled one gets the nearest
+        let (options, rest) = take_build_options(&args(&["build", "--target", "linux-aarch64", "--target", "windows-x86_64"])).unwrap();
+        assert_eq!(options.targets.iter().map(Target::name).collect::<Vec<_>>(), ["linux-aarch64", "windows-x86_64"]);
+        assert_eq!(rest, args(&["build"]));
+        let error = take_build_options(&args(&["build", "--target", "linux-arm64"])).unwrap_err();
+        assert!(error.starts_with("linux-arm64 is no target, did you mean linux-aarch64?"), "{error}");
         assert_eq!(
             take_build_options(&args(&["run", "--", "--jobs", "1", "--refresh"])),
             Ok((

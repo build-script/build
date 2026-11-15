@@ -48,6 +48,23 @@ pub struct VariadicParameter {
 pub struct FunctionSignature {
     pub parameters: FunctionParameters,
     pub returns: Type,
+    /// of a build function: where its modules are built when the script is evaluated for other targets too
+    pub placement: Placement,
+    /// parameters whose modules run while the build goes on, like the program of a command: those are
+    /// the machine's modules of their names
+    pub runs_on_host: Vec<&'static str>,
+}
+
+/// Where the modules of a build function are built when the script is evaluated for other targets too
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Placement {
+    /// one module per target, those of other targets than the machine in build/<target>/
+    #[default]
+    PerTarget,
+    /// one module for every target, like a jar: the evaluation for another target takes the machine's
+    HostOnly,
+    /// one module per target, but a call that is the same as the machine's takes the machine's module
+    UnlessUnchanged,
 }
 
 /// A function the script defines: `fn (name: str) -> str { body }`
@@ -68,7 +85,7 @@ pub enum CallArgument {
 }
 
 /// The arguments of a call, bound to the parameters, for builtins to read as Rust types
-#[derive(Debug, Hash)]
+#[derive(Debug, Clone, Hash)]
 pub struct Arguments {
     pub function: String,
     /// one entry per declared parameter, None = omitted optional argument
@@ -289,6 +306,8 @@ impl FunctionParameters {
         return FunctionSignature {
             parameters: self,
             returns,
+            placement: Placement::default(),
+            runs_on_host: vec![],
         };
     }
 
@@ -318,6 +337,18 @@ impl FunctionParameters {
 }
 
 impl FunctionSignature {
+    pub fn placed(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        return self;
+    }
+
+    /// The modules of this parameter run during the build: the machine's are taken for every target
+    pub fn running_on_host(mut self, parameter: &'static str) -> Self {
+        assert!(self.parameters.fixed.iter().any(|param| param.name == parameter), "no parameter '{parameter}'");
+        self.runs_on_host.push(parameter);
+        return self;
+    }
+
     pub fn same_shape(&self, other: &FunctionSignature) -> bool {
         let required =
             |param: &FunctionParameter| matches!(param.default, ParameterDefault::Required);

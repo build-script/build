@@ -10,8 +10,8 @@ use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
 use crate::jvm::JvmLaunch;
 use crate::language::runtime::{
-    Arguments, BuildScriptContext, BuiltModule, FunctionParameters, ModuleOutput, ModuleTests, TestOutcome, TestRun,
-    TestSuite, Type, Value, builtin,
+    Arguments, BuildScriptContext, BuiltModule, FunctionParameters, ModuleOutput, ModuleTests, Placement, TestOutcome,
+    TestRun, TestSuite, Type, Value, builtin,
 };
 
 /// stands for the directory of the command in its arguments: build/commands/<name>
@@ -53,7 +53,11 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .with_default("test", command_line(), Value::List(vec![]))
             .with_default("test_timeout", Type::Int, Value::Int(0))
             .with_default("always", Type::Bool, false)
-            .returns(Type::Module),
+            .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
+            .returns(Type::Module)
+            // a program that writes a file once for every target, a compiler of Go once per target
+            .placed(Placement::UnlessUnchanged)
+            .running_on_host("command"),
         build_command,
     )];
 }
@@ -62,6 +66,8 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
 struct CommandSpec {
     name: String,
     directory: PathBuf,
+    /// build/ of its directory, build/<target>/ for another target than the machine
+    build_dir: PathBuf,
     output_dir: PathBuf,
     command: Vec<String>,
     inputs: Vec<PathBuf>,
@@ -78,7 +84,7 @@ fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value
     let spec = CommandSpec::read(context, args)?;
     let always: bool = args.get("always")?;
 
-    let mut fingerprint = InputFingerprint::for_module(&spec.directory, &format!("commands/{}", spec.name));
+    let mut fingerprint = InputFingerprint::in_build_dir(&spec.build_dir, &format!("commands/{}", spec.name));
     fingerprint.add((&spec.command, &spec.outputs, &spec.environment, &spec.environment_inputs, &spec.path));
     fingerprint.add_files(&spec.inputs)?;
     fingerprint.add_files(&spec.module_files)?;
@@ -144,7 +150,8 @@ impl CommandSpec {
             return Err(format!("directory {} does not exist", directory.display()));
         }
 
-        let output_dir = system::build_dir(&directory).join("commands").join(&name);
+        let build_dir = context.build_dir(&directory);
+        let output_dir = build_dir.join("commands").join(&name);
 
         let command = command_line(args.get("command")?, &output_dir)?;
 
@@ -188,6 +195,7 @@ impl CommandSpec {
         return Ok(CommandSpec {
             name,
             directory,
+            build_dir,
             output_dir,
             command,
             inputs,
@@ -233,7 +241,7 @@ impl CommandSpec {
         let writes_reports = test.iter().any(|argument| argument.contains(&reports));
         test.extend(context.test_arguments.iter().cloned());
 
-        let mut fingerprint = InputFingerprint::for_module(&self.directory, &format!("commands/{}.tests", self.name));
+        let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}.tests", self.name));
         fingerprint.add((&test, &self.environment, &self.environment_inputs, &self.path));
         fingerprint.add_files(&self.inputs)?;
         fingerprint.add_files(&self.module_files)?;

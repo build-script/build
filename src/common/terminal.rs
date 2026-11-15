@@ -282,9 +282,23 @@ fn stty(args: &[&str]) -> Option<String> {
     return output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string());
 }
 
-/// A line of the build log: `[app] Compiling`, the module in orange
+thread_local! {
+    /// the target a thread builds for when it is not the machine, it follows the module in the log
+    static TARGET_LABEL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// For the lines this thread logs: the target it builds for, none for the machine
+pub fn set_target_label(target: Option<String>) {
+    TARGET_LABEL.with(|label| *label.borrow_mut() = target);
+}
+
+/// A line of the build log: `[app] Compiling`, the module in orange, and `[app linux-aarch64] Compiling` for
+/// another target than the machine
 pub fn log(module: &str, message: &str) {
-    println!("[{}] {message}", paint(module, Color::Primary));
+    match TARGET_LABEL.with(|label| label.borrow().clone()) {
+        Some(target) => println!("[{} {target}] {message}", paint(module, Color::Primary)),
+        None => println!("[{}] {message}", paint(module, Color::Primary)),
+    }
 }
 
 /// A line about a tool build-script brings itself: `[vcpkg] Installing`, the tool in yellow

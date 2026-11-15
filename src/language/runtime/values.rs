@@ -92,6 +92,11 @@ fn quoted(text: &str) -> String {
 }
 
 impl Type {
+    /// One of the names of build --target, a misspelled one gets the nearest as a hint
+    pub fn target() -> Self {
+        return Type::Union(crate::common::target::Target::names().into_iter().map(Type::Variant).collect());
+    }
+
     pub fn list(element: Type) -> Self {
         return Type::List(Box::new(element));
     }

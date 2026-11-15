@@ -42,6 +42,7 @@ pub fn system_library_signature() -> FunctionSignature {
 /// A source of git() builds once on the machine, in the cache, named after its commit and options. Other
 /// sources build into build/cmake/<name>/ of the project. The build goes to build/, the installation to install/.
 pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+    super::only_for_the_machine(context)?;
     let name: String = args.get("name")?;
     let options: Vec<String> = args.get("options")?;
     let source = context.project_dir.join(args.get::<String>("source")?);
@@ -64,7 +65,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
             let key = up_to_date::hash_hex((&source, &options, &environment, &cmake));
             system::cache_dir("cmake").join(format!("{name}-{key}"))
         }
-        false => system::build_dir(&context.project_dir).join("cmake").join(&name),
+        false => context.build_dir(&context.project_dir).join("cmake").join(&name),
     };
 
     let (binary_dir, install_dir) = (build_dir.join("build"), build_dir.join("install"));
@@ -171,7 +172,8 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
 }
 
 /// A library installed on the system, like the LLVM of Homebrew or apt, through its llvm-config
-pub fn system_library(_context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+pub fn system_library(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+    super::only_for_the_machine(context)?;
     let name: String = args.get("name")?;
     let compile_command: Vec<String> = args.get("compile_flags_from")?;
     let link_command: Vec<String> = args.get("link_flags_from")?;

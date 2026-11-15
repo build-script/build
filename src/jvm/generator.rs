@@ -46,6 +46,11 @@ fn generate_sources(context: &BuildScriptContext, args: &Arguments) -> Result<Va
     let directory = module_directory(context, args)?;
     let output = system::build_dir(&directory).join("generated/sources").join(&name);
 
+    // jars are built once for every target, the evaluation for the machine generated their sources
+    if context.target.is_some() {
+        return Ok(output.display().to_string().into());
+    }
+
     let inputs: Vec<PathBuf> = args.get::<Vec<String>>("inputs")?
         .iter()
         .map(|input| directory.join(input))

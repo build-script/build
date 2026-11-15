@@ -41,7 +41,12 @@ impl InputFingerprint {
 
     /// In build/fingerprints/`name` of the module in `module_dir`
     pub fn for_module(module_dir: &Path, name: &str) -> Self {
-        return InputFingerprint::new(system::build_dir(module_dir).join(FINGERPRINTS_DIR).join(name));
+        return InputFingerprint::in_build_dir(&system::build_dir(module_dir), name);
+    }
+
+    /// In fingerprints/`name` of a build directory, like build/linux-aarch64/ of a module built for another target
+    pub fn in_build_dir(build_dir: &Path, name: &str) -> Self {
+        return InputFingerprint::new(build_dir.join(FINGERPRINTS_DIR).join(name));
     }
 
     pub fn add(&mut self, value: impl Hash) {

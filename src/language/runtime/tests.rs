@@ -757,6 +757,34 @@ fn built_modules_are_remembered_for_run() {
     assert!(error.contains("core cannot be run"), "{error}");
 }
 
+#[test]
+fn scripts_ask_for_their_target_and_for_the_machine() {
+    let host = Target::host();
+    let source = "t = target()\nos = operating_system()\narch = architecture()\nexe = executable(\"app\")\n\
+                  host = host_target()\nhost_os = host_operating_system()\nhost_exe = host_executable(\"app\")";
+
+    let runtime = run(source).unwrap();
+    assert_eq!((string(&runtime, "t"), string(&runtime, "host")), (host.name(), host.name()));
+    assert_eq!(string(&runtime, "os"), std::env::consts::OS);
+    assert_eq!(string(&runtime, "exe"), format!("app{}", std::env::consts::EXE_SUFFIX));
+
+    // built for another system: what the script builds names that one, the machine stays the host
+    let windows = Target::named("windows-x86_64").unwrap();
+    let other = if host == windows { Target::named("linux-aarch64").unwrap() } else { windows };
+    let runtime = run_in(Runtime::new(".").with_target(Some(other)), source).unwrap();
+
+    assert_eq!(string(&runtime, "t"), other.name());
+    assert_eq!((string(&runtime, "os"), string(&runtime, "arch")), (other.os.name().to_string(), other.arch.name().to_string()));
+    assert_eq!(string(&runtime, "exe"), other.os.executable("app"));
+    assert_eq!(string(&runtime, "host"), host.name());
+    assert_eq!(string(&runtime, "host_os"), std::env::consts::OS);
+    assert_eq!(string(&runtime, "host_exe"), format!("app{}", std::env::consts::EXE_SUFFIX));
+
+    // build/<target>/ beside build/, and the name of the machine is the machine
+    assert_eq!(runtime.context.build_dir(std::path::Path::new("app")), PathBuf::from("app/build").join(other.name()));
+    assert_eq!(Runtime::new(".").with_target(Some(host)).context.target, None);
+}
+
 /// A module that finished building with the given name
 fn finished_module(name: &str) -> Arc<BuiltModule> {
     return Arc::new(BuiltModule {
@@ -778,7 +806,7 @@ fn recording_module(
     let built = built.clone();
     let module_name = name.to_string();
 
-    return PendingModule::new("library", Span::new(0, 0), None, name.to_string(), dependencies, move |module| {
+    return PendingModule::new(ModuleCall::named("library", name), dependencies, move |module| {
         built.lock().unwrap().push(module_name.clone());
         module.finish(Ok(finished_module(&module_name)));
     });
@@ -811,7 +839,7 @@ fn modules_build_only_once_requested_and_with_their_dependencies() {
 fn a_build_holding_a_job_must_not_wait_for_unfinished_modules() {
     // waits for a module that is still building while it holds its job
     fn impatient(_: &BuildScriptContext, _: &Arguments) -> Result<Value, String> {
-        let slow = PendingModule::new("library", Span::new(0, 0), None, "slow".to_string(), vec![], |module| {
+        let slow = PendingModule::new(ModuleCall::named("library", "slow"), vec![], |module| {
             std::thread::sleep(std::time::Duration::from_millis(200));
             module.finish(Ok(finished_module("slow")));
         });
@@ -915,6 +943,130 @@ fn commands_run_again_only_when_what_they_depend_on_changed() {
 
     let error = build_in(&directory, "build_command(\"a/b\", list(\"true\"))", TestSelection::None).unwrap_err();
     assert!(error.contains("\"a/b\" cannot name a command"), "{error}");
+}
+
+/// The modules of a build of `source` for the machine and the other targets, like the command line does it,
+/// on one job: a build that waits for another while it holds the job would never end
+#[cfg(unix)]
+fn build_for(directory: &std::path::Path, source: &str, targets: &[Target]) -> Result<Vec<Arc<BuiltModule>>, Vec<String>> {
+    let script = Parser::new(source)
+        .parse_script()
+        .expect("script should parse");
+    let wanted = configurations::Wanted { targets, for_the_machine: false };
+    let evaluations = configurations::evaluate(&script, wanted, |target| {
+        Runtime::new(directory)
+            .with_script(std::path::Path::new("project.build"), source)
+            .with_jobs(1)
+            .with_target(target)
+    });
+
+    return evaluations.finish();
+}
+
+#[cfg(unix)]
+#[test]
+fn scripts_name_the_targets_of_their_modules() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("targets");
+    let project = system::canonical_path(&directory).unwrap();
+    // never this machine, the tests with sh run on others
+    let windows = Target::named("windows-x86_64").unwrap();
+    let file = |path: &str| project.join(path);
+
+    // build/<target>/ for another target, nothing for the machine when the script leaves it out
+    let info = |targets: &str| format!(
+        "build_command(\"info\", list(\"sh\", \"-c\", \"echo \" + target() + \" \" + executable(\"app\") + \" > {{output}}/info\"), \
+         outputs = list(\"{{output}}/info\"), targets = {targets})"
+    );
+    build_for(&directory, &info("list(\"windows-x86_64\")"), &[]).unwrap();
+    assert_eq!(system::read_file(&file("build/windows-x86_64/commands/info/info")).unwrap().trim(), "windows-x86_64 app.exe");
+    assert!(!file("build/commands/info").exists(), "the machine is no target of it");
+
+    let built = build_for(&directory, &info("list(host_target(), \"windows-x86_64\")"), &[]).unwrap();
+    assert!(file("build/commands/info/info").exists(), "host_target() names the machine");
+    assert_eq!(built.len(), 2);
+
+    // build --target instead of what the script names
+    system::remove_dir(&file("build")).unwrap();
+    build_for(&directory, &info("list(\"linux-aarch64\")"), &[windows]).unwrap();
+    assert!(file("build/windows-x86_64/commands/info/info").exists());
+    assert!(!file("build/linux-aarch64").exists(), "--target replaces the targets of the script");
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_for_other_targets_run_the_programs_of_the_machine_once() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("targets-programs");
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |path: &str| project.join(path);
+
+    // a program that says what it was made for, run by a command for windows-x86_64 only, which also needs a
+    // generated file that is the same for every target
+    let source = "\
+        tool = build_command(\"tool\", list(\"sh\", \"-c\", \"echo \" + target() + \" > {output}/made-for\"), \
+            outputs = list(\"{output}/made-for\"), run = list(\"cp\", \"{output}/made-for\"))\n\
+        same = build_command(\"same\", list(\"sh\", \"-c\", \"echo run >> runs; echo > {output}/same\"), outputs = list(\"{output}/same\"))\n\
+        got = build_command(\"got\", list(tool, \"{output}/got\"), outputs = list(\"{output}/got\"), dependencies = list(same), \
+            targets = list(\"windows-x86_64\"))";
+
+    build_for(&directory, source, &[]).unwrap();
+    assert_eq!(system::read_file(&file("build/windows-x86_64/commands/got/got")).unwrap().trim(), Target::host().name(), "the program of the machine");
+    assert!(!file("build/windows-x86_64/commands/tool").exists(), "the program is not built for the other target");
+    assert!(!file("build/commands/got").exists(), "got names its targets, the machine is none of them");
+
+    // a command without targets that is the same for every target runs once, that of the machine
+    assert!(file("build/commands/same/same").exists());
+    assert!(!file("build/windows-x86_64/commands/same").exists());
+    assert_eq!(system::read_file(&file("runs")).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn modules_built_once_for_every_target_come_from_the_machine() {
+    fn library(_: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        return Ok(Value::from(finished_module(&args.get::<String>("name")?)));
+    }
+
+    let windows = Target::named("windows-x86_64").unwrap();
+    let other = if Target::host() == windows { Target::named("linux-aarch64").unwrap() } else { windows };
+    let with_library = |target: Option<Target>| {
+        let mut runtime = Runtime::new(".").with_script(std::path::Path::new("project.build"), "").with_target(target);
+        let signature = FunctionParameters::new()
+            .required("name", Type::String)
+            .returns(Type::Module)
+            .placed(Placement::HostOnly);
+        let (name, value) = builtin("library", signature, library);
+        runtime.define(name, value);
+        return runtime;
+    };
+
+    let machine = run_in(with_library(None), "core = library(\"core\")").unwrap();
+    let theirs = run_in(with_library(Some(other)).after_machine(&machine), "core = library(\"core\")").unwrap();
+    let (Value::Module(mine), Value::Module(theirs)) = (variable(&machine, "core"), variable(&theirs, "core")) else {
+        panic!("core is no module");
+    };
+    assert!(Arc::ptr_eq(&mine, &theirs), "one module for every target");
+
+    // a module only the other target calls has no machine's module to be
+    let source = "only = if target() == host_target() { \"\" } else { library(\"only\") }";
+    let machine = run_in(with_library(None), source).unwrap();
+    let error = run_in(with_library(Some(other)).after_machine(&machine), source).err().unwrap();
+    assert!(error.to_string().contains("but the script builds it only for"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn errors_of_other_targets_say_which() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("targets-errors");
+    let source = "build_command(\"broken\", list(\"sh\", \"-c\", \"exit 3\"), targets = list(\"windows-x86_64\"))";
+    let errors = build_for(&directory, source, &[]).unwrap_err();
+
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].starts_with("project.build:1:1 [windows-x86_64]: build_command:"), "{}", errors[0]);
 }
 
 #[cfg(unix)]

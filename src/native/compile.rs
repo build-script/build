@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::common::semaphore::Semaphore;
+use crate::common::target::OperatingSystem;
 use crate::common::up_to_date::hash_hex;
 use crate::common::{system, terminal};
 
-use super::toolchain::{NativeTarget, Toolchain};
+use super::toolchain::Toolchain;
 
 static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
 
@@ -41,6 +42,8 @@ pub struct Compilation<'a> {
     pub toolchain: &'a Toolchain,
     /// relative to it the objects keep the paths of their sources
     pub module_dir: &'a Path,
+    /// build/ of the module, build/<target>/ for another target than the machine
+    pub build_dir: &'a Path,
     /// globs relative to the module, like "src/**" or "examples/simple.cpp"
     pub source_patterns: &'a [String],
     pub exclude_patterns: &'a [String],
@@ -330,15 +333,15 @@ pub fn link(
     arguments.extend(linked_once(link_flags));
     arguments.extend(["-o".to_string(), program.display().to_string()]);
 
-    if !cpp && toolchain.target.links_math_library() {
+    if !cpp && toolchain.target.os.links_math_library() {
         arguments.push("-lm".to_string());
     }
 
     // like CMake and Visual Studio every program links the libraries of Windows. link.exe takes a program
     // for the console only by a main() among the objects, that of gtest_main is in a library.
-    arguments.extend(toolchain.target.system_libraries().iter().map(|library| format!("-l{library}")));
+    arguments.extend(toolchain.target.os.system_libraries().iter().map(|library| format!("-l{library}")));
 
-    let windows_program = toolchain.target == NativeTarget::Windows && program.extension().is_some_and(|extension| extension == "exe");
+    let windows_program = toolchain.target.os == OperatingSystem::Windows && program.extension().is_some_and(|extension| extension == "exe");
     if windows_program && !toolchain.zig {
         arguments.push("-Wl,-subsystem:console".to_string());
     }

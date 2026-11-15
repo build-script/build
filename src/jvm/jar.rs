@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::common::system;
 use crate::language::runtime::{
-    Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, Type, Value,
+    Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, Placement, Type, Value,
     builtin,
 };
 
@@ -53,7 +53,9 @@ fn jar_parameters(sources: Sources) -> FunctionSignature {
         ),
         sources,
     )
-    .returns(Type::Module);
+    .returns(Type::Module)
+    // a jar runs on every system
+    .placed(Placement::HostOnly);
 }
 
 /// build/libs/<name>.jar with its runtime libraries in build/libs/lib, or with

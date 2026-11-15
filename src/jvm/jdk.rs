@@ -7,6 +7,7 @@ use std::process::Command;
 use serde_json::Value as Json;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
+use crate::common::target::Target;
 use crate::common::up_to_date;
 use crate::language::runtime::{
     Arguments, BuildScriptContext, FunctionParameters, Type, Value, builtin,
@@ -36,13 +37,7 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
 pub fn jni_include_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let include = Jdk::resolve(DEFAULT_JAVA_VERSION, DEFAULT_JDK_DISTRIBUTION, project_dir)?.home.join("include");
 
-    let system = match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    };
-
-    return Ok(vec![include.clone(), include.join(system)]);
+    return Ok(vec![include.clone(), include.join(Target::host().jni_system())]);
 }
 
 pub fn join_classpath(paths: &[PathBuf]) -> Result<OsString, String> {

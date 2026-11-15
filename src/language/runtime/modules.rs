@@ -38,6 +38,10 @@ pub struct PendingModule {
     pub called_from: Option<(String, Span)>,
     /// the name its build function was given, empty for modules a build function returned
     pub name: String,
+    /// what its function was called with: another target takes the machine's module when its call is the same
+    pub arguments: Option<Arguments>,
+    /// the targets the script names for it, empty for those the build is for
+    pub targets: Vec<String>,
     /// the modules among its arguments, requested together with it
     dependencies: Vec<Arc<PendingModule>>,
     requested: AtomicBool,
@@ -105,16 +109,42 @@ pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
     }
 }
 
+/// How the script called the function of a module
+pub struct ModuleCall {
+    pub function: &'static str,
+    pub span: Span,
+    /// built by a function of a plugin: that function and where the script called it
+    pub called_from: Option<(String, Span)>,
+    pub name: String,
+    pub arguments: Option<Arguments>,
+    /// the targets the script names for it, empty for those the build is for
+    pub targets: Vec<String>,
+}
+
+impl ModuleCall {
+    /// Of a module nothing else is known of, in tests
+    #[cfg(test)]
+    pub fn named(function: &'static str, name: &str) -> Self {
+        return ModuleCall {
+            function,
+            span: Span::new(0, 0),
+            called_from: None,
+            name: name.to_string(),
+            arguments: None,
+            targets: vec![],
+        };
+    }
+}
+
 impl PendingModule {
     /// A module of the script, not started yet: `build` starts on a thread of its own once it is requested
     pub fn new(
-        function: &'static str,
-        span: Span,
-        called_from: Option<(String, Span)>,
-        name: String,
+        call: ModuleCall,
         dependencies: Vec<Arc<PendingModule>>,
         build: impl FnOnce(&PendingModule) + Send + 'static,
     ) -> Arc<Self> {
+        let ModuleCall { function, span, called_from, name, arguments, targets } = call;
+
         return Arc::new_cyclic(|this: &std::sync::Weak<PendingModule>| {
             // weak: a module never requested would keep itself alive through its own build
             let this = this.clone();
@@ -129,6 +159,8 @@ impl PendingModule {
                 span,
                 called_from,
                 name,
+                arguments,
+                targets,
                 dependencies,
                 requested: AtomicBool::new(false),
                 start: Mutex::new(Some(start)),
@@ -145,6 +177,8 @@ impl PendingModule {
             span: Span::new(0, 0),
             called_from: None,
             name: String::new(),
+            arguments: None,
+            targets: vec![],
             dependencies: vec![],
             requested: AtomicBool::new(true),
             start: Mutex::new(None),

@@ -27,7 +27,8 @@ use crate::language::runtime::{
 };
 
 use compile::{Compilation, Language};
-use toolchain::{NativeTarget, Toolchain};
+use crate::common::target::OperatingSystem;
+use toolchain::Toolchain;
 
 pub use android::{AndroidSources, build as build_for_android};
 pub use vcpkg::checked_port;
@@ -188,12 +189,21 @@ fn signature(language: Language) -> FunctionSignature {
     return parameters.returns(Type::Module);
 }
 
+/// C and C++ modules are built with the compilers of this machine, for it alone so far
+pub fn only_for_the_machine(context: &BuildScriptContext) -> Result<(), String> {
+    match context.target {
+        Some(target) => return Err(format!("C and C++ modules are built for this machine only so far, not for {}", target.name())),
+        None => return Ok(()),
+    }
+}
+
 /// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>.
 /// On Windows build/lib/<name>.lib, build/bin/<name>.dll and build/bin/<name>.exe.
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
+    only_for_the_machine(context)?;
     let name: String = args.get("name")?;
     let directory = context.project_dir.join(args.get::<String>("directory")?);
-    let build_dir = system::build_dir(&directory);
+    let build_dir = context.build_dir(&directory);
     let program: bool = args.get("program")?;
     let shared: bool = args.get("shared")?;
     let toolchain = Toolchain::named(&args.get::<String>("toolchain")?)?;
@@ -243,6 +253,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     // one install for the module and its tests
     let ports = [dependencies.ports.clone(), test_dependencies.ports.clone()].concat();
+
     let installed = vcpkg::install(&name, &ports, &toolchain, &build_dir)?;
     let (compile_flags, mut link_flags) = dependencies.flags(installed.as_ref(), release);
     link_flags.extend(args.get::<Vec<String>>("link_flags")?);
@@ -251,7 +262,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     flags.extend(source_roots.iter().map(|dir| format!("-I{}", dir.display())));
     flags.extend(args.get::<Vec<String>>("defines")?.iter().map(|define| format!("-D{define}")));
 
-    if !program && toolchain.target.needs_position_independent_code() {
+    if !program && toolchain.target.os.needs_position_independent_code() {
         flags.push("-fPIC".to_string());
     }
 
@@ -299,6 +310,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         language,
         toolchain: &toolchain,
         module_dir: &directory,
+        build_dir: &build_dir,
         source_patterns: &source_patterns,
         exclude_patterns: &exclude_patterns,
         flags,
@@ -376,7 +388,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let cpp = language == Language::Cpp || links_cpp(&dependencies.modules);
     let test_cpp = cpp || links_cpp(&test_dependencies.modules);
 
-    let target = toolchain.target;
+    let target = toolchain.target.os;
     let shared_dir = build_dir.join(target.shared_dir());
 
     // the shared libraries it loads lie next to its own in build/lib, on Windows next to the programs in
@@ -401,7 +413,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     };
 
     // what links it, of a shared library on Windows its import library
-    let linked = match kind == ModuleKind::SharedLibrary && target == NativeTarget::Windows {
+    let linked = match kind == ModuleKind::SharedLibrary && target == OperatingSystem::Windows {
         true => build_dir.join("lib").join(target.static_library(&name)),
         false => artifact.clone(),
     };
@@ -414,7 +426,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             .map(|module| module.artifact.clone())
             .collect();
 
-    let mut fingerprint = InputFingerprint::for_module(&directory, &name);
+    let mut fingerprint = InputFingerprint::in_build_dir(&build_dir, &name);
     fingerprint.add(args);
     fingerprint.add(release);
     fingerprint.add(&test_compilation.flags);
@@ -547,9 +559,9 @@ fn link_shared_library(
         .to_string_lossy();
     let mut flags = vec!["-shared".to_string()];
 
-    match toolchain.target {
-        NativeTarget::MacOs => flags.extend(["-install_name".to_string(), format!("@rpath/{library_name}")]),
-        NativeTarget::Windows => {
+    match toolchain.target.os {
+        OperatingSystem::MacOs => flags.extend(["-install_name".to_string(), format!("@rpath/{library_name}")]),
+        OperatingSystem::Windows => {
             exports::write_def_file(objects, def_file)?;
             system::create_parent_dir(linked)?;
 
@@ -561,7 +573,7 @@ fn link_shared_library(
         _ => flags.push(format!("-Wl,-soname,{library_name}")),
     }
 
-    if let Some(origin) = toolchain.target.rpath_origin()
+    if let Some(origin) = toolchain.target.os.rpath_origin()
         && loads_shared_libraries
     {
         flags.push(format!("-Wl,-rpath,{origin}"));
@@ -754,10 +766,10 @@ fn test_program(
     link_flags: &[String],
     setup: &TestSetup,
 ) -> Result<ModuleTests, String> {
-    let build_dir = system::build_dir(module.module_dir);
-    let executable = build_dir.join("bin").join(tests.toolchain.target.executable(program));
+    let build_dir = module.build_dir;
+    let executable = build_dir.join("bin").join(tests.toolchain.target.os.executable(program));
 
-    let mut fingerprint = InputFingerprint::for_module(module.module_dir, &format!("tests/{program}"));
+    let mut fingerprint = InputFingerprint::in_build_dir(build_dir, &format!("tests/{program}"));
     fingerprint.add(link_flags);
     fingerprint.add(&setup.arguments);
     fingerprint.add_files(objects)?;
