@@ -262,12 +262,13 @@ impl Runtime {
     }
 
     /// Waits for the builds still running. The modules in build order, or why builds
-    /// failed: a module whose dependency failed leaves the error to that one.
+    /// failed: a module whose dependency failed leaves the error to that one. Modules
+    /// nothing requested were never built and are left out.
     pub fn finish(&self) -> Result<Vec<Arc<BuiltModule>>, Vec<RuntimeError>> {
         let mut modules = vec![];
         let mut errors = vec![];
 
-        for pending in &self.built {
+        for pending in self.built.iter().filter(|pending| pending.is_requested()) {
             match pending.wait() {
                 Ok(module) => modules.push(module),
                 Err(BuildFailure::Failed(message)) => {
@@ -914,9 +915,20 @@ impl Runtime {
                 .first()
                 .filter(|(_, call)| call.source != span.source)
                 .cloned();
-            let module = PendingModule::new(name, span, called_from);
+            // the name says which module run, test and later other targets mean
+            let module_name: String = args.get("name").unwrap_or_default();
+
+            if let Some(first) = self.built.iter().find(|built| !module_name.is_empty() && built.name == module_name) {
+                let first = self.location(first.called_from.as_ref().map(|(_, call)| *call).unwrap_or(first.span));
+                return Err(RuntimeError::new(
+                    RuntimeErrorType::DuplicateModule { name: module_name, first },
+                    span,
+                ));
+            }
+
+            let module = self.pending_module(name, span, called_from, module_name, function, args);
             self.built.push(module.clone());
-            self.build_in_background(module.clone(), function, args);
+            module.request();
 
             return Ok(Value::Module(module));
         }
@@ -936,17 +948,22 @@ impl Runtime {
         return Ok(result);
     }
 
-    /// Once the modules it depends on are built, without holding a job while it waits
-    fn build_in_background(
+    /// A module the build function builds on a thread of its own once the module is requested: after the
+    /// modules it depends on, without holding a job while it waits for them
+    fn pending_module(
         &self,
-        module: Arc<PendingModule>,
+        function_name: &'static str,
+        span: Span,
+        called_from: Option<(String, Span)>,
+        module_name: String,
         function: BuiltinFunction,
         args: Arguments,
-    ) {
+    ) -> Arc<PendingModule> {
         let context = self.context.clone();
         let jobs = self.jobs.clone();
+        let dependencies = args.pending_modules();
 
-        std::thread::spawn(move || {
+        return PendingModule::new(function_name, span, called_from, module_name, dependencies, move |module| {
             let dependencies_built = args.pending_modules()
                 .iter()
                 .all(|dependency| dependency.wait().is_ok());
@@ -957,9 +974,11 @@ impl Runtime {
             }
 
             let _job = jobs.acquire();
+            let held = modules::JobHeld::new();
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 function(&context, &args)
             }));
+            drop(held);
 
             let result = match built {
                 Ok(Ok(Value::Module(built))) => built.wait(),

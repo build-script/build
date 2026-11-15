@@ -128,6 +128,12 @@ pub enum RuntimeErrorType {
     ModuleInPlugin {
         function: String,
     },
+    /// a second module of a name: run --module, test --module and the modules of other targets go by names
+    DuplicateModule {
+        name: String,
+        /// where the first one is built, path:line:column
+        first: String,
+    },
 }
 
 #[derive(Debug)]
@@ -327,6 +333,9 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorType::PluginParse { message } => return write!(f, "{message}"),
             RuntimeErrorType::ModuleInPlugin { function } => {
                 return write!(f, "{function}: plugins define functions, their modules come from the scripts that call them");
+            }
+            RuntimeErrorType::DuplicateModule { name, first } => {
+                return write!(f, "the module {name} is built at {first} already, every module needs a name of its own");
             }
         }
     }

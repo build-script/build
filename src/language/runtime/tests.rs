@@ -757,6 +757,100 @@ fn built_modules_are_remembered_for_run() {
     assert!(error.contains("core cannot be run"), "{error}");
 }
 
+/// A module that finished building with the given name
+fn finished_module(name: &str) -> Arc<BuiltModule> {
+    return Arc::new(BuiltModule {
+        name: name.to_string(),
+        directory: PathBuf::from("."),
+        artifact: PathBuf::from(format!("{name}.jar")),
+        modules: vec![],
+        output: library_output(),
+        tests: vec![],
+    });
+}
+
+/// A module of the script that records its name in `built` once its build runs
+fn recording_module(
+    name: &str,
+    dependencies: Vec<Arc<PendingModule>>,
+    built: &Arc<Mutex<Vec<String>>>,
+) -> Arc<PendingModule> {
+    let built = built.clone();
+    let module_name = name.to_string();
+
+    return PendingModule::new("library", Span::new(0, 0), None, name.to_string(), dependencies, move |module| {
+        built.lock().unwrap().push(module_name.clone());
+        module.finish(Ok(finished_module(&module_name)));
+    });
+}
+
+#[test]
+fn modules_build_only_once_requested_and_with_their_dependencies() {
+    let built = Arc::new(Mutex::new(vec![]));
+    let core = recording_module("core", vec![], &built);
+    let app = recording_module("app", vec![core.clone()], &built);
+    let unused = recording_module("unused", vec![], &built);
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(built.lock().unwrap().is_empty(), "nothing builds before it is requested");
+
+    app.request();
+    assert!(core.is_requested(), "requesting a module requests what it depends on");
+    assert_eq!(app.wait().unwrap().name, "app");
+    assert_eq!(core.wait().unwrap().name, "core");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!unused.is_requested());
+    assert!(!built.lock().unwrap().contains(&"unused".to_string()), "a module nobody requested never builds");
+
+    // waiting for a module requests it, like print does
+    assert_eq!(unused.wait().unwrap().name, "unused");
+}
+
+#[test]
+fn a_build_holding_a_job_must_not_wait_for_unfinished_modules() {
+    // waits for a module that is still building while it holds its job
+    fn impatient(_: &BuildScriptContext, _: &Arguments) -> Result<Value, String> {
+        let slow = PendingModule::new("library", Span::new(0, 0), None, "slow".to_string(), vec![], |module| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            module.finish(Ok(finished_module("slow")));
+        });
+        slow.wait().map_err(|_| "slow failed".to_string())?;
+
+        return Ok(Value::from(finished_module("impatient")));
+    }
+
+    let mut runtime = Runtime::new(".");
+    let signature = FunctionParameters::new()
+        .required("name", Type::String)
+        .returns(Type::Module);
+    let (name, value) = builtin("impatient", signature, impatient);
+    runtime.define(name, value);
+
+    let error = run_in(runtime, "impatient(\"impatient\")").err().unwrap();
+    assert_eq!(error.to_string(), "impatient: internal error: the build panicked");
+}
+
+#[test]
+fn every_module_needs_a_name_of_its_own() {
+    fn library(_: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        return Ok(Value::from(finished_module(&args.get::<String>("name")?)));
+    }
+
+    let source = "core = library(\"core\")\napp = library(\"core\")";
+    let mut runtime = Runtime::new(".").with_script(std::path::Path::new("project.build"), source);
+    let signature = FunctionParameters::new()
+        .required("name", Type::String)
+        .returns(Type::Module);
+    let (name, value) = builtin("library", signature, library);
+    runtime.define(name, value);
+
+    let script = Parser::new(source).parse_script().unwrap();
+    let error = runtime.run(&script).unwrap_err();
+
+    assert_eq!(runtime.describe(&error), "project.build:2:7: the module core is built at project.build:1:8 already, every module needs a name of its own");
+}
+
 /// The modules a script in `directory` built, or the first error
 #[cfg(unix)]
 fn build_in(directory: &std::path::Path, source: &str, tests: TestSelection) -> Result<Vec<Arc<BuiltModule>>, String> {
