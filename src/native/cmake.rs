@@ -5,13 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use crate::common::system::{self, HostOperatingSystem};
+use crate::common::system;
+use crate::common::target::OperatingSystem;
 use crate::common::up_to_date::{self, InputFingerprint};
 use crate::language::runtime::{
     Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, ModuleOutput, Type, Value,
 };
 
-use super::{NativeOutput, toolchain, vcpkg};
+use super::toolchain::{self, Toolchain};
+use super::{NativeOutput, vcpkg};
 
 pub fn build_cmake_signature() -> FunctionSignature {
     return FunctionParameters::new()
@@ -26,6 +28,8 @@ pub fn build_cmake_signature() -> FunctionSignature {
         .strings("compile_flags_from")
         .strings("link_flags_from")
         .strings("link_flags")
+        // the targets it is built for besides those of the modules depending on it, each with zig
+        .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
         .returns(Type::Module);
 }
 
@@ -42,10 +46,25 @@ pub fn system_library_signature() -> FunctionSignature {
 /// A source of git() builds once on the machine, in the cache, named after its commit and options. Other
 /// sources build into build/cmake/<name>/ of the project. The build goes to build/, the installation to install/.
 pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
-    super::only_for_the_machine(context)?;
     let name: String = args.get("name")?;
     let options: Vec<String> = args.get("options")?;
     let source = context.project_dir.join(args.get::<String>("source")?);
+    let compile_command: Vec<String> = args.get("compile_flags_from")?;
+    let link_command: Vec<String> = args.get("link_flags_from")?;
+
+    // another target than the machine: zig builds it, CMake gets its toolchain file
+    let toolchain_file = match context.target {
+        Some(target) if !compile_command.is_empty() || !link_command.is_empty() => {
+            return Err(format!(
+                "{name}: compile_flags_from and link_flags_from run a program of the installation, one for {} runs nowhere here: libraries = names what to link",
+                target.name()
+            ));
+        }
+        Some(target) => Some(Toolchain::for_target("auto", Some(target))?.cmake_toolchain_file()?),
+        None => None,
+    };
+    // the libraries of Visual Studio on Windows, those of every other system and of MinGW are lib<name>.a
+    let msvc = cfg!(windows) && toolchain_file.is_none();
 
     if !source.join("CMakeLists.txt").is_file() {
         return Err(format!("{} has no CMakeLists.txt", source.display()));
@@ -62,7 +81,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
     // a checkout of git() is the same on every machine: its commit is in its path
     let build_dir = match source.starts_with(system::cache_dir("git")) {
         true => {
-            let key = up_to_date::hash_hex((&source, &options, &environment, &cmake));
+            let key = up_to_date::hash_hex((&source, &options, &environment, &cmake, context.target.map(|target| target.name())));
             system::cache_dir("cmake").join(format!("{name}-{key}"))
         }
         false => context.build_dir(&context.project_dir).join("cmake").join(&name),
@@ -77,6 +96,8 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
     fingerprint.add(&options);
     fingerprint.add(&environment);
     fingerprint.add(&cmake);
+    // its contents: a new build-script may write another one
+    fingerprint.add(toolchain_file.as_ref().map(|file| std::fs::read_to_string(file).unwrap_or_default()));
 
     // release builds, a debug LLVM is huge
     if !fingerprint.is_up_to_date(&[&binary_dir.join("CMakeCache.txt")])? {
@@ -93,9 +114,14 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
         configure.arg("-DCMAKE_BUILD_TYPE=Release");
         configure.arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()));
 
+        // CMake finds its compilers once per build directory: for another one it starts afresh
+        if let Some(toolchain_file) = &toolchain_file {
+            configure.arg("--fresh").arg(format!("-DCMAKE_TOOLCHAIN_FILE={}", toolchain_file.display()));
+        }
+
         // on Windows clang like for build_cpp, CMake would find no compiler without the environment of
         // Visual Studio. With the static C library of release builds, like the ports of vcpkg.
-        if cfg!(windows) {
+        if msvc {
             let [c_compiler, cpp_compiler, _] = toolchain::system_compilers()?;
             let resource_compiler = Path::new(&c_compiler).with_file_name("llvm-rc.exe");
 
@@ -133,16 +159,14 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
 
     let lib_dir = install_dir.join("lib");
     let libraries: Vec<String> = args.get("libraries")?;
-    let compile_command: Vec<String> = args.get("compile_flags_from")?;
-    let link_command: Vec<String> = args.get("link_flags_from")?;
 
     let compile_flags = match compile_command.is_empty() {
         true => vec![format!("-I{}", install_dir.join("include").display())],
         false => flags_from(&compile_command, Some(&install_dir))?,
     };
 
-    // Windows names them <library>.lib
-    let (prefix, extension) = if cfg!(windows) { ("", "lib") } else { ("lib", "a") };
+    // Visual Studio names them <library>.lib
+    let (prefix, extension) = if msvc { ("", "lib") } else { ("lib", "a") };
     let mut link_flags: Vec<String> =
         libraries.iter()
             .map(|library| lib_dir.join(format!("{prefix}{library}.{extension}")).display().to_string())
@@ -160,7 +184,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
             .collect();
 
         // GNU ld takes static libraries in order, these need each other
-        if system::host_operating_system()? == HostOperatingSystem::Linux {
+        if context.target().os == OperatingSystem::Linux {
             link_flags.insert(0, "-Wl,--start-group".to_string());
             link_flags.push("-Wl,--end-group".to_string());
         }

@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
+use crate::common::target::{Architecture, OperatingSystem};
 
-use super::toolchain::Toolchain;
+use super::toolchain::{Toolchain, write_executable};
 
 const VCPKG_RELEASE: &str = "2026.10.16";
 
@@ -21,6 +22,10 @@ const PATCHELF: &str = "#!/bin/sh\ncase \"$1\" in --version) echo patchelf 0.18.
 pub struct Installed {
     triplet: String,
     root: PathBuf,
+    /// built by MSVC on Windows: <name>.lib, release only, flags of MSVC in their .pc files
+    msvc: bool,
+    /// for this machine: libraries vcpkg does not have may come from pkg-config of the system
+    of_the_machine: bool,
 }
 
 /// Installs the ports, only when they changed. None without ports.
@@ -50,16 +55,22 @@ pub fn install(
         return Err(format!("{module}: vcpkg ports with the zig toolchain are not set up for Windows, the system toolchain builds them"));
     }
 
-    // ports built by zig link with code zig compiled, also on Linux, where the system has libstdc++
-    let triplet = match toolchain.zig {
-        true => format!("{host}-zig"),
-        false => host.to_string(),
+    // ports built by zig link with code zig compiled, also on Linux, where the system has libstdc++. For another
+    // target zig builds them for that one.
+    let foreign = !toolchain.target.is_host();
+    let triplet = match (toolchain.zig, foreign) {
+        (false, _) => host.to_string(),
+        (true, false) => format!("{host}-zig"),
+        // vcpkg names triplets in lowercase letters, digits and hyphens: zig-linux-x86-64-musl
+        (true, true) => format!("zig-{}", toolchain.target.name().replace('_', "-")),
     };
 
     let manifest_dir = build_dir.join("vcpkg").join(&triplet);
     let installed = Installed {
         root: manifest_dir.join("installed"),
         triplet,
+        msvc: cfg!(windows) && !toolchain.zig,
+        of_the_machine: !foreign,
     };
 
     let dependencies: Vec<serde_json::Value> = ports.iter()
@@ -106,7 +117,7 @@ pub fn install(
     }
 
     if toolchain.zig {
-        let triplets = zig_triplets(&tools, &toolchain.c_compiler[0], host)?;
+        let triplets = zig_triplets(&tools, toolchain, &installed.triplet)?;
         command.arg(format!("--overlay-triplets={}", triplets.display()));
 
         for (name, value) in &toolchain.environment {
@@ -211,7 +222,7 @@ fn install_vcpkg() -> Result<PathBuf, String> {
         // Windows takes its own, its programs have no RPATH
         if !cfg!(windows) {
             for (name, script) in [("pkg-config", PKG_CONFIG), ("patchelf", PATCHELF)] {
-                executable(&tools.join(name), script)?;
+                write_executable(&tools.join(name), script)?;
             }
         }
 
@@ -223,71 +234,44 @@ fn install_vcpkg() -> Result<PathBuf, String> {
     });
 }
 
-/// Triplets whose ports zig builds: a CMake toolchain file with zig cc, zig c++, zig ar and zig ranlib
-fn zig_triplets(tools: &Path, zig: &str, host: &str) -> Result<PathBuf, String> {
-    let zig_dir = tools.join("zig");
+/// The triplet of the ports zig builds, for this machine or another target, through the toolchain file of CMake
+fn zig_triplets(tools: &Path, toolchain: &Toolchain, triplet: &str) -> Result<PathBuf, String> {
+    let toolchain_file = toolchain.cmake_toolchain_file()?;
+    let target = toolchain.target;
 
-    // CMake takes a compiler as one program
-    for tool in ["cc", "c++", "ar", "ranlib"] {
-        executable(&zig_dir.join(tool), &format!("#!/bin/sh\nexec {zig} {tool} \"$@\"\n"))?;
-    }
-
-    let toolchain_file = zig_dir.join("toolchain.cmake");
-    let tool = |name: &str| zig_dir.join(name).display().to_string();
-    system::write_file(
-        &toolchain_file,
-        &format!(
-            r#"set(CMAKE_C_COMPILER "{}")
-set(CMAKE_CXX_COMPILER "{}")
-set(CMAKE_AR "{}")
-set(CMAKE_RANLIB "{}")
-"#,
-            tool("cc"),
-            tool("c++"),
-            tool("ar"),
-            tool("ranlib")
-        ),
-    )?;
-
-    // arm64-osx: arm64 on Darwin
-    let (architecture, system_name) = match host.split_once('-') {
-        Some((architecture, "osx")) => (architecture, "Darwin"),
-        Some((architecture, _)) => (architecture, "Linux"),
-        None => return Err(format!("unknown host triplet {host}")),
+    let architecture = match target.arch {
+        Architecture::X86_64 => "x64",
+        Architecture::Aarch64 => "arm64",
+        Architecture::Armv7 => "arm",
+        Architecture::X86 => "x86",
     };
 
-    let triplets = zig_dir.join("triplets");
-    system::write_file(
-        &triplets.join(format!("{host}-zig.cmake")),
-        &format!(
-            r#"set(VCPKG_TARGET_ARCHITECTURE {architecture})
-set(VCPKG_OSX_ARCHITECTURES {architecture})
+    // vcpkg names Windows without Visual Studio MinGW, its ports then name their libraries lib<name>.a
+    let system_name = match target.os {
+        OperatingSystem::MacOs => "Darwin",
+        OperatingSystem::Windows => "MinGW",
+        OperatingSystem::Linux | OperatingSystem::Android => "Linux",
+    };
+
+    let mut content = format!(
+        r#"set(VCPKG_TARGET_ARCHITECTURE {architecture})
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE static)
 set(VCPKG_CMAKE_SYSTEM_NAME {system_name})
 set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "{}")
 set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
 "#,
-            toolchain_file.display()
-        ),
-    )?;
+        toolchain_file.display()
+    );
 
-    return Ok(triplets);
-}
-
-fn executable(file: &Path, script: &str) -> Result<(), String> {
-    system::write_file(file, script)?;
-
-    // Windows has no executable bit
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(file, fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("could not make {} executable: {error}", file.display()))?;
+    if target.os == OperatingSystem::MacOs {
+        content.push_str(&format!("set(VCPKG_OSX_ARCHITECTURES {})\n", if target.arch == Architecture::Aarch64 { "arm64" } else { "x86_64" }));
     }
 
-    return Ok(());
+    let triplets = tools.join("triplets").join(triplet);
+    system::write_file_if_changed(&triplets.join(format!("{triplet}.cmake")), &content)?;
+
+    return Ok(triplets);
 }
 
 impl Installed {
@@ -313,7 +297,7 @@ impl Installed {
                 .collect();
 
             if chosen.is_empty() {
-                let extension = if cfg!(windows) { ".lib" } else { ".a" };
+                let extension = if self.msvc { ".lib" } else { ".a" };
                 let libraries = files.iter().filter(|file| file.starts_with(&lib_dir) && file.ends_with(extension));
                 link_flags.extend(libraries.map(|file| self.root.join(file).display().to_string()));
                 continue;
@@ -329,12 +313,12 @@ impl Installed {
 
     /// Like pkg-config --cflags --libs
     pub fn pkg_config(&self, names: &[String], release: bool) -> (Vec<String>, Vec<String>) {
-        return pkg_config(names, &self.root.join(self.lib_dir(release)).join("pkgconfig"));
+        return pkg_config(names, &self.root.join(self.lib_dir(release)).join("pkgconfig"), self.msvc, self.of_the_machine);
     }
 
-    /// arm64-osx/lib, of debug builds arm64-osx/debug/lib. Windows has only those of release.
+    /// arm64-osx/lib, of debug builds arm64-osx/debug/lib. The ports of MSVC have only those of release.
     fn lib_dir(&self, release: bool) -> String {
-        return format!("{}/{}", self.triplet, if release || cfg!(windows) { "lib" } else { "debug/lib" });
+        return format!("{}/{}", self.triplet, if release || self.msvc { "lib" } else { "debug/lib" });
     }
 
     /// The files vcpkg installed for the port, relative to the install root
@@ -355,22 +339,22 @@ impl Installed {
     }
 }
 
-/// Cflags and libs of the packages and of what they require, in link order
-fn pkg_config(names: &[String], pc_dir: &Path) -> (Vec<String>, Vec<String>) {
+/// Cflags and libs of the packages and of what they require, in link order. Ports of MSVC have its flags.
+fn pkg_config(names: &[String], pc_dir: &Path, msvc: bool, of_the_machine: bool) -> (Vec<String>, Vec<String>) {
     let mut visited = vec![];
     let mut cflags = vec![];
     let mut libs = vec![];
 
     for name in names {
-        visit_package(name, pc_dir, &mut visited, &mut cflags, &mut libs);
+        visit_package(name, pc_dir, msvc, &mut visited, &mut cflags, &mut libs);
     }
 
-    // packages vcpkg did not install, like the x11 glfw3 requires on Linux, come from the system
+    // packages vcpkg did not install, like the x11 glfw3 requires on Linux, come from the system, for this machine
     let of_the_system: Vec<&String> = visited.iter()
         .filter(|name| !pc_dir.join(format!("{name}.pc")).is_file())
         .collect();
 
-    if !of_the_system.is_empty() && let Some(program) = system::find_program("pkg-config") {
+    if of_the_machine && !of_the_system.is_empty() && let Some(program) = system::find_program("pkg-config") {
         let flags = |option: &str| -> Vec<String> {
             let output = system::command_output(Command::new(&program).args(["--static", option]).args(&of_the_system), "pkg-config");
             return output.map(|output| output.split_whitespace().map(str::to_string).collect())
@@ -387,6 +371,7 @@ fn pkg_config(names: &[String], pc_dir: &Path) -> (Vec<String>, Vec<String>) {
 fn visit_package(
     name: &str,
     pc_dir: &Path,
+    msvc: bool,
     visited: &mut Vec<String>,
     cflags: &mut Vec<String>,
     libs: &mut Vec<String>,
@@ -441,12 +426,12 @@ fn visit_package(
         .collect();
 
     for required in requires.join(" ").split_whitespace() {
-        visit_package(required, pc_dir, visited, cflags, libs);
+        visit_package(required, pc_dir, msvc, visited, cflags, libs);
     }
 
     // a package links before what it requires
-    cflags.extend(words("cflags").into_iter().filter_map(|flag| gnu_style(flag, cfg!(windows))));
-    libs.splice(0..0, [words("libs"), words("libs.private")].concat().into_iter().map(|flag| linker_style(flag, cfg!(windows))));
+    cflags.extend(words("cflags").into_iter().filter_map(|flag| gnu_style(flag, msvc)));
+    libs.splice(0..0, [words("libs"), words("libs.private")].concat().into_iter().map(|flag| linker_style(flag, msvc)));
 }
 
 /// A compile flag for clang. On Windows the .pc files of ports like abseil have those of MSVC: /D, /U and
@@ -530,7 +515,7 @@ mod tests {
         )
         .unwrap();
 
-        let (cflags, libs) = pkg_config(&["spdlog".to_string()], &pc_dir);
+        let (cflags, libs) = pkg_config(&["spdlog".to_string()], &pc_dir, false, true);
         let lib_dir = format!("-L{}/../../lib", pc_dir.display());
 
         assert_eq!(cflags, [format!("-I{}/../../include", pc_dir.display()), "-DSPDLOG_FMT_EXTERNAL".to_string()]);

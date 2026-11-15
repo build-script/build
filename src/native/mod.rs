@@ -192,10 +192,10 @@ fn signature(language: Language) -> FunctionSignature {
     return parameters.returns(Type::Module);
 }
 
-/// CMake projects and libraries of the system are built for this machine only so far
+/// A library of the system is one of this machine: its llvm-config describes it
 pub fn only_for_the_machine(context: &BuildScriptContext) -> Result<(), String> {
     match context.target {
-        Some(target) => return Err(format!("CMake projects and libraries of the system are for this machine only so far, not for {}", target.name())),
+        Some(target) => return Err(format!("libraries of the system are those of this machine, not of {}", target.name())),
         None => return Ok(()),
     }
 }
@@ -256,8 +256,9 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // one install for the module and its tests
     let ports = [dependencies.ports.clone(), test_dependencies.ports.clone()].concat();
 
-    if let Some(target) = context.target.filter(|_| !ports.is_empty() || !tablegen_entries.is_empty()) {
-        return Err(format!("{name}: vcpkg ports and TableGen are for this machine only so far, not for {}", target.name()));
+    // TableGen runs the tools of libraries like LLVM, built for this machine
+    if let Some(target) = context.target.filter(|_| !tablegen_entries.is_empty()) {
+        return Err(format!("{name}: TableGen is for this machine only so far, not for {}", target.name()));
     }
 
     let installed = vcpkg::install(&name, &ports, &toolchain, &build_dir)?;
