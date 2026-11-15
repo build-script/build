@@ -2,6 +2,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::common::target::Target;
 use crate::language::lexer::Span;
 use crate::language::parser::Expression;
 
@@ -53,6 +54,8 @@ pub struct FunctionSignature {
     /// parameters whose modules run while the build goes on, like the program of a command: those are
     /// the machine's modules of their names
     pub runs_on_host: Vec<&'static str>,
+    /// an apk: it packs its shared libraries of C and C++ for the Android targets it names
+    pub packs_native_libraries: bool,
 }
 
 /// Where the modules of a build function are built when the script is evaluated for other targets too
@@ -92,6 +95,9 @@ pub struct Arguments {
     pub values: Vec<(String, Option<Value>)>,
     /// arguments of the variadic parameter
     pub rest: Vec<Value>,
+    /// modules of other targets the build needs besides, like the libraries of C and C++ an apk packs for
+    /// each of its ABIs: the script does not see them
+    pub foreign: Vec<(Target, Value)>,
 }
 
 /// Rust types that builtins can read their arguments as
@@ -252,6 +258,7 @@ pub fn bind(
         function: function.to_string(),
         values,
         rest,
+        foreign: vec![],
     });
 }
 
@@ -308,6 +315,7 @@ impl FunctionParameters {
             returns,
             placement: Placement::default(),
             runs_on_host: vec![],
+            packs_native_libraries: false,
         };
     }
 
@@ -346,6 +354,12 @@ impl FunctionSignature {
     pub fn running_on_host(mut self, parameter: &'static str) -> Self {
         assert!(self.parameters.fixed.iter().any(|param| param.name == parameter), "no parameter '{parameter}'");
         self.runs_on_host.push(parameter);
+        return self;
+    }
+
+    /// It packs its shared libraries of C and C++, built for each Android target of its targets
+    pub fn packing_native_libraries(mut self) -> Self {
+        self.packs_native_libraries = true;
         return self;
     }
 
@@ -407,7 +421,18 @@ impl Arguments {
             .collect();
     }
 
-    /// The modules among all arguments, also inside lists, maybe still building
+    /// The modules of other targets with their targets, once they are built
+    pub fn foreign_modules(&self) -> Vec<(Target, Arc<BuiltModule>)> {
+        return self.foreign
+            .iter()
+            .filter_map(|(target, value)| match value {
+                Value::Module(module) => module.wait().ok().map(|module| (*target, module)),
+                _ => None,
+            })
+            .collect();
+    }
+
+    /// The modules among all arguments, also inside lists and those of other targets, maybe still building
     pub fn pending_modules(&self) -> Vec<Arc<PendingModule>> {
         fn collect(value: &Value, modules: &mut Vec<Arc<PendingModule>>) {
             match value {
@@ -422,6 +447,7 @@ impl Arguments {
         for value in self.values.iter()
             .filter_map(|(_, value)| value.as_ref())
             .chain(&self.rest)
+            .chain(self.foreign.iter().map(|(_, value)| value))
         {
             collect(value, &mut modules);
         }
@@ -561,6 +587,7 @@ mod tests {
             function: "f".to_string(),
             values: vec![("pairs".to_string(), Some(Value::string_list(entries)))],
             rest: vec![],
+            foreign: vec![],
         };
 
         assert_eq!(

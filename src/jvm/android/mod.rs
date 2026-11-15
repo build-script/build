@@ -156,6 +156,9 @@ fn android_parameters(parameters: FunctionParameters) -> FunctionSignature {
         Type::list(Type::String),
         source_set_dirs(source_sets, &["aidl"]),
     )
+    // the Android targets of its libraries of C and C++, like abiFilters: android-aarch64, android-armv7,
+    // android-x86, android-x86_64, all four without
+    .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
     // like externalNativeBuild { cmake { path } }: native libraries built with the NDK
     .optional("cmake", Type::String)
     .with_default("ndk_version", Type::String, DEFAULT_NDK_VERSION)
@@ -179,8 +182,9 @@ fn android_parameters(parameters: FunctionParameters) -> FunctionSignature {
         DEFAULT_TEST_RUNNER,
     )
     .returns(Type::Module)
-    // an apk holds the libraries of its ABIs
-    .placed(Placement::HostOnly);
+    // an apk holds the libraries of its ABIs, which the evaluations for those build
+    .placed(Placement::HostOnly)
+    .packing_native_libraries();
 }
 
 /// An apk in build/outputs/apk/<build type>/: aapt2, kotlinc against android.jar, d8 or

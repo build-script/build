@@ -39,7 +39,7 @@ pub fn evaluate(script: &Script, wanted: Wanted, runtime_for: impl Fn(Option<Tar
     let mut machine = runtime_for(None).with_requests(machine_requests);
     let mut error = machine.run(script).err().map(|error| machine.describe(&error));
 
-    let others: Vec<(Target, Requests)> = match (for_the_machine, targets.is_empty()) {
+    let mut others: Vec<(Target, Requests)> = match (for_the_machine, targets.is_empty()) {
         (true, _) => vec![],
         (false, true) => machine.declared_targets()
             .into_iter()
@@ -50,6 +50,13 @@ pub fn evaluate(script: &Script, wanted: Wanted, runtime_for: impl Fn(Option<Tar
             .map(|target| (*target, Requests::All))
             .collect(),
     };
+
+    // the targets the machine's modules need modules of, like the ABIs of apks: those build only what they need
+    for target in machine.forward_targets() {
+        if !others.iter().any(|(other, _)| *other == target) {
+            others.push((target, Requests::Declared));
+        }
+    }
     let mut evaluations = vec![];
 
     for (target, requests) in others {
@@ -65,6 +72,10 @@ pub fn evaluate(script: &Script, wanted: Wanted, runtime_for: impl Fn(Option<Tar
         terminal::set_target_label(None);
         evaluations.push(runtime);
     }
+
+    // a placeholder no evaluation named a module for would be waited for forever
+    let without_module = machine.fail_forwards_without_module();
+    let error = error.or_else(|| (!without_module.is_empty()).then(|| without_module.join("\n")));
 
     return Evaluations { machine, others: evaluations, error };
 }

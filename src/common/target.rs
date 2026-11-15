@@ -143,13 +143,6 @@ impl Target {
         }
     }
 
-    /// The Android target of an ABI
-    pub fn of_android_abi(abi: &str) -> Option<Target> {
-        return TARGETS.iter()
-            .find(|target| target.android_abi() == Some(abi))
-            .copied();
-    }
-
     /// The directory below include/ of a JDK with its jni_md.h
     pub fn jni_system(&self) -> &'static str {
         match self.os {
@@ -276,8 +269,8 @@ mod tests {
             assert_eq!(target.zig_triple().is_some(), target.os != OperatingSystem::Android, "{}", target.name());
         }
 
-        let armv7 = Target::of_android_abi("armeabi-v7a").unwrap();
-        assert_eq!((armv7.name(), armv7.ndk_triple()), ("android-armv7".to_string(), Some("armv7a-linux-androideabi")));
+        let armv7 = Target::named("android-armv7").unwrap();
+        assert_eq!((armv7.android_abi(), armv7.ndk_triple()), (Some("armeabi-v7a"), Some("armv7a-linux-androideabi")));
         assert_eq!(Target::named("windows-aarch64").unwrap().jni_system(), "win32");
     }
 

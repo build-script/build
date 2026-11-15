@@ -13,8 +13,8 @@ use crate::jvm::maven::{DependencyResolver, MavenCoordinate, TargetPlatform};
 use crate::jvm::module::{
     self, Compilation, ModuleBuildInputs, ResolvedDependencies, Sources, create_jar,
 };
+use crate::common::target::Target;
 use crate::language::runtime::{Arguments, BuildScriptContext, BuiltModule, ModuleOutput};
-use crate::native;
 
 use super::generated::{
     SymbolTable, binding_class, build_config_java_fields, layouts_by_name, view_binding_source,
@@ -126,6 +126,8 @@ pub struct AndroidBuild {
     libraries: Vec<AndroidResourceLibrary>,
     /// jniLibs directories and the libraries built with CMake
     native_library_dirs: Vec<PathBuf>,
+    /// what it packs: the ABIs of its targets, all four without
+    abis: Vec<&'static str>,
     cmake_lists: Option<PathBuf>,
     ndk_version: String,
     accept_license: bool,
@@ -192,8 +194,19 @@ fn dir_of_build_type(module_dir: &Path, dir: impl AsRef<Path>, build_type: Build
     return dir;
 }
 
+/// The ABIs a module packs: those of its targets, all four without
+pub fn abis(args: &Arguments) -> Result<Vec<&'static str>, String> {
+    let targets: Vec<String> = args.get("targets")?;
+
+    if targets.is_empty() {
+        return Ok(ABIS.to_vec());
+    }
+
+    return Ok(targets.iter().filter_map(|name| Target::named(name)?.android_abi()).collect());
+}
+
 /// The module's jniLibs, with a CMakeLists.txt the libraries built from it, and the shared libraries of
-/// build_c and build_cpp, built here for every ABI and the module's min_sdk
+/// build_c and build_cpp, which the evaluations for its Android targets built: <abi>/lib<name>.so
 pub fn native_library_dirs(
     inputs: &ModuleBuildInputs,
     args: &Arguments,
@@ -205,18 +218,21 @@ pub fn native_library_dirs(
         dirs.push(system::build_dir(&inputs.directory).join(CMAKE_DIR).join("libs"));
     }
 
-    for module in &inputs.dependencies.native {
+    let staged = system::build_dir(&inputs.directory).join("intermediates/native-dependencies");
+    system::remove_dir(&staged)?;
+
+    for (target, module) in args.foreign_modules() {
         let ModuleOutput::Native(output) = &module.output else { continue };
+        let Some(library) = &output.shared_library else {
+            return Err(format!("{} is no shared library, apps pack only those of build_cpp with shared = true", module.name));
+        };
+        let abi = target.android_abi().ok_or_else(|| format!("{} is no Android target", target.name()))?;
+        let file_name = library.file_name().ok_or_else(|| format!("{} has no file name", library.display()))?;
 
-        let sources = output.android.as_ref().ok_or_else(|| {
-            format!("{} has vcpkg ports or libraries of modules, which are built for this machine only", module.name)
-        })?;
-
-        let release = build_type == BuildType::Release;
-        let ndk_version: String = args.get("ndk_version")?;
-        dirs.push(native::build_for_android(sources, ABIS, args.get("min_sdk")?, &ndk_version, args.get("accept_sdk_license")?, release)?);
+        system::copy_file(library, &staged.join(abi).join(file_name))?;
     }
 
+    dirs.push(staged);
     return Ok(dirs);
 }
 
@@ -361,6 +377,7 @@ impl AndroidBuild {
             compile_only: unpacked.compile_only,
             libraries: unpacked.libraries,
             native_library_dirs,
+            abis: abis(args)?,
             cmake_lists: args.get::<Option<String>>("cmake")?
                 .map(|cmake| inputs.directory.join(cmake)),
             ndk_version: args.get("ndk_version")?,
@@ -599,6 +616,7 @@ impl AndroidBuild {
         };
         return CMakeBuild {
             cmake_lists,
+            abis: &self.abis,
             ndk_version: &self.ndk_version,
             min_sdk: self.min_sdk,
             build_type: self.build_type,
@@ -621,6 +639,12 @@ impl AndroidBuild {
             for library in system::files_with_extension(&[dir.clone()], "so") {
                 let relative = library.strip_prefix(&dir)
                     .map_err(|error| error.to_string())?;
+
+                // only the ABIs it is built for
+                let abi = relative.components().next().map(|component| component.as_os_str().to_string_lossy().to_string());
+                if !abi.is_some_and(|abi| self.abis.contains(&abi.as_str())) {
+                    continue;
+                }
 
                 system::copy_file(&library, &output.join("lib").join(relative))?;
             }
@@ -1597,6 +1621,8 @@ impl UnpackedLibraries {
 /// The shared libraries of one CMakeLists.txt, like externalNativeBuild in the Android Gradle plugin
 struct CMakeBuild<'a> {
     cmake_lists: &'a Path,
+    /// those of the module's targets
+    abis: &'a [&'static str],
     ndk_version: &'a str,
     min_sdk: i64,
     build_type: BuildType,
@@ -1607,7 +1633,7 @@ struct CMakeBuild<'a> {
 
 impl CMakeBuild<'_> {
     /// Installs the NDK and CMake if needed, then configures and builds the
-    /// libraries for every ABI, like the Gradle plugin
+    /// libraries for every ABI of the module, like the Gradle plugin
     fn run(&self, log: &dyn Fn(&str)) -> Result<(), String> {
         let ndk = sdk::ndk(self.ndk_version, self.accept_license)?;
         let cmake_home = sdk::find_or_install(&format!("cmake;{CMAKE_VERSION}"), self.accept_license)?;
@@ -1624,7 +1650,7 @@ impl CMakeBuild<'_> {
         let libraries = self.work_dir.join("libs");
         system::remove_dir(&libraries)?;
 
-        for abi in ABIS {
+        for abi in self.abis {
             log(&format!(
                 "Building native libraries for {abi} (CMake, NDK {})",
                 self.ndk_version

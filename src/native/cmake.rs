@@ -60,7 +60,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
                 target.name()
             ));
         }
-        Some(target) => Some(Toolchain::for_target("auto", Some(target))?.cmake_toolchain_file()?),
+        Some(target) => Some(Toolchain::for_target("auto", Some(target), context.android.as_ref())?.cmake_toolchain_file()?),
         None => None,
     };
     // the libraries of Visual Studio on Windows, those of every other system and of MinGW are lib<name>.a
@@ -236,7 +236,6 @@ fn library_module(
             program: None,
             tools_dir: Some(tools_dir),
             shared_library: None,
-            android: None,
             // CMake projects, like LLVM, are of C++ mostly
             cpp: true,
         }),

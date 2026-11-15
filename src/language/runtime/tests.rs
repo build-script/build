@@ -992,6 +992,21 @@ fn scripts_name_the_targets_of_their_modules() {
     build_for(&directory, &info("list(\"linux-aarch64\")"), &[windows]).unwrap();
     assert!(file("build/windows-x86_64/commands/info/info").exists());
     assert!(!file("build/linux-aarch64").exists(), "--target replaces the targets of the script");
+
+    // a module without targets follows those that need it, the machine builds it when nothing else does: one
+    // that differs by target, an unchanged command would be the machine's
+    system::remove_dir(&file("build")).unwrap();
+    let part = "part = build_command(\"part\", list(\"sh\", \"-c\", \"echo \" + target() + \" > {output}/part\"), outputs = list(\"{output}/part\"))\n";
+    let whole = |targets: &str| format!(
+        "{part}build_command(\"whole\", list(\"sh\", \"-c\", \"echo whole > {{output}}/whole\"), outputs = list(\"{{output}}/whole\"), \
+         dependencies = list(part), targets = {targets})"
+    );
+    build_for(&directory, &whole("list(\"windows-x86_64\")"), &[]).unwrap();
+    assert!(file("build/windows-x86_64/commands/part/part").exists(), "it follows the module that needs it");
+    assert!(!file("build/commands/part").exists(), "only a module for another target needs it");
+
+    build_for(&directory, part, &[]).unwrap();
+    assert!(file("build/commands/part/part").exists(), "no module needs it, it is built for the machine");
 }
 
 #[cfg(unix)]
@@ -1054,6 +1069,105 @@ fn modules_built_once_for_every_target_come_from_the_machine() {
     let machine = run_in(with_library(None), source).unwrap();
     let error = run_in(with_library(Some(other)).after_machine(&machine), source).err().unwrap();
     assert!(error.to_string().contains("but the script builds it only for"), "{error}");
+}
+
+#[test]
+fn a_placeholder_stands_for_a_module_of_a_later_evaluation() {
+    let built = Arc::new(Mutex::new(vec![]));
+    let library = recording_module("greeter", vec![], &built);
+    let placeholder = PendingModule::placeholder(ModuleCall::named("build_android", "greeter"));
+
+    // requested before it knows its module, it requests that one once it does
+    placeholder.request();
+    assert!(!placeholder.stands_for_a_module());
+    placeholder.stand_for(&library);
+    assert!(library.is_requested());
+    assert_eq!(placeholder.wait().unwrap().name, "greeter");
+
+    // one that learns its module after that is done is done at once
+    let late = PendingModule::placeholder(ModuleCall::named("build_android", "greeter"));
+    late.stand_for(&library);
+    assert_eq!(late.wait().unwrap().name, "greeter");
+}
+
+#[test]
+fn apps_pack_the_libraries_their_android_targets_build() {
+    static PACKED: Mutex<Vec<String>> = Mutex::new(vec![]);
+    static BUILT: Mutex<Vec<String>> = Mutex::new(vec![]);
+
+    // a library of C for every target, its artifact names the target
+    fn build_c(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        let name: String = args.get("name")?;
+        BUILT.lock().unwrap().push(format!("{name} {}", context.target().name()));
+        let mut module = Arc::try_unwrap(finished_module(&name)).unwrap();
+        module.artifact = PathBuf::from(format!("{}/lib{name}.so", context.target().name()));
+        return Ok(Value::from(Arc::new(module)));
+    }
+
+    // an apk: what it packs of the evaluations for its ABIs
+    fn app(_: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        let mut packed: Vec<String> = args.foreign_modules()
+            .iter()
+            .map(|(target, module)| format!("{} {}", target.name(), module.artifact.display()))
+            .collect();
+        packed.sort();
+        *PACKED.lock().unwrap() = packed;
+        return Ok(Value::from(finished_module(&args.get::<String>("name")?)));
+    }
+
+    let runtime_for = |target: Option<Target>| {
+        let mut runtime = Runtime::new(".").with_script(std::path::Path::new("project.build"), "").with_target(target).with_jobs(1);
+        let library = FunctionParameters::new()
+            .required("name", Type::String)
+            .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
+            .returns(Type::Module);
+        let apk = FunctionParameters::new()
+            .required("name", Type::String)
+            .with_default("dependencies", Type::list(Type::Module), Value::List(vec![]))
+            .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
+            .with_default("min_sdk", Type::Int, Value::Int(24))
+            .with_default("ndk_version", Type::String, "28")
+            .with_default("accept_sdk_license", Type::Bool, false)
+            .returns(Type::Module)
+            .placed(Placement::HostOnly)
+            .packing_native_libraries();
+        for (name, value) in [builtin("build_c", library, build_c), builtin("app", apk, app)] {
+            runtime.define(name, value);
+        }
+        return runtime;
+    };
+
+    let build = |source: &str| {
+        let script = Parser::new(source).parse_script().unwrap();
+        let wanted = configurations::Wanted { targets: &[], for_the_machine: false };
+        return configurations::evaluate(&script, wanted, runtime_for).finish();
+    };
+
+    build("greeter = build_c(\"greeter\")\napp(\"app\", list(greeter), targets = list(\"android-aarch64\", \"android-x86_64\"))").unwrap();
+    assert_eq!(*PACKED.lock().unwrap(), [
+        "android-aarch64 android-aarch64/libgreeter.so",
+        "android-x86_64 android-x86_64/libgreeter.so",
+    ]);
+
+    // one that names its targets is packed for those of the app's, and without the machine among them it is not
+    // built for the machine
+    BUILT.lock().unwrap().clear();
+    build("greeter = build_c(\"greeter\", targets = list(\"android-aarch64\"))\napp(\"app\", list(greeter), targets = list(\"android-aarch64\", \"android-x86_64\"))").unwrap();
+    assert_eq!(*PACKED.lock().unwrap(), ["android-aarch64 android-aarch64/libgreeter.so"]);
+    assert_eq!(*BUILT.lock().unwrap(), ["greeter android-aarch64"]);
+
+    let errors = build("greeter = build_c(\"greeter\", targets = list(\"linux-x86_64\"))\napp(\"app\", list(greeter), targets = list(\"android-aarch64\"))").unwrap_err();
+    assert!(errors[0].contains("greeter is built for linux-x86_64, none of them a target of this app: add one of android-aarch64 to its targets"), "{errors:?}");
+
+    // a library the evaluation of a target does not build has no module to pack
+    let errors = build(
+        "greeter = build_c(\"greeter\")\nother = if target() == \"android-x86\" { greeter } else { build_c(\"other\") }\napp(\"app\", list(other), targets = list(\"android-x86\"))",
+    ).unwrap_err();
+    assert!(errors.iter().any(|error| error.contains("the script builds no module other for android-x86")), "{errors:?}");
+
+    // an app is for Android
+    let errors = build("greeter = build_c(\"greeter\")\napp(\"app\", list(greeter), targets = list(\"linux-aarch64\"))").unwrap_err();
+    assert!(errors[0].contains("an Android app is built for Android targets only"), "{errors:?}");
 }
 
 #[cfg(unix)]

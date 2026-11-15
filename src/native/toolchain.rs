@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
 use crate::common::target::{Architecture, OperatingSystem, Target};
+use crate::language::runtime::AndroidSettings;
 
 pub const ZIG_VERSION: &str = "0.17.0";
 
@@ -64,13 +65,17 @@ impl Toolchain {
     /// The compilers of a module for the target the script is evaluated for. "auto": those of the system for
     /// this machine, zig for another desktop system. "system" builds for this machine alone, "zig" for every
     /// desktop system.
-    pub fn for_target(name: &str, target: Option<Target>) -> Result<Self, String> {
+    pub fn for_target(name: &str, target: Option<Target>, android: Option<&AndroidSettings>) -> Result<Self, String> {
         let Some(target) = target else {
             return Toolchain::named(if name == "auto" { "system" } else { name });
         };
 
+        // the NDK builds for Android, with the lowest min_sdk of the apps that pack the library
         if target.os == OperatingSystem::Android {
-            return Err(format!("C and C++ for {} build with the NDK, for the Android apps that pack them", target.name()));
+            if name == "zig" {
+                return Err(format!("zig builds for no Android, \"auto\" takes the NDK for {}", target.name()));
+            }
+            return super::android::toolchain(target, android.unwrap_or(&super::android::default_settings()));
         }
 
         if name == "system" {
@@ -348,16 +353,16 @@ mod tests {
     #[test]
     fn the_toolchain_follows_the_target() {
         // "auto" on this machine: the compilers of the system, like "system"
-        let auto = Toolchain::for_target("auto", None).unwrap();
+        let auto = Toolchain::for_target("auto", None, None).unwrap();
         assert!(!auto.zig);
         assert_eq!(auto.target, Target::host());
 
         // those of the system build for this machine alone, the NDK builds for Android
         let other = Target::named("windows-x86_64").filter(|target| !target.is_host()).unwrap_or(Target::named("linux-aarch64").unwrap());
-        let error = Toolchain::for_target("system", Some(other)).err().unwrap();
+        let error = Toolchain::for_target("system", Some(other), None).err().unwrap();
         assert!(error.contains("\"auto\" or \"zig\""), "{error}");
 
-        let error = Toolchain::for_target("auto", Target::named("android-aarch64")).err().unwrap();
+        let error = Toolchain::for_target("zig", Target::named("android-aarch64"), None).err().unwrap();
         assert!(error.contains("NDK"), "{error}");
     }
 

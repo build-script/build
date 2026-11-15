@@ -30,7 +30,6 @@ use compile::{Compilation, Language};
 use crate::common::target::OperatingSystem;
 use toolchain::Toolchain;
 
-pub use android::{AndroidSources, build as build_for_android};
 pub use vcpkg::checked_port;
 
 /// `use c` and `use cpp`, both with build_cmake and system_library
@@ -75,8 +74,6 @@ pub struct NativeOutput {
     pub tools_dir: Option<PathBuf>,
     /// with shared = true, for System.loadLibrary
     pub shared_library: Option<PathBuf>,
-    /// what Android apps build of a shared library, None when it has vcpkg ports or libraries of modules
-    pub android: Option<AndroidSources>,
     /// C++ is in it: what links it links with the C++ compiler
     pub cpp: bool,
 }
@@ -208,7 +205,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let build_dir = context.build_dir(&directory);
     let program: bool = args.get("program")?;
     let shared: bool = args.get("shared")?;
-    let toolchain = Toolchain::for_target(&args.get::<String>("toolchain")?, context.target)?;
+    let toolchain = Toolchain::for_target(&args.get::<String>("toolchain")?, context.target, context.android.as_ref())?;
     let release = context.release;
 
     if program && shared {
@@ -278,10 +275,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         false => flags.extend(["-O0".to_string(), "-g".to_string()]),
     }
 
-    // Android gets the module's own headers and defines, the rest is of this machine
-    let android_flags = [flags.clone(), vec!["-fPIC".to_string()]].concat();
-
-    if args.get("jni")? {
+    // jni.h of a JDK, for Android the NDK has its own
+    if args.get("jni")? && context.target().os != OperatingSystem::Android {
         flags.extend(crate::jvm::jni_include_dirs(&context.project_dir, context.target())?.iter().map(|dir| format!("-I{}", dir.display())));
     }
 
@@ -472,24 +467,6 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     copy_shared_libraries(&shared_libraries, &shared_dir)?;
 
-    // what Android apps build of it: its own sources, header-only modules are fine
-    let links_modules = dependencies.modules.iter().any(|module| {
-        return matches!(&module.output, ModuleOutput::Native(output) if !output.link_flags.is_empty());
-    });
-
-    // what commands generated is built for this machine only
-    let android = (shared && ports.is_empty() && !links_modules && dependencies.commands.is_empty()).then(|| AndroidSources {
-        name: name.clone(),
-        language,
-        module_dir: directory.clone(),
-        source_patterns: source_patterns.clone(),
-        exclude_patterns: exclude_patterns.clone(),
-        c_standard: c_standard.clone(),
-        cpp_standard: cpp_standard.clone(),
-        flags: [android_flags, compile_flags.clone()].concat(),
-        build_dir: build_dir.clone(),
-    });
-
     let mut tests = vec![];
 
     if context.tests.includes(&name) {
@@ -542,7 +519,6 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             program: (kind == ModuleKind::Program).then_some(artifact.clone()),
             tools_dir: None,
             shared_library: (kind == ModuleKind::SharedLibrary).then_some(artifact),
-            android,
             cpp,
         }),
         tests,
@@ -578,6 +554,12 @@ fn link_shared_library(
             }
         }
         _ => flags.push(format!("-Wl,-soname,{library_name}")),
+    }
+
+    // liblog for __android_log_print, libc++ inside: the app needs no libc++_shared.so
+    if toolchain.target.os == OperatingSystem::Android {
+        flags.push("-llog".to_string());
+        flags.extend(cpp.then(|| "-static-libstdc++".to_string()));
     }
 
     if let Some(origin) = toolchain.target.os.rpath_origin()

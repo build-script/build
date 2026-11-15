@@ -53,6 +53,25 @@ pub struct BuildScriptContext {
     pub idea: bool,
     /// what the script is evaluated for: none for the machine build-script runs on, or another target
     pub target: Option<Target>,
+    /// for an Android target: what the NDK builds with, from the apps that pack the libraries
+    pub android: Option<AndroidSettings>,
+}
+
+/// How the NDK builds the libraries of C and C++ for the Android targets of apps
+#[derive(Debug, Clone, PartialEq)]
+pub struct AndroidSettings {
+    /// the lowest of the apps that pack them
+    pub min_sdk: i64,
+    pub ndk_version: String,
+    pub accept_sdk_license: bool,
+}
+
+/// A module an evaluation for another target is to name, and the placeholder that stands for it until then
+struct Forward {
+    target: Target,
+    name: String,
+    placeholder: Arc<PendingModule>,
+    android: Option<AndroidSettings>,
 }
 
 impl BuildScriptContext {
@@ -76,8 +95,8 @@ impl BuildScriptContext {
 /// Which modules an evaluation builds where the script calls them, the others only once something needs them
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Requests {
-    /// what the script names: on the machine the modules without targets or with its own among them, for
-    /// another target the modules with that one
+    /// what the script names: on the machine the modules with its own among their targets and those without
+    /// targets no module for another target alone needs, for another target the modules with that one
     Declared,
     /// every module: build --target names this one, or run and test, which need the machine's
     All,
@@ -105,6 +124,8 @@ pub struct Runtime {
     module_names: Vec<(String, Span)>,
     /// for another target: the modules of the machine's evaluation, built once for every target or run by builds
     host_modules: Vec<Arc<PendingModule>>,
+    /// modules of later evaluations the machine's needs, shared by all evaluations
+    forwards: Arc<Mutex<Vec<Forward>>>,
     requests: Requests,
     /// shared by the evaluations of every target
     jobs: Arc<Semaphore>,
@@ -188,10 +209,12 @@ impl Runtime {
                 release: false,
                 idea: false,
                 target: None,
+                android: None,
             },
             built: vec![],
             module_names: vec![],
             host_modules: vec![],
+            forwards: Arc::new(Mutex::new(vec![])),
             requests: Requests::Declared,
             jobs: Arc::new(Semaphore::new(default_jobs())),
             call_depth: 0,
@@ -287,8 +310,42 @@ impl Runtime {
     /// and the programs builds run come from there, it takes its jobs from the same slots
     pub fn after_machine(mut self, machine: &Runtime) -> Self {
         self.host_modules = machine.built.clone();
+        self.forwards = machine.forwards.clone();
         self.jobs = machine.jobs.clone();
+        self.context.android = self.context.target.and_then(|target| machine.android_settings(target));
         return self;
+    }
+
+    /// The targets the machine's modules need modules of, like the ABIs of apks
+    pub fn forward_targets(&self) -> Vec<Target> {
+        let forwards = self.forwards.lock().unwrap();
+        return crate::common::target::TARGETS.iter()
+            .filter(|target| forwards.iter().any(|forward| forward.target == **target))
+            .copied()
+            .collect();
+    }
+
+    /// What the NDK builds with for an Android target: the lowest min_sdk of the apps that pack its libraries
+    fn android_settings(&self, target: Target) -> Option<AndroidSettings> {
+        return self.forwards
+            .lock().unwrap()
+            .iter()
+            .filter(|forward| forward.target == target)
+            .filter_map(|forward| forward.android.clone())
+            .min_by_key(|settings| settings.min_sdk);
+    }
+
+    /// Fails the placeholders no evaluation named a module for: they are errors of the machine's evaluation
+    pub fn fail_forwards_without_module(&self) -> Vec<String> {
+        let mut errors = vec![];
+
+        for forward in self.forwards.lock().unwrap().iter().filter(|forward| !forward.placeholder.stands_for_a_module()) {
+            let message = format!("the script builds no module {} for {}", forward.name, forward.target.name());
+            forward.placeholder.finish(Err(BuildFailure::Failed(message.clone())));
+            errors.push(self.describe(&RuntimeError::builtin_failed(forward.placeholder.function, message, forward.placeholder.span)));
+        }
+
+        return errors;
     }
 
     /// The targets besides the machine that modules of the script name, in the order of build --help
@@ -304,6 +361,17 @@ impl Runtime {
         for statement in &script.statements {
             self.run_statement(statement)?;
         }
+
+        // the machine builds the modules without targets that no other module needs, and with them what they
+        // need: a library only modules for other targets link is built for those
+        if self.context.target.is_none() && self.requests == Requests::Declared && self.loading.is_empty() {
+            for module in &self.built {
+                if module.targets.is_empty() && !self.built.iter().any(|other| other.depends_on(module)) {
+                    module.request();
+                }
+            }
+        }
+
         return Ok(());
     }
 
@@ -1020,8 +1088,11 @@ impl Runtime {
                     if self.requested_at_call(signature.placement, &targets) {
                         machine.request();
                     }
+                    self.fill_forwards(target, &machine);
                     return Ok(Value::Module(machine));
                 }
+            } else if signature.packs_native_libraries {
+                self.pack_native_libraries(name, &mut args, &targets, span)?;
             }
 
             let requested = self.requested_at_call(signature.placement, &targets);
@@ -1038,6 +1109,10 @@ impl Runtime {
 
             if requested {
                 module.request();
+            }
+
+            if let Some(target) = self.context.target {
+                self.fill_forwards(target, &module);
             }
 
             return Ok(Value::Module(module));
@@ -1083,10 +1158,129 @@ impl Runtime {
         match (self.context.target, self.requests) {
             // built once for every target, by the machine's evaluation
             (None, _) if placement == Placement::HostOnly => return true,
-            (None, Requests::Declared) => return targets.is_empty() || names(Target::host()),
+            // those without targets once the evaluation knows which modules need them, see run
+            (None, Requests::Declared) => return names(Target::host()),
             (Some(target), Requests::Declared) => return names(target),
             (_, Requests::All) => return true,
             (_, Requests::HostOnly) => return false,
+        }
+    }
+
+    /// An apk on the machine: its libraries of C and C++ for each Android target it names, all four without
+    /// targets. The evaluations of those targets build them later, placeholders stand for them until then.
+    fn pack_native_libraries(&self, function: &'static str, args: &mut Arguments, targets: &[String], span: Span) -> Result<(), RuntimeError> {
+        let error = |message: String| RuntimeError::builtin_failed(function, message, span);
+        let android = crate::common::target::TARGETS.iter().filter(|target| target.os == crate::common::target::OperatingSystem::Android);
+
+        let abis: Vec<Target> = match targets.is_empty() {
+            true => android.copied().collect(),
+            false => targets.iter()
+                .map(|name| Target::named(name).filter(|target| target.os == crate::common::target::OperatingSystem::Android))
+                .collect::<Option<_>>()
+                .ok_or_else(|| error(format!("an Android app is built for Android targets only: {}", android.map(Target::name).collect::<Vec<_>>().join(", "))))?,
+        };
+
+        let settings = AndroidSettings {
+            min_sdk: args.get("min_sdk").map_err(error)?,
+            ndk_version: args.get("ndk_version").map_err(error)?,
+            accept_sdk_license: args.get("accept_sdk_license").map_err(error)?,
+        };
+
+        // the libraries of C and C++ among its arguments, also in lists
+        fn libraries(value: &Value, found: &mut Vec<Arc<PendingModule>>) {
+            match value {
+                Value::Module(module) if matches!(module.function, "build_c" | "build_cpp") => found.push(module.clone()),
+                Value::List(items) => items.iter().for_each(|item| libraries(item, found)),
+                _ => {}
+            }
+        }
+
+        let mut found = vec![];
+        args.values.iter().filter_map(|(_, value)| value.as_ref()).for_each(|value| libraries(value, &mut found));
+
+        // a library that names its targets is packed for the ABIs both name, and one that leaves out the machine
+        // is no library of the machine's evaluation: the app's unit tests on the JVM do without it
+        let host = Target::host().name();
+        let mut without_machine: Vec<Arc<PendingModule>> = vec![];
+        let mut packed: Vec<(Arc<PendingModule>, Vec<Target>)> = vec![];
+
+        for library in found {
+            if library.targets.is_empty() {
+                packed.push((library, abis.clone()));
+                continue;
+            }
+
+            let both: Vec<Target> = abis.iter()
+                .filter(|abi| library.targets.iter().any(|name| *name == abi.name()))
+                .copied()
+                .collect();
+            if both.is_empty() {
+                let abis = abis.iter().map(Target::name).collect::<Vec<_>>().join(", ");
+                return Err(error(format!(
+                    "{} is built for {}, none of them a target of this app: add one of {abis} to its targets",
+                    library.name,
+                    library.targets.join(", "),
+                )));
+            }
+            if !library.targets.iter().any(|name| *name == host) {
+                without_machine.push(library.clone());
+            }
+            packed.push((library, both));
+        }
+
+        fn without(value: &mut Value, libraries: &[Arc<PendingModule>]) {
+            if let Value::List(items) = value {
+                items.retain(|item| !matches!(item, Value::Module(module) if libraries.iter().any(|library| Arc::ptr_eq(library, module))));
+                items.iter_mut().for_each(|item| without(item, libraries));
+            }
+        }
+        if !without_machine.is_empty() {
+            args.values.iter_mut().filter_map(|(_, value)| value.as_mut()).for_each(|value| without(value, &without_machine));
+        }
+
+        let mut forwards = self.forwards.lock().unwrap();
+
+        for (library, abis) in packed {
+            for target in &abis {
+                let placeholder = match forwards.iter_mut().find(|forward| forward.target == *target && forward.name == library.name) {
+                    Some(forward) => {
+                        forward.android = Some(settings.clone()).into_iter()
+                            .chain(forward.android.take())
+                            .min_by_key(|settings| settings.min_sdk);
+                        forward.placeholder.clone()
+                    }
+                    None => {
+                        let placeholder = PendingModule::placeholder(ModuleCall {
+                            function,
+                            span,
+                            called_from: None,
+                            name: library.name.clone(),
+                            arguments: None,
+                            targets: vec![],
+                        });
+                        forwards.push(Forward {
+                            target: *target,
+                            name: library.name.clone(),
+                            placeholder: placeholder.clone(),
+                            android: Some(settings.clone()),
+                        });
+                        placeholder
+                    }
+                };
+
+                args.foreign.push((*target, Value::Module(placeholder)));
+            }
+        }
+
+        return Ok(());
+    }
+
+    /// For another target: the placeholders of the machine's evaluation that stand for this module
+    fn fill_forwards(&self, target: Target, module: &Arc<PendingModule>) {
+        for forward in self.forwards.lock().unwrap().iter() {
+            if forward.target == target && forward.name == module.name && !forward.placeholder.stands_for_a_module() {
+                forward.placeholder.stand_for(module);
+            }
         }
     }
 

@@ -47,6 +47,10 @@ pub struct PendingModule {
     requested: AtomicBool,
     /// the build on a thread of its own, taken when the module is requested
     start: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// of a placeholder: the module of a later evaluation it stands for, once that evaluation names it
+    stands_for: Mutex<Option<Arc<PendingModule>>>,
+    /// placeholders standing for it, done when it is
+    followers: Mutex<Vec<Arc<PendingModule>>>,
     result: Mutex<Option<Result<Arc<BuiltModule>, BuildFailure>>>,
     done: Condvar,
 }
@@ -164,6 +168,8 @@ impl PendingModule {
                 dependencies,
                 requested: AtomicBool::new(false),
                 start: Mutex::new(Some(start)),
+                stands_for: Mutex::new(None),
+                followers: Mutex::new(vec![]),
                 result: Mutex::new(None),
                 done: Condvar::new(),
             };
@@ -182,6 +188,8 @@ impl PendingModule {
             dependencies: vec![],
             requested: AtomicBool::new(true),
             start: Mutex::new(None),
+            stands_for: Mutex::new(None),
+            followers: Mutex::new(vec![]),
             result: Mutex::new(None),
             done: Condvar::new(),
         });
@@ -190,9 +198,62 @@ impl PendingModule {
         return pending;
     }
 
+    /// Stands for a module an evaluation for another target names later, like a library of C an apk packs for
+    /// one of its ABIs. Requested, it requests that module once it is known, and it is done when that one is.
+    pub fn placeholder(call: ModuleCall) -> Arc<Self> {
+        let ModuleCall { function, span, called_from, name, arguments, targets } = call;
+
+        return Arc::new(PendingModule {
+            function,
+            span,
+            called_from,
+            name,
+            arguments,
+            targets,
+            dependencies: vec![],
+            requested: AtomicBool::new(false),
+            start: Mutex::new(None),
+            stands_for: Mutex::new(None),
+            followers: Mutex::new(vec![]),
+            result: Mutex::new(None),
+            done: Condvar::new(),
+        });
+    }
+
+    /// The module a placeholder stands for, named by the evaluation of its target
+    pub fn stand_for(self: &Arc<Self>, module: &Arc<PendingModule>) {
+        *self.stands_for.lock().unwrap() = Some(module.clone());
+
+        {
+            // under the lock of its result, so it cannot finish in between
+            let result = module.result.lock().unwrap();
+            match result.clone() {
+                Some(result) => self.finish(result),
+                None => module.followers.lock().unwrap().push(self.clone()),
+            }
+        }
+
+        if self.is_requested() {
+            module.request();
+        }
+    }
+
+    /// Whether a placeholder knows its module
+    pub fn stands_for_a_module(&self) -> bool {
+        return self.stands_for.lock().unwrap().is_some();
+    }
+
     pub fn finish(&self, result: Result<Arc<BuiltModule>, BuildFailure>) {
-        *self.result.lock().unwrap() = Some(result);
+        let followers = {
+            let mut own = self.result.lock().unwrap();
+            *own = Some(result.clone());
+            std::mem::take(&mut *self.followers.lock().unwrap())
+        };
         self.done.notify_all();
+
+        for follower in followers {
+            follower.finish(result.clone());
+        }
     }
 
     /// Starts its build and those of the modules it depends on, once
@@ -212,10 +273,20 @@ impl PendingModule {
         if let Some(start) = start {
             std::thread::spawn(start);
         }
+
+        let stands_for = self.stands_for.lock().unwrap().clone();
+        if let Some(module) = stands_for {
+            module.request();
+        }
     }
 
     pub fn is_requested(&self) -> bool {
         return self.requested.load(Ordering::SeqCst);
+    }
+
+    /// Whether `other` is among the modules of its arguments
+    pub fn depends_on(&self, other: &Arc<PendingModule>) -> bool {
+        return self.dependencies.iter().any(|dependency| Arc::ptr_eq(dependency, other));
     }
 
     /// What the build gave, once it is done. A module not requested yet is requested first.
