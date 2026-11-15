@@ -30,6 +30,9 @@ pub struct Target {
 /// What CMake and Visual Studio link every program of Windows with
 const WINDOWS_LIBRARIES: &[&str] = &["kernel32", "user32", "gdi32", "winspool", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "advapi32"];
 
+/// The oldest glibc that programs for another Linux than this machine run on: Debian 10, Ubuntu 18.10, RHEL 8
+const GLIBC: &str = "2.28";
+
 const fn target(os: OperatingSystem, arch: Architecture, musl: bool) -> Target {
     return Target { os, arch, musl };
 }
@@ -91,6 +94,25 @@ impl Target {
 
     pub fn is_host(&self) -> bool {
         return *self == Target::host();
+    }
+
+    /// What zig builds for with -target, none for Android, which the NDK builds for
+    pub fn zig_triple(&self) -> Option<String> {
+        let arch = match self.arch {
+            Architecture::X86_64 => "x86_64",
+            Architecture::Aarch64 => "aarch64",
+            Architecture::Armv7 => "arm",
+            Architecture::X86 => "x86",
+        };
+
+        match (self.os, self.musl) {
+            (OperatingSystem::Linux, true) => return Some(format!("{arch}-linux-musl")),
+            (OperatingSystem::Linux, false) => return Some(format!("{arch}-linux-gnu.{GLIBC}")),
+            (OperatingSystem::MacOs, _) => return Some(format!("{arch}-macos")),
+            // MinGW: the libc of Windows without Visual Studio
+            (OperatingSystem::Windows, _) => return Some(format!("{arch}-windows-gnu")),
+            (OperatingSystem::Android, _) => return None,
+        }
     }
 
     /// What the clang of the NDK builds for, before the API level: aarch64-linux-android24
@@ -239,10 +261,19 @@ mod tests {
     }
 
     #[test]
-    fn android_targets_are_the_abis_of_apks() {
-        // the NDK builds for Android
+    fn every_target_has_a_compiler_that_builds_for_it() {
+        let triple = |name: &str| Target::named(name).unwrap().zig_triple();
+
+        assert_eq!(triple("linux-aarch64").as_deref(), Some("aarch64-linux-gnu.2.28"));
+        assert_eq!(triple("linux-x86_64-musl").as_deref(), Some("x86_64-linux-musl"));
+        assert_eq!(triple("macos-aarch64").as_deref(), Some("aarch64-macos"));
+        assert_eq!(triple("windows-x86_64").as_deref(), Some("x86_64-windows-gnu"));
+        assert_eq!(triple("android-aarch64"), None);
+
+        // zig builds for the desktop systems, the NDK for Android, by the ABIs of apks
         for target in TARGETS {
             assert_eq!(target.ndk_triple().is_some(), target.os == OperatingSystem::Android, "{}", target.name());
+            assert_eq!(target.zig_triple().is_some(), target.os != OperatingSystem::Android, "{}", target.name());
         }
 
         let armv7 = Target::of_android_abi("armeabi-v7a").unwrap();

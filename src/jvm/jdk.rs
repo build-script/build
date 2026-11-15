@@ -33,11 +33,42 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
     )];
 }
 
-/// Where jni.h is, for C and C++ libraries a JVM loads: include/ of the default JDK and that of its system
-pub fn jni_include_dirs(project_dir: &Path) -> Result<Vec<PathBuf>, String> {
+/// Where jni.h is, for C and C++ libraries a JVM loads: include/ of the default JDK and that of the target's
+/// system. A JDK has jni_md.h for its own system only, the one for another is written into the cache.
+pub fn jni_include_dirs(project_dir: &Path, target: Target) -> Result<Vec<PathBuf>, String> {
     let include = Jdk::resolve(DEFAULT_JAVA_VERSION, DEFAULT_JDK_DISTRIBUTION, project_dir)?.home.join("include");
+    let own = include.join(target.jni_system());
 
-    return Ok(vec![include.clone(), include.join(Target::host().jni_system())]);
+    if own.join("jni_md.h").exists() {
+        return Ok(vec![include, own]);
+    }
+
+    let written = system::cache_dir("jni").join(target.jni_system());
+    system::write_file_if_changed(&written.join("jni_md.h"), &jni_md(target))?;
+
+    return Ok(vec![include, written]);
+}
+
+/// What jni.h of every system includes: how functions are exported and called, the size of jlong. Only
+/// Windows differs, with its own export and calling convention.
+fn jni_md(target: Target) -> String {
+    let (export, import, call, long) = match target.jni_system() {
+        "win32" => ("__declspec(dllexport)", "__declspec(dllimport)", "__stdcall", "typedef long long jlong;"),
+        _ => (
+            "__attribute__((visibility(\"default\")))",
+            "__attribute__((visibility(\"default\")))",
+            "",
+            "#ifdef _LP64\ntypedef long jlong;\n#else\ntypedef long long jlong;\n#endif",
+        ),
+    };
+
+    return format!(
+        "/* jni_md.h for {system}, written by build-script for a JDK of another system */\n\
+         #ifndef _JAVASOFT_JNI_MD_H_\n#define _JAVASOFT_JNI_MD_H_\n\n\
+         #define JNIEXPORT {export}\n#define JNIIMPORT {import}\n#define JNICALL {call}\n\n\
+         typedef int jint;\n{long}\ntypedef signed char jbyte;\n\n#endif\n",
+        system = target.jni_system(),
+    );
 }
 
 pub fn join_classpath(paths: &[PathBuf]) -> Result<OsString, String> {
@@ -448,6 +479,16 @@ mod tests {
     use crate::common::test_support::ScratchDir;
 
     use super::*;
+
+    #[test]
+    fn jni_md_differs_only_for_windows() {
+        let windows = jni_md(Target::named("windows-x86_64").unwrap());
+        let linux = jni_md(Target::named("linux-aarch64").unwrap());
+
+        assert!(windows.contains("#define JNIEXPORT __declspec(dllexport)") && windows.contains("#define JNICALL __stdcall"), "{windows}");
+        assert!(linux.contains("visibility(\"default\")") && linux.contains("#define JNICALL \n"), "{linux}");
+        assert!(linux.contains("typedef long jlong;") && windows.contains("typedef long long jlong;"));
+    }
 
     #[test]
     fn jdk_can_be_a_path_to_an_existing_jdk() {

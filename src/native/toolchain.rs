@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
-use crate::common::target::Target;
+use crate::common::target::{OperatingSystem, Target};
 
 pub const ZIG_VERSION: &str = "0.17.0";
 
@@ -46,7 +46,7 @@ impl Toolchain {
         }
 
         if name != "zig" {
-            return Err(format!("toolchain '{name}' is neither \"system\" nor \"zig\""));
+            return Err(format!("toolchain '{name}' is none of \"auto\", \"system\" and \"zig\""));
         }
 
         let zig = install_zig()?.display().to_string();
@@ -59,6 +59,31 @@ impl Toolchain {
             archiver: vec![zig, "ar".to_string()],
             environment: vec![("ZIG_GLOBAL_CACHE_DIR", system::cache_dir("zig"))],
         });
+    }
+
+    /// The compilers of a module for the target the script is evaluated for. "auto": those of the system for
+    /// this machine, zig for another desktop system. "system" builds for this machine alone, "zig" for every
+    /// desktop system.
+    pub fn for_target(name: &str, target: Option<Target>) -> Result<Self, String> {
+        let Some(target) = target else {
+            return Toolchain::named(if name == "auto" { "system" } else { name });
+        };
+
+        if target.os == OperatingSystem::Android {
+            return Err(format!("C and C++ for {} build with the NDK, for the Android apps that pack them", target.name()));
+        }
+
+        if name == "system" {
+            return Err(format!("toolchain = \"system\" builds for this machine, \"auto\" or \"zig\" for {}", target.name()));
+        }
+
+        let triple = target.zig_triple().ok_or_else(|| format!("zig builds for no {}", target.name()))?;
+        let mut zig = Toolchain::named("zig")?;
+        zig.target = target;
+        zig.c_compiler.extend(["-target".to_string(), triple.clone()]);
+        zig.cpp_compiler.extend(["-target".to_string(), triple]);
+
+        return Ok(zig);
     }
 
     pub fn command(&self, program: &[String]) -> Command {
@@ -201,3 +226,24 @@ fn install_zig() -> Result<PathBuf, String> {
     });
 }
 
+#[cfg(test)]
+mod tests {
+    use super::Toolchain;
+    use crate::common::target::Target;
+
+    #[test]
+    fn the_toolchain_follows_the_target() {
+        // "auto" on this machine: the compilers of the system, like "system"
+        let auto = Toolchain::for_target("auto", None).unwrap();
+        assert!(!auto.zig);
+        assert_eq!(auto.target, Target::host());
+
+        // those of the system build for this machine alone, the NDK builds for Android
+        let other = Target::named("windows-x86_64").filter(|target| !target.is_host()).unwrap_or(Target::named("linux-aarch64").unwrap());
+        let error = Toolchain::for_target("system", Some(other)).err().unwrap();
+        assert!(error.contains("\"auto\" or \"zig\""), "{error}");
+
+        let error = Toolchain::for_target("auto", Target::named("android-aarch64")).err().unwrap();
+        assert!(error.contains("NDK"), "{error}");
+    }
+}

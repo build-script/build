@@ -146,8 +146,11 @@ fn signature(language: Language) -> FunctionSignature {
         .with_default("shared", Type::Bool, false)
         // jni.h of the JDK
         .with_default("jni", Type::Bool, false)
-        // "system": cc and c++ of the system, "zig": downloaded once
-        .with_default("toolchain", Type::String, "system")
+        // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those
+        .with_default("toolchain", Type::Union(["auto", "system", "zig"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
+        // the targets it is built for, like list("linux-aarch64", "windows-x86_64"), each into build/<target>/:
+        // this machine without them, and the targets of the modules depending on it
+        .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
         .with_default("c_standard", Type::String, "c17")
         // "NAME" or "NAME=value"
         .strings("defines")
@@ -189,10 +192,10 @@ fn signature(language: Language) -> FunctionSignature {
     return parameters.returns(Type::Module);
 }
 
-/// C and C++ modules are built with the compilers of this machine, for it alone so far
+/// CMake projects and libraries of the system are built for this machine only so far
 pub fn only_for_the_machine(context: &BuildScriptContext) -> Result<(), String> {
     match context.target {
-        Some(target) => return Err(format!("C and C++ modules are built for this machine only so far, not for {}", target.name())),
+        Some(target) => return Err(format!("CMake projects and libraries of the system are for this machine only so far, not for {}", target.name())),
         None => return Ok(()),
     }
 }
@@ -200,13 +203,12 @@ pub fn only_for_the_machine(context: &BuildScriptContext) -> Result<(), String> 
 /// build/lib/lib<name>.a, with shared = true build/lib/lib<name>.dylib, with program = true build/bin/<name>.
 /// On Windows build/lib/<name>.lib, build/bin/<name>.dll and build/bin/<name>.exe.
 fn build_module(context: &BuildScriptContext, args: &Arguments, language: Language) -> Result<Value, String> {
-    only_for_the_machine(context)?;
     let name: String = args.get("name")?;
     let directory = context.project_dir.join(args.get::<String>("directory")?);
     let build_dir = context.build_dir(&directory);
     let program: bool = args.get("program")?;
     let shared: bool = args.get("shared")?;
-    let toolchain = Toolchain::named(&args.get::<String>("toolchain")?)?;
+    let toolchain = Toolchain::for_target(&args.get::<String>("toolchain")?, context.target)?;
     let release = context.release;
 
     if program && shared {
@@ -254,6 +256,10 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     // one install for the module and its tests
     let ports = [dependencies.ports.clone(), test_dependencies.ports.clone()].concat();
 
+    if let Some(target) = context.target.filter(|_| !ports.is_empty() || !tablegen_entries.is_empty()) {
+        return Err(format!("{name}: vcpkg ports and TableGen are for this machine only so far, not for {}", target.name()));
+    }
+
     let installed = vcpkg::install(&name, &ports, &toolchain, &build_dir)?;
     let (compile_flags, mut link_flags) = dependencies.flags(installed.as_ref(), release);
     link_flags.extend(args.get::<Vec<String>>("link_flags")?);
@@ -275,7 +281,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let android_flags = [flags.clone(), vec!["-fPIC".to_string()]].concat();
 
     if args.get("jni")? {
-        flags.extend(crate::jvm::jni_include_dirs(&context.project_dir)?.iter().map(|dir| format!("-I{}", dir.display())));
+        flags.extend(crate::jvm::jni_include_dirs(&context.project_dir, context.target())?.iter().map(|dir| format!("-I{}", dir.display())));
     }
 
     flags.extend(args.get::<Vec<String>>("flags")?);
