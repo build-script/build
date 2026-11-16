@@ -556,15 +556,9 @@ fn linked_once(link_flags: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::OnceLock;
-    use std::time::{Duration, SystemTime};
 
-    use super::{Compilation, Family, Language, Precompiled, depfile_inputs, linked_once, precompiled_contents};
-    use crate::common::system;
-    use crate::common::test_support::ScratchDir;
-    use crate::native::toolchain::Toolchain;
+    use super::{Family, Precompiled, depfile_inputs, linked_once, precompiled_contents};
 
     #[test]
     fn clang_takes_its_pch_and_gcc_finds_its_gch_next_to_the_header() {
@@ -572,16 +566,48 @@ mod tests {
         assert_eq!(Family::of("clang version 20.1.2"), Family::Clang);
         assert_eq!(Family::of("g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"), Family::Gcc);
 
-        let precompiled = Precompiled { dir: PathBuf::from("/m/build/obj/m/debug/pch"), name: "pch.hpp" };
-        assert_eq!(precompiled.arguments(Family::Clang), ["-include-pch", "/m/build/obj/m/debug/pch/clang/pch.hpp.pch"]);
-        assert_eq!(precompiled.arguments(Family::Gcc), ["-Winvalid-pch", "-include", "/m/build/obj/m/debug/pch/gcc/pch.hpp"]);
-        assert_eq!(precompiled.binary(Family::Gcc), Path::new("/m/build/obj/m/debug/pch/gcc/pch.hpp.gch"));
+        // the separators of the system the tests run on
+        let dir = Path::new("/m/build/obj/m/debug/pch");
+        let text = |path: PathBuf| path.display().to_string();
+        let precompiled = Precompiled { dir: dir.to_path_buf(), name: "pch.hpp" };
+        assert_eq!(precompiled.arguments(Family::Clang), ["-include-pch".to_string(), text(dir.join("clang").join("pch.hpp.pch"))]);
+        assert_eq!(precompiled.arguments(Family::Gcc), ["-Winvalid-pch".to_string(), "-include".to_string(), text(dir.join("gcc").join("pch.hpp"))]);
+        assert_eq!(precompiled.binary(Family::Gcc), dir.join("gcc").join("pch.hpp.gch"));
 
         // clangd reads the header, the file of another compiler is never next to it
-        assert_eq!(precompiled.header(), Path::new("/m/build/obj/m/debug/pch/pch.hpp"));
+        assert_eq!(precompiled.header(), dir.join("pch.hpp"));
         let headers = ["<vector>", "src/common.hpp"].map(String::from);
         assert_eq!(precompiled_contents(&headers, Path::new("/m")), "#include <vector>\n#include \"/m/src/common.hpp\"\n");
     }
+
+    #[test]
+    fn libraries_are_linked_once_after_the_last_that_needs_them() {
+        let flags = ["libapp.a", "-lfmt", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"].map(String::from);
+        assert_eq!(linked_once(&flags), ["libapp.a", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"]);
+    }
+
+    #[test]
+    fn depfiles_name_inputs_with_spaces_and_drives() {
+        let depfile = "obj/main.cpp.o: src/main.cpp include/my\\ header.h \\\n  include/cost$$.h\n";
+        assert_eq!(depfile_inputs(depfile), ["src/main.cpp", "include/my header.h", "include/cost$.h"]);
+
+        let depfile = "D:\\a\\obj\\main.cpp.o: D:\\a\\src\\main.cpp \\\r\n  C:\\Program\\ Files\\x.h\r\n";
+        assert_eq!(depfile_inputs(depfile), ["D:\\a\\src\\main.cpp", "C:\\Program Files\\x.h"]);
+    }
+}
+
+/// With the compilers of the system, which the machines of the pipeline for Linux and macOS have
+#[cfg(all(test, unix))]
+mod with_a_compiler {
+    use std::fs;
+    use std::path::Path;
+    use std::sync::OnceLock;
+    use std::time::{Duration, SystemTime};
+
+    use super::{Compilation, Language};
+    use crate::common::system;
+    use crate::common::test_support::ScratchDir;
+    use crate::native::toolchain::Toolchain;
 
     /// Sets the times a build compares
     fn modified_at(file: &Path, time: SystemTime) {
@@ -592,7 +618,6 @@ mod tests {
         return fs::metadata(file).unwrap().modified().unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn sources_compile_again_when_a_precompiled_header_changed() {
         let directory = ScratchDir::new("precompiled");
@@ -666,18 +691,4 @@ mod tests {
         assert!(!arguments.contains(".pch") && !arguments.contains(".gch") && !arguments.contains("gcc/"), "{arguments}");
     }
 
-    #[test]
-    fn libraries_are_linked_once_after_the_last_that_needs_them() {
-        let flags = ["libapp.a", "-lfmt", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"].map(String::from);
-        assert_eq!(linked_once(&flags), ["libapp.a", "-Wl,-rpath,x", "libcore.a", "-lfmt", "-pthread", "-pthread"]);
-    }
-
-    #[test]
-    fn depfiles_name_inputs_with_spaces_and_drives() {
-        let depfile = "obj/main.cpp.o: src/main.cpp include/my\\ header.h \\\n  include/cost$$.h\n";
-        assert_eq!(depfile_inputs(depfile), ["src/main.cpp", "include/my header.h", "include/cost$.h"]);
-
-        let depfile = "D:\\a\\obj\\main.cpp.o: D:\\a\\src\\main.cpp \\\r\n  C:\\Program\\ Files\\x.h\r\n";
-        assert_eq!(depfile_inputs(depfile), ["D:\\a\\src\\main.cpp", "C:\\Program Files\\x.h"]);
-    }
 }
