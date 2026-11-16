@@ -149,6 +149,9 @@ fn signature(language: Language) -> FunctionSignature {
         // this machine without them, and the targets of the modules depending on it
         .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
         .with_default("c_standard", Type::String, "c17")
+        // headers every source needs, like "<vector>" or "src/common.hpp": translated once, then each source of
+        // the module's language takes them before its first line
+        .strings("precompiled_headers")
         // "NAME" or "NAME=value"
         .strings("defines")
         // also for the modules depending on it, like SPDLOG_COMPILED_LIB
@@ -302,6 +305,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     let objects_dir = build_dir.join("obj")
         .join(&name)
         .join(if release { "release" } else { "debug" });
+    let precompiled_headers: Vec<String> = args.get("precompiled_headers")?;
     let c_standard: String = args.get("c_standard")?;
     let cpp_standard: String = match language {
         Language::C => String::new(),
@@ -322,6 +326,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         tests: false,
         candidates: OnceLock::new(),
         generated_sources,
+        precompiled_headers: &precompiled_headers,
     };
 
     // a module that names its sources names its tests too, modules may share a directory

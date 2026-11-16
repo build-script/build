@@ -1,6 +1,6 @@
 // Compiling C and C++: every source on its own, in parallel, and only when its object is older than
 // the source, one of its headers, its command line or the version of its compiler. clang and gcc name
-// the headers in a depfile.
+// the headers in a depfile. Headers every source needs may be precompiled once before them.
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,6 +58,75 @@ pub struct Compilation<'a> {
     pub candidates: OnceLock<Vec<PathBuf>>,
     /// what commands the module depends on wrote, compiled with its sources
     pub generated_sources: Vec<PathBuf>,
+    /// like "<vector>" or "src/common.hpp": precompiled once, then the sources of the module's language
+    /// take them before their first line
+    pub precompiled_headers: &'a [String],
+}
+
+/// How a compiler builds and takes precompiled headers: clang, also that of Apple, zig and the NDK, a .pch
+/// it is given, GCC a .gch it finds next to the header
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Family {
+    Clang,
+    Gcc,
+}
+
+impl Family {
+    /// Of what the compiler says to --version
+    fn of(version: &str) -> Family {
+        match version.contains("clang") {
+            true => return Family::Clang,
+            false => return Family::Gcc,
+        }
+    }
+}
+
+/// Where the precompiled headers of a compilation go: the header that includes them, which clangd reads, and
+/// apart from it the file the compiler made of it, which another clang or GCC could not read
+struct Precompiled {
+    /// <objects>/pch
+    dir: PathBuf,
+    /// pch.hpp or pch.h
+    name: &'static str,
+}
+
+impl Precompiled {
+    fn header(&self) -> PathBuf {
+        return self.dir.join(self.name);
+    }
+
+    /// What the compiler translates: GCC finds its .gch only next to the header
+    fn input(&self, family: Family) -> PathBuf {
+        match family {
+            Family::Clang => return self.header(),
+            Family::Gcc => return self.dir.join("gcc").join(self.name),
+        }
+    }
+
+    fn binary(&self, family: Family) -> PathBuf {
+        match family {
+            Family::Clang => return self.dir.join("clang").join(format!("{}.pch", self.name)),
+            Family::Gcc => return self.dir.join("gcc").join(format!("{}.gch", self.name)),
+        }
+    }
+
+    /// What the sources take. GCC would quietly parse the header itself with a .gch it cannot use, it says so.
+    fn arguments(&self, family: Family) -> Vec<String> {
+        match family {
+            Family::Clang => return vec!["-include-pch".to_string(), self.binary(family).display().to_string()],
+            Family::Gcc => return vec!["-Winvalid-pch".to_string(), "-include".to_string(), self.input(family).display().to_string()],
+        }
+    }
+}
+
+/// The header that includes them: <vector> as it is, the module's own by their path
+fn precompiled_contents(headers: &[String], module_dir: &Path) -> String {
+    return headers.iter()
+        .map(|header| match header.starts_with('<') {
+            true => format!("#include {header}\n"),
+            false => format!("#include \"{}\"\n", module_dir.join(header).display().to_string().replace('\\', "/")),
+        })
+        .collect();
 }
 
 impl Compilation<'_> {
@@ -116,18 +185,119 @@ impl Compilation<'_> {
 
     /// The compiler with its arguments, without the depfile
     fn command_line(&self, source: &Path) -> Vec<String> {
-        let standard = match source.extension().is_some_and(|extension| extension == "c") {
-            true => format!("-std={}", self.c_standard),
-            false => format!("-std={}", self.cpp_standard),
-        };
+        let precompiled = self.precompiled_of(source)
+            .map(|precompiled| precompiled.arguments(self.family(source)))
+            .unwrap_or_default();
+        return self.line_with(source, precompiled);
+    }
 
+    /// What clangd gets: the header of the precompiled headers, not the file the compiler made of it
+    fn editor_line(&self, source: &Path) -> Vec<String> {
+        let precompiled = self.precompiled_of(source)
+            .map(|precompiled| vec!["-include".to_string(), precompiled.header().display().to_string()])
+            .unwrap_or_default();
+        return self.line_with(source, precompiled);
+    }
+
+    fn line_with(&self, source: &Path, precompiled: Vec<String>) -> Vec<String> {
         let mut line = self.compiler(source).to_vec();
-        line.push(standard);
+        line.push(self.standard(source));
         line.extend(self.flags.iter().cloned());
+        line.extend(precompiled);
         line.extend(["-c".to_string(), source.display().to_string()]);
         line.extend(["-o".to_string(), self.object(source).display().to_string()]);
 
         return line;
+    }
+
+    fn standard(&self, source: &Path) -> String {
+        match source.extension().is_some_and(|extension| extension == "c") {
+            true => return format!("-std={}", self.c_standard),
+            false => return format!("-std={}", self.cpp_standard),
+        }
+    }
+
+    fn family(&self, source: &Path) -> Family {
+        return Family::of(&self.toolchain.version(self.compiler(source)));
+    }
+
+    /// The precompiled headers a source takes: those of the sources in the module's language, C sources of
+    /// C++ modules take none
+    fn precompiled_of(&self, source: &Path) -> Option<Precompiled> {
+        let is_c = source.extension().is_some_and(|extension| extension == "c");
+
+        if self.precompiled_headers.is_empty() || is_c != (self.language == Language::C) {
+            return None;
+        }
+
+        let name = match self.language {
+            Language::C => "pch.h",
+            Language::Cpp => "pch.hpp",
+        };
+        return Some(Precompiled { dir: self.objects_dir.join("pch"), name });
+    }
+
+    /// Translates the precompiled headers once their header, a header that one includes, the flags or the
+    /// compiler changed. Before the sources, which compile again then.
+    fn precompile(&self, sources: &[PathBuf]) -> Result<(), String> {
+        let Some((source, precompiled)) = sources.iter().find_map(|source| self.precompiled_of(source).map(|precompiled| (source, precompiled))) else {
+            return Ok(());
+        };
+
+        for header in self.precompiled_headers {
+            if header.starts_with('<') != header.ends_with('>') {
+                return Err(format!("precompiled_headers: {header} is neither <header> of the system nor a path below the module"));
+            }
+            if !header.starts_with('<') && !self.module_dir.join(header).is_file() {
+                return Err(format!("precompiled_headers: there is no {header} below {}", self.module_dir.display()));
+            }
+        }
+
+        let family = self.family(source);
+        let compiler = self.compiler(source);
+        let binary = precompiled.binary(family);
+
+        // written only when they change: a new header would compile everything again
+        let contents = precompiled_contents(self.precompiled_headers, self.module_dir);
+        for header in [precompiled.header(), precompiled.input(family)] {
+            if fs::read_to_string(&header).ok().as_deref() != Some(contents.as_str()) {
+                system::write_file(&header, &contents)?;
+            }
+        }
+
+        let kind = match self.language {
+            Language::C => "c-header",
+            Language::Cpp => "c++-header",
+        };
+        let mut line = compiler.to_vec();
+        line.push(self.standard(source));
+        line.extend(self.flags.iter().cloned());
+        line.extend(["-x".to_string(), kind.to_string(), precompiled.input(family).display().to_string()]);
+        line.extend(["-o".to_string(), binary.display().to_string()]);
+
+        let recorded = RecordedCommand::new(binary.clone(), [vec![self.toolchain.version(compiler)], line.clone()].concat());
+        if recorded.is_up_to_date() {
+            return Ok(());
+        }
+
+        let tests = if self.tests { " of the tests" } else { "" };
+        system::log(self.module_name, &format!("Precompiling {} header(s){tests}", self.precompiled_headers.len()));
+
+        system::create_parent_dir(&binary)?;
+        let mut arguments = line[compiler.len()..].to_vec();
+        arguments.extend(["-MMD".to_string(), "-MF".to_string(), recorded.depfile.display().to_string()]);
+        if terminal::colors() {
+            arguments.push("-fdiagnostics-color=always".to_string());
+        }
+
+        let response_file = PathBuf::from(format!("{}.rsp", binary.display()));
+        let mut command = self.toolchain.command_with_arguments(compiler, &arguments, &response_file)?;
+        command.current_dir(self.module_dir);
+
+        let _compiler = COMPILERS.acquire();
+        system::run_command_in_one_piece(&mut command, "precompiling headers")?;
+
+        return recorded.record();
     }
 
     /// The command line after the version of its compiler, as the .o.line next to the object keeps it:
@@ -147,6 +317,8 @@ impl Compilation<'_> {
     /// The objects of all sources, and whether one had to be compiled
     pub fn run(&self) -> Result<(Vec<PathBuf>, bool), String> {
         let sources = self.sources();
+        self.precompile(&sources)?;
+
         let outdated: Vec<&PathBuf> =
             sources.iter()
                 .filter(|source| !self.is_up_to_date(source))
@@ -215,7 +387,22 @@ impl Compilation<'_> {
     }
 
     fn is_up_to_date(&self, source: &Path) -> bool {
-        return RecordedCommand::new(self.object(source), self.recorded_line(source)).is_up_to_date();
+        let object = self.object(source);
+
+        if !RecordedCommand::new(object.clone(), self.recorded_line(source)).is_up_to_date() {
+            return false;
+        }
+
+        // the depfile names the header of the precompiled headers, not the headers it includes
+        let Some(precompiled) = self.precompiled_of(source) else {
+            return true;
+        };
+        let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified());
+
+        return match (modified(&precompiled.binary(self.family(source))), modified(&object)) {
+            (Ok(precompiled), Ok(compiled)) => precompiled <= compiled,
+            _ => false,
+        };
     }
 
     /// For clangd, which finds build/compile_commands.json of the module from its sources
@@ -226,7 +413,7 @@ impl Compilation<'_> {
                 serde_json::json!({
                     "directory": self.module_dir,
                     "file": source,
-                    "arguments": self.command_line(source),
+                    "arguments": self.editor_line(source),
                     "output": self.object(source),
                 })
             })
@@ -369,7 +556,115 @@ fn linked_once(link_flags: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{depfile_inputs, linked_once};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::{Duration, SystemTime};
+
+    use super::{Compilation, Family, Language, Precompiled, depfile_inputs, linked_once, precompiled_contents};
+    use crate::common::system;
+    use crate::common::test_support::ScratchDir;
+    use crate::native::toolchain::Toolchain;
+
+    #[test]
+    fn clang_takes_its_pch_and_gcc_finds_its_gch_next_to_the_header() {
+        assert_eq!(Family::of("Apple clang version 16.0.0 (clang-1600.0.26.6)"), Family::Clang);
+        assert_eq!(Family::of("clang version 20.1.2"), Family::Clang);
+        assert_eq!(Family::of("g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"), Family::Gcc);
+
+        let precompiled = Precompiled { dir: PathBuf::from("/m/build/obj/m/debug/pch"), name: "pch.hpp" };
+        assert_eq!(precompiled.arguments(Family::Clang), ["-include-pch", "/m/build/obj/m/debug/pch/clang/pch.hpp.pch"]);
+        assert_eq!(precompiled.arguments(Family::Gcc), ["-Winvalid-pch", "-include", "/m/build/obj/m/debug/pch/gcc/pch.hpp"]);
+        assert_eq!(precompiled.binary(Family::Gcc), Path::new("/m/build/obj/m/debug/pch/gcc/pch.hpp.gch"));
+
+        // clangd reads the header, the file of another compiler is never next to it
+        assert_eq!(precompiled.header(), Path::new("/m/build/obj/m/debug/pch/pch.hpp"));
+        let headers = ["<vector>", "src/common.hpp"].map(String::from);
+        assert_eq!(precompiled_contents(&headers, Path::new("/m")), "#include <vector>\n#include \"/m/src/common.hpp\"\n");
+    }
+
+    /// Sets the times a build compares
+    fn modified_at(file: &Path, time: SystemTime) {
+        fs::File::options().write(true).open(file).unwrap().set_modified(time).unwrap();
+    }
+
+    fn modified(file: &Path) -> SystemTime {
+        return fs::metadata(file).unwrap().modified().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sources_compile_again_when_a_precompiled_header_changed() {
+        let directory = ScratchDir::new("precompiled");
+        let module = system::canonical_path(&directory).unwrap();
+        let file = |path: &str| module.join(path);
+
+        let long_ago = SystemTime::now() - Duration::from_secs(120);
+        for (path, text) in [
+            ("src/common.hpp", "#pragma once\n#include <string>\ninline int common() { return 1; }\n"),
+            ("src/a.cpp", "int a() { return common() + int(std::string(\"a\").size()); }\n"),
+            ("src/b.cpp", "int b() { return common(); }\n"),
+            ("src/plain.c", "int plain(void) { return 0; }\n"),
+        ] {
+            system::write_file(&file(path), text).unwrap();
+            modified_at(&file(path), long_ago);
+        }
+
+        let toolchain = Toolchain::named("system").unwrap();
+        let headers = ["<vector>", "src/common.hpp"].map(String::from);
+        let patterns = ["src/**".to_string()];
+        let build_dir = file("build");
+        let compilation = Compilation {
+            module_name: "m",
+            language: Language::Cpp,
+            toolchain: &toolchain,
+            module_dir: &module,
+            build_dir: &build_dir,
+            source_patterns: &patterns,
+            exclude_patterns: &[],
+            flags: vec![],
+            c_standard: "c17",
+            cpp_standard: "c++20",
+            objects_dir: build_dir.join("obj/m/debug"),
+            tests: false,
+            candidates: OnceLock::new(),
+            generated_sources: vec![],
+            precompiled_headers: &headers,
+        };
+
+        // the sources do not include common.hpp, they get it from the precompiled headers
+        let (objects, compiled) = compilation.run().unwrap();
+        assert!(compiled);
+        let [a, b, plain] = ["src/a.cpp", "src/b.cpp", "src/plain.c"].map(|source| compilation.object(&file(source)));
+        assert!(objects.contains(&a) && objects.contains(&plain));
+
+        let precompiled = compilation.precompiled_of(&file("src/a.cpp")).unwrap();
+        let binary = precompiled.binary(compilation.family(&file("src/a.cpp")));
+        assert!(binary.is_file(), "{} is missing", binary.display());
+        assert!(compilation.precompiled_of(&file("src/plain.c")).is_none(), "C sources of a C++ module take none");
+        assert!(!compilation.run().unwrap().1, "nothing changed");
+
+        // a header among them: they are translated again and the sources that take them compile again
+        let a_while_ago = SystemTime::now() - Duration::from_secs(60);
+        for output in [&binary, &a, &b, &plain] {
+            modified_at(output, a_while_ago);
+        }
+        system::write_file(&file("src/common.hpp"), "#pragma once\n#include <string>\ninline int common() { return 2; }\n").unwrap();
+
+        assert!(compilation.run().unwrap().1);
+        assert!(modified(&binary) > a_while_ago && modified(&a) > a_while_ago && modified(&b) > a_while_ago);
+        assert_eq!(modified(&plain), a_while_ago, "it takes no precompiled headers");
+        assert!(!compilation.run().unwrap().1, "up to date again");
+
+        // clangd gets the header, never the file of the compiler
+        let commands = compilation.compile_commands();
+        let arguments = commands.iter()
+            .find(|command| command["file"] == file("src/a.cpp").display().to_string())
+            .map(|command| command["arguments"].to_string())
+            .unwrap();
+        assert!(arguments.contains(&precompiled.header().display().to_string()), "{arguments}");
+        assert!(!arguments.contains(".pch") && !arguments.contains(".gch") && !arguments.contains("gcc/"), "{arguments}");
+    }
 
     #[test]
     fn libraries_are_linked_once_after_the_last_that_needs_them() {
