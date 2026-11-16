@@ -50,15 +50,16 @@ app = build_android(
 | `res_dirs`                    | `src/main/res`, `src/debug/res`                  | Android resources                                                                         |
 | `asset_dirs`                  | `src/main/assets`, `src/debug/assets`            | Assets                                                                                    |
 | `aidl_dirs`                   | `src/main/aidl`, `src/debug/aidl`                | AIDL interfaces                                                                           |
-| `cmake`                       | none                                             | `CMakeLists.txt` of native libraries, built with the NDK for every ABI                    |
-| `ndk_version`                 | `"28.2.13676358"`                                | NDK for `cmake`                                                                           |
+| `targets`                     | all four ABIs                                    | The ABIs of its native libraries, like `list("android-aarch64", "android-x86_64")`        |
+| `cmake`                       | none                                             | `CMakeLists.txt` of native libraries, built with the NDK for every ABI of `targets`       |
+| `ndk_version`                 | `"28.2.13676358"`                                | NDK for `cmake` and the libraries of `build_c` and `build_cpp`                            |
 | `build_tools`                 | `"36.1.0"`                                       | Version of the build tools                                                                |
 | `accept_sdk_license`          | `false`                                          | Accepts the SDK license where there is no terminal to ask                                 |
 | `android_test_dependencies`   | `[]`                                             | Libraries of the instrumented tests, like `androidTestImplementation`                     |
 | `android_test_source_dirs`    | `src/androidTest/kotlin`, `src/androidTest/java` | Instrumented tests                                                                        |
 | `test_instrumentation_runner` | `"androidx.test.runner.AndroidJUnitRunner"`      | Runner of the instrumented tests                                                          |
 
-> Native libraries come from `jniLibs`, from `cmake`, or from shared libraries of `build_c` and `build_cpp` among the `dependencies`, which the app builds for its ABIs and its `min_sdk`, see [cpp.md](cpp.md#shared-libraries-and-jni).
+> Native libraries come from `jniLibs`, from `cmake`, or from shared libraries of `build_c` and `build_cpp` among the `dependencies`, which the script builds for the ABIs of the app and its `min_sdk`, see [cpp.md](cpp.md#shared-libraries-and-jni). The apk takes those of its `targets`.
 
 Only `build_android`:
 

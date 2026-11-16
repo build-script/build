@@ -20,39 +20,41 @@ app = build_cpp(
 )
 ```
 
-A library goes to `build/lib/lib<name>.a`, a program to `build/bin/<name>`, which `build run` starts in its module directory. On Windows they are `build/lib/<name>.lib` and `build/bin/<name>.exe`. A script with C and C++ modules has both `use` lines.
+A library goes to `build/lib/lib<name>.a`, a program to `build/bin/<name>`, which `build run` starts in its module directory. On Windows they are `build/lib/<name>.lib` and `build/bin/<name>.exe`. For other systems a module builds into `build/<target>/`, see [Other targets](#other-targets). A script with C and C++ modules has both `use` lines.
 `build --release` builds with `-O2`, other builds with `-O0 -g`.
 
 ## Parameters
 
-| Parameter            | Default     | Meaning                                                                                                               |
-|----------------------|-------------|-----------------------------------------------------------------------------------------------------------------------|
-| `name`               | required    | Name of the module and of its library or program                                                                      |
-| `dependencies`       | required    | vcpkg ports, like `"fmt"`, and modules of the script                                                                  |
-| `program`            | `false`     | A program that `run` starts, otherwise a static library                                                               |
-| `shared`             | `false`     | A shared library, `lib<name>.dylib`, `.so` or `<name>.dll`, see [Shared libraries and JNI](#shared-libraries-and-jni) |
-| `jni`                | `false`     | `jni.h` of the JDK                                                                                                    |
-| `toolchain`          | `"system"`  | `"system"` or `"zig"`, see [Toolchains](#toolchains)                                                                  |
-| `cpp_standard`       | `"c++20"`   | `-std` of the C++ sources, only `build_cpp`                                                                           |
-| `c_standard`         | `"c17"`     | `-std` of the C sources                                                                                               |
-| `defines`            | `[]`        | `"NAME"` or `"NAME=value"`, for the module itself                                                                     |
-| `public_defines`     | `[]`        | Defines also for the modules depending on it                                                                          |
-| `flags`              | `[]`        | Further compiler flags, their paths relative to the module directory                                                  |
-| `link_flags`         | `[]`        | Further linker flags, like `"-framework", "Cocoa"`, also for the modules depending on a library                       |
-| `directory`          | `"."`       | Module directory, relative to the script                                                                              |
-| `sources`            | `"src/**"`  | Sources by pattern, see [Sources](#sources)                                                                           |
-| `exclude`            | `[]`        | Patterns of sources the module leaves out                                                                             |
-| `include_dirs`       | `include`   | Headers the modules depending on it see                                                                               |
-| `configured_headers` | `[]`        | Templates like `"src/config.h.in"`, see [Generated headers](#generated-headers)                                       |
-| `configured_values`  | `[]`        | Their values: `"NAME=value"`, or `"NAME"`, which is 1                                                                 |
-| `export_header`      | `""`        | `"cmark"` writes `cmark_export.h` with `CMARK_EXPORT`                                                                 |
-| `tablegen`           | `[]`        | Headers of TableGen, see [TableGen](#tablegen)                                                                        |
-| `test_dependencies`  | `[]`        | vcpkg ports and modules of the tests                                                                                  |
-| `test_sources`       | `"test/**"` | Test sources by pattern                                                                                               |
-| `test_exclude`       | `[]`        | Patterns of test sources the tests leave out                                                                          |
-| `test_programs`      | `[]`        | Patterns of test sources that are a program each, see [Tests](#tests)                                                 |
-| `test_arguments`     | `[]`        | Arguments of the test programs, like `"--order", "decl"` for Catch2                                                   |
-| `test_timeout`       | `600`       | Seconds a test program may run, then it is stopped and fails                                                          |
+| Parameter             | Default     | Meaning                                                                                                               |
+|-----------------------|-------------|-----------------------------------------------------------------------------------------------------------------------|
+| `name`                | required    | Name of the module and of its library or program                                                                      |
+| `dependencies`        | required    | vcpkg ports, like `"fmt"`, and modules of the script                                                                  |
+| `program`             | `false`     | A program that `run` starts, otherwise a static library                                                               |
+| `shared`              | `false`     | A shared library, `lib<name>.dylib`, `.so` or `<name>.dll`, see [Shared libraries and JNI](#shared-libraries-and-jni) |
+| `jni`                 | `false`     | `jni.h` of the JDK                                                                                                    |
+| `toolchain`           | `"auto"`    | `"auto"`, `"system"` or `"zig"`, see [Toolchains](#toolchains)                                                        |
+| `targets`             | `[]`        | The targets it is built for, like `"linux-aarch64"`, see [Other targets](#other-targets)                              |
+| `cpp_standard`        | `"c++20"`   | `-std` of the C++ sources, only `build_cpp`                                                                           |
+| `c_standard`          | `"c17"`     | `-std` of the C sources                                                                                               |
+| `precompiled_headers` | `[]`        | Headers every source needs, like `"<vector>"`, translated once, see [Precompiled headers](#precompiled-headers)       |
+| `defines`             | `[]`        | `"NAME"` or `"NAME=value"`, for the module itself                                                                     |
+| `public_defines`      | `[]`        | Defines also for the modules depending on it                                                                          |
+| `flags`               | `[]`        | Further compiler flags, their paths relative to the module directory                                                  |
+| `link_flags`          | `[]`        | Further linker flags, like `"-framework", "Cocoa"`, also for the modules depending on a library                       |
+| `directory`           | `"."`       | Module directory, relative to the script                                                                              |
+| `sources`             | `"src/**"`  | Sources by pattern, see [Sources](#sources)                                                                           |
+| `exclude`             | `[]`        | Patterns of sources the module leaves out                                                                             |
+| `include_dirs`        | `include`   | Headers the modules depending on it see                                                                               |
+| `configured_headers`  | `[]`        | Templates like `"src/config.h.in"`, see [Generated headers](#generated-headers)                                       |
+| `configured_values`   | `[]`        | Their values: `"NAME=value"`, or `"NAME"`, which is 1                                                                 |
+| `export_header`       | `""`        | `"cmark"` writes `cmark_export.h` with `CMARK_EXPORT`                                                                 |
+| `tablegen`            | `[]`        | Headers of TableGen, see [TableGen](#tablegen)                                                                        |
+| `test_dependencies`   | `[]`        | vcpkg ports and modules of the tests                                                                                  |
+| `test_sources`        | `"test/**"` | Test sources by pattern                                                                                               |
+| `test_exclude`        | `[]`        | Patterns of test sources the tests leave out                                                                          |
+| `test_programs`       | `[]`        | Patterns of test sources that are a program each, see [Tests](#tests)                                                 |
+| `test_arguments`      | `[]`        | Arguments of the test programs, like `"--order", "decl"` for Catch2                                                   |
+| `test_timeout`        | `600`       | Seconds a test program may run, then it is stopped and fails                                                          |
 
 > `.c` files compile with the C compiler and `c_standard`, `.cpp`, `.cc` and `.cxx` files with the C++ compiler.
 
@@ -141,16 +143,29 @@ build_kotlin("app", list(greeter), repositories, main_class = "com.example.MainK
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_NativeKt_greet(JNIEnv *env, jclass, jstring name) { ... }
 ```
 
-Android apps take it among their `dependencies` too: `build_android` builds it again with the clang of the NDK, for every ABI and the `min_sdk` of the app, into `build/android/<debug|release>/<abi>/lib<name>.so`, with libc++ inside, and packs it like the libraries of `jniLibs`:
+A library with [targets](#other-targets) goes into the jars of the Kotlin and Java modules depending on it, for each of its targets but those of Android: `META-INF/native/<target>/` with `lib<name>.so`, `lib<name>.dylib` or `<name>.dll`, also in the fat jar. build-script brings no loader: a program that runs from the jar alone copies the one of its system out of the jar and loads it with `System.load`. `run` and the tests load the one of this machine from `java.library.path`. A library without `targets` stays outside the jar.
+
+```kotlin
+// in the jar for three systems, run and the tests take the one of this machine
+greeter = build_cpp(
+    "greeter", list(), shared = true, jni = true, directory = "greeter",
+    targets = list(host_target(), "linux-x86_64", "windows-x86_64"),
+)
+```
+
+Android apps take it among their `dependencies` too and pack it like the libraries of `jniLibs`, for each of their ABIs. The script is evaluated for `android-aarch64`, `android-armv7`, `android-x86` and `android-x86_64`, or for the `targets` of the app, and those evaluations build it with the clang of the NDK into `build/android-<arch>/lib/lib<name>.so`, with libc++ inside:
 
 ```kotlin
 greeter = build_cpp("greeter", list(), shared = true, directory = "greeter")
 
-build_android("app", "com.example.app", list(greeter, ...), repositories)
+// arm64-v8a and x86_64, without targets all four ABIs
+build_android("app", "com.example.app", list(greeter, ...), repositories, targets = list("android-aarch64", "android-x86_64"))
 ```
 
-- For Android the library gets its own sources, headers and `defines`. `flags` and `link_flags` are for this machine, vcpkg ports and libraries of other modules are not built for Android yet.
-- The NDK is the `ndk_version` of the app, of `ANDROID_HOME`, else build-script installs it next to its Android SDK, once its license is accepted, like with `accept_sdk_license` of the app.
+- The libraries it links and its commands are built for the ABI too. vcpkg ports do not build for Android yet.
+- It links `liblog`, for `__android_log_print`.
+- The API level is the lowest `min_sdk` of the apps that pack it. The NDK is the `ndk_version` of that app, of `ANDROID_HOME`, else build-script installs it next to its Android SDK, once its license is accepted, like with `accept_sdk_license` of the app.
+- A library with `targets` of its own is packed for the ABIs both name. When its targets leave out this machine, it is not built for this machine either.
 
 ## Generated headers
 
@@ -207,6 +222,7 @@ jit = build_cpp("jit", list(llvm), program = true)
 | `link_flags`         | `[]`     | Further linker flags for the modules depending on it                                                                                            |
 
 - CMake and Ninja are those vcpkg downloads for its ports. The compilers are those of the system, or those `CC` and `CXX` name. On Windows clang, with the static C library of release builds, like the ports.
+- With `targets` it builds for other systems with zig, through a toolchain file of CMake, on macOS and Linux. Their builds name what they link with `libraries`, see [Other targets](#other-targets).
 - A source of `git()` builds once on the machine, in the cache: `caches/cmake/<name>-<hash>/`, its commit, options and compilers make the hash. Another project with the same LLVM takes it as it is. Other sources build into `build/cmake/<name>/` of the project. Both build for release, into `build/`, and install into `install/`.
 - The output of `compile_flags_from` is without `-std=`: the module depending on it has its own `cpp_standard`.
 - CMake configures again when the arguments changed, Ninja builds only what changed. The modules depending on it build again only when it built something.
@@ -254,20 +270,104 @@ standalone = build_cpp(
 - Modules install their ports one after another, because vcpkg gives up waiting for its lock.
 - A port brings all its libraries, `gtest` also brings gmock. Those whose names end in `main`, like `gtest_main`, only the tests take, when they have no `main()` of their own.
 - vcpkg needs `git`, and with the `system` toolchain the compiler of the system. CMake and Ninja it downloads itself.
+- For other systems vcpkg builds the ports with zig, as triplets named after the target, like `zig-linux-aarch64`. That works on macOS and Linux, not yet for Android.
 - On Windows vcpkg builds the ports with MSVC of Visual Studio, static and only for release, with the static C library: `x64-windows-static-release`. Debug builds link them too, clang links that C library by default. Flags of MSVC in their pkg-config files, like `/DNOMINMAX` of abseil, become those of clang. With `zig` vcpkg is not set up on Windows.
 
 ## Toolchains
 
-| `toolchain` | Compiles with                                                                                                                                                                                                                                                                                                                                     |
-|-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `"system"`  | `cc`, `c++` and `ar` of the system: Apple Clang of the Xcode Command Line Tools, gcc or clang on Linux. On Windows `clang`, `clang++` and `llvm-ar` of LLVM or of Visual Studio, with the ABI of MSVC: they link with the linker and the C library of Visual Studio, its Build Tools are enough. `CC`, `CXX` and `AR` name others, like for make. |
-| `"zig"`     | [zig](https://ziglang.org) `0.17.0`, downloaded once with a checked SHA-256. It brings clang, libc and libc++, which it links into the program. vcpkg builds the ports with zig too. On Windows it builds for MinGW and needs no Visual Studio.                                                                                                   |
+| `toolchain` | Compiles with                                                                                                                                                                                                                                                                                                                                                            |
+|-------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `"auto"`    | The default: `"system"` for this machine, `"zig"` for other systems, the clang of the NDK for Android.                                                                                                                                                                                                                                                                   |
+| `"system"`  | `cc`, `c++` and `ar` of the system: Apple Clang of the Xcode Command Line Tools, gcc or clang on Linux. On Windows `clang`, `clang++` and `llvm-ar` of LLVM or of Visual Studio, with the ABI of MSVC: they link with the linker and the C library of Visual Studio, its Build Tools are enough. `CC`, `CXX` and `AR` name others, like for make. Only for this machine. |
+| `"zig"`     | [zig](https://ziglang.org) `0.17.0`, downloaded once with a checked SHA-256. It brings clang, libc and libc++, which it links into the program. vcpkg builds the ports with zig too. On Windows it builds for MinGW and needs no Visual Studio. It builds for every system but Android.                                                                                  |
 
 > The system's compiler builds faster and links the system's libc++, zig is the same on every machine.
+
+## Other targets
+
+`targets` builds a module for other systems and processors, each into `build/<target>/`, inside like `build/`. The target of this machine builds into `build/` itself. A plain `build` builds them all, on every machine:
+
+```kotlin
+use cpp
+
+// no targets of its own: built for those of the modules that link it
+core = build_cpp("core", list(), directory = "core")
+
+// build/linux-aarch64/bin/tool, build/windows-x86_64/bin/tool.exe, ...
+tool = build_cpp(
+    "tool",
+    list(core),
+    program = true,
+    directory = "tool",
+    targets = list("linux-x86_64", "linux-aarch64", "macos-aarch64", "windows-x86_64"),
+)
+```
+
+| Targets                                                             | For                                                           |
+|---------------------------------------------------------------------|---------------------------------------------------------------|
+| `linux-x86_64`, `linux-aarch64`                                     | Linux with glibc, from other machines for glibc 2.28 or newer |
+| `linux-x86_64-musl`, `linux-aarch64-musl`                           | Linux with musl, the programs static                          |
+| `macos-aarch64`, `macos-x86_64`                                     | macOS                                                         |
+| `windows-x86_64`, `windows-aarch64`                                 | Windows                                                       |
+| `android-aarch64`, `android-armv7`, `android-x86`, `android-x86_64` | Android, the ABIs `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` |
+
+- A module without `targets` is built for this machine. When only modules for other targets need it, like a library they link, it is built for their targets and not for this machine.
+- `host_target()` names this machine: `targets = list(host_target(), "linux-aarch64")` builds for both.
+- The modules a module depends on are built for its target too: `tool` for `linux-aarch64` links `core` for `linux-aarch64`.
+- `build --target <name>` builds for that target instead of those the script names, every module that has targets or is built for this machine. It may be given several times, like for a matrix in CI.
+- Jars and Android apps are built once, for every target. Android apps name their ABIs with `targets`, see [Shared libraries and JNI](#shared-libraries-and-jni).
+- The script is evaluated once for every target. `operating_system()`, `architecture()` and `executable(name)` describe the target, `target()` names it, `host_operating_system()` and the other `host_` functions describe this machine, see [language.md](language.md#functions-every-script-has). So `if operating_system() == "windows"` holds for the build for Windows.
+- Every log line names the target: `[tool linux-aarch64] Compiling 2 C/C++ file(s)`. An error starts with it: `project.build:7:9 [linux-aarch64]: ...`.
+
+With `toolchain = "auto"`, the default, other systems build with zig and Android with the clang of the NDK, `"system"` builds only for this machine. zig builds programs for Windows with the ABI of MinGW. From other machines, programs for macOS build without the frameworks of the macOS SDK, like Cocoa. `jni = true` takes `jni.h` of the JDK and a `jni_md.h` of the target, which build-script writes into its cache when the JDK has none for that system.
+
+vcpkg ports and [CMake projects](#cmake-projects) build for other systems with zig too, on macOS and Linux, not yet for Android. Not for other targets:
+
+- `system_library`: the libraries of the system are those of this machine.
+- `compile_flags_from` and `link_flags_from` of `build_cmake`, which start a program of the installation: other targets name what they link with `libraries`.
+- `tablegen`.
+
+### Programs of other targets
+
+`build run --target <name>` and `build test --target <name>` build for that target and start its program or its tests. This machine starts them itself where it can: the programs of its own target, those of `macos-x86_64` on Apple silicon with Rosetta, of `windows-x86_64` on Windows on ARM, and of Linux for its processor, those of musl too. The others start through the runner the setting `runner.<target>` names: the program and its arguments come after it, `{directory}` in it is the module directory.
+
+```bash
+build config runner.linux-aarch64 'qemu-aarch64 -L /usr/aarch64-linux-gnu'
+build config runner.windows-x86_64 wine
+build config runner.linux-aarch64 'docker run --rm --platform linux/arm64 -v {directory}:{directory} -w {directory} debian'
+```
+
+- `run` and `test` take one `--target`.
+- Without a runner, programs this machine cannot start fail with what to set, like the `runner.linux-aarch64` above.
+- A runner that is set wins, also for programs this machine could start itself.
+- The tests of a `build_command`, like `go test`, are programs of this machine and start without a runner.
 
 ## Building again
 
 Every source compiles on its own, at the same time as the others. A source compiles again when it, one of its headers or its command line changed: the compiler names the headers in a depfile next to the object. Every module keeps its objects apart, its debug and release builds too.
+
+## Precompiled headers
+
+Headers every source includes, like those of the standard library, of Boost or of fmt, often take the compiler longer than the sources themselves. `precompiled_headers` names them: build-script translates them once, before the sources, and every source takes the result before its first line.
+
+```kotlin
+build_cpp(
+    "app",
+    list("fmt"),
+    program = true,
+    precompiled_headers = list("<string>", "<vector>", "<fmt/core.h>", "src/common.hpp"),
+)
+```
+
+- `<...>` is a header of the system or of a port, the others are paths relative to the module directory.
+- The sources need not include them. Those that do anyway get nothing twice, through `#pragma once` or their include guards.
+- `build_cpp` gives them to its C++ sources, `build_c` to its C sources. The `.c` files of a `build_cpp` module take none.
+- They are translated with the flags of the module, for debug and release, every target and the tests apart.
+- They are translated again when one of them, a header they include, the flags or the compiler changed, and every source that takes them compiles again.
+- clang, also that of zig and the NDK, takes a `.pch`, gcc a `.gch`. Where gcc cannot use its `.gch` it says so and reads the headers itself.
+- `compile_commands.json` names the header that includes them, which clangd reads like any header: the file of the compiler is not for clangd.
+- A macro a source defines before its first include, like `_GNU_SOURCE`, comes too late for headers that are already translated: such a macro goes into `defines`.
+- They pay off for modules with many sources. Translating them takes about as long as compiling one or two sources.
 
 ## Tests
 
@@ -305,16 +405,18 @@ Every module writes `build/compile_commands.json`, modules in one directory shar
 
 ## Outputs
 
-| Output            | Where                                                                                                     |
-|-------------------|-----------------------------------------------------------------------------------------------------------|
-| Library           | `build/lib/lib<name>.a`, on Windows `build/lib/<name>.lib`                                                |
-| Shared library    | `build/lib/lib<name>.dylib`, on Linux `.so`, on Windows `build/bin/<name>.dll` and `build/lib/<name>.lib` |
-| For Android       | `build/android/<build type>/<abi>/lib<name>.so`, the build type is debug or release                       |
-| Program           | `build/bin/<name>`, on Windows `<name>.exe`                                                               |
-| Test program      | `build/bin/<name>-test`, with `test_programs` `build/bin/<name>-<file>`                                   |
-| Test reports      | `build/test-results/<test program>/`                                                                      |
-| Generated headers | `build/generated/`                                                                                        |
-| Compile commands  | `build/compile_commands.json`                                                                             |
-| Ports of vcpkg    | `build/vcpkg/<triplet>/installed/`                                                                        |
+| Output              | Where                                                                                                     |
+|---------------------|-----------------------------------------------------------------------------------------------------------|
+| Library             | `build/lib/lib<name>.a`, on Windows `build/lib/<name>.lib`                                                |
+| Shared library      | `build/lib/lib<name>.dylib`, on Linux `.so`, on Windows `build/bin/<name>.dll` and `build/lib/<name>.lib` |
+| For Android         | `build/android-<arch>/lib/lib<name>.so`, like `build/android-aarch64/lib/libgreeter.so`                   |
+| For another target  | `build/<target>/`, inside like `build/`: `build/linux-aarch64/bin/<name>`                                 |
+| Program             | `build/bin/<name>`, on Windows `<name>.exe`                                                               |
+| Test program        | `build/bin/<name>-test`, with `test_programs` `build/bin/<name>-<file>`                                   |
+| Test reports        | `build/test-results/<test program>/`                                                                      |
+| Generated headers   | `build/generated/`                                                                                        |
+| Compile commands    | `build/compile_commands.json`                                                                             |
+| Precompiled headers | `build/obj/<name>/<build type>/pch/`, of the tests `build/obj/<name>/<build type>/test/pch/`              |
+| Ports of vcpkg      | `build/vcpkg/<triplet>/installed/`                                                                        |
 
 > Where a file is in the way of `build/`, like `BUILD` of Bazel, the outputs go to `.build/`, see [commands.md](commands.md#build-run-and-test).

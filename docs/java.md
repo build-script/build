@@ -67,6 +67,7 @@ dependencies = list(
 
 Libraries are resolved the way Gradle does it, from POMs and Gradle module metadata: the highest requested version wins, BOMs and constraints apply, exclusions count, and Kotlin Multiplatform and AndroidX libraries get their variant for the JVM or for Android.
 A module passes its libraries on to the modules that depend on it.
+Shared libraries of `build_c` and `build_cpp` among the dependencies are for `System.loadLibrary`: `run` and the tests find them, and the jar packs those with `targets` for each of them, see [cpp.md](cpp.md#shared-libraries-and-jni).
 
 `maven(url)` also takes a directory relative to the script. `maven_local()` is `~/.m2/repository`.
 

@@ -73,12 +73,15 @@ build_c("app", list(greeting), program = true)   // includes greeting.h
 | `test`               | `[]`     | What `build test` runs                                                                                       |
 | `test_timeout`       | `0`      | Seconds the tests may run, `0` for no limit                                                                  |
 | `always`             | `false`  | Runs on every build, for commands whose inputs cannot be named                                               |
+| `targets`            | `[]`     | The targets it runs for, each into `build/<target>/commands/<name>/`, see below                              |
 
 - `{output}` stands for `build/commands/<name>/` in `command`, `outputs`, `environment`, `path`, `run` and `test`. It is emptied before every run, so files of renamed sources do not stay behind.
 - The command runs again when its command line, an input, the environment, the result of a module it uses, or build-script itself changed, or when an output is missing. An output that it did not write fails the build.
 - `inputs` skip `build/` and hidden directories like `.git`. A pattern like `**/*.go` takes every Go file below `directory`.
-- A module in `command` stands for how it starts: a Java or Kotlin program with `main_class` for `java -jar` with its JDK, a C or C++ program or a library for its file, a command for its `run` or its first output.
+- A module in `command` stands for how it starts: a Java or Kotlin program with `main_class` for `java -jar` with its JDK, a C or C++ program or a library for its file, a command for its `run` or its first output. It is always the module of this machine, which runs the command.
 - `test` runs once the command is built. With `{test_reports}` in it, the test writes JUnit XML reports there and the summary counts their tests, otherwise its exit code decides. Tests that passed do not run again until the command or its tests change.
+
+With `targets` the command runs once for every target, with `{output}` in `build/<target>/commands/<name>/` and the script evaluated for that target, like for Go with the `GOOS` of the target. Without `targets` it runs for this machine. A module for another target that depends on it gets the command of this machine when the command is the same for that target, like a code generator, which then runs once. Otherwise the command runs for that target too. `build run --target` starts its `run` through the runner of the target, see [cpp.md](cpp.md#programs-of-other-targets).
 
 What other modules make of a command among their `dependencies`:
 
@@ -94,7 +97,7 @@ What other modules make of a command among their `dependencies`:
 
 ```kotlin
 url = "https://dl.google.com/go/go1.27.4.darwin-arm64.tar.gz"
-go = tool("go", "1.27.4", url, sha256_url = url + ".sha256") + "/bin/" + executable("go")
+go = tool("go", "1.27.4", url, sha256_url = url + ".sha256") + "/bin/" + host_executable("go")
 ```
 
 | Parameter    | Default  | Meaning                                                                                     |
@@ -105,6 +108,7 @@ go = tool("go", "1.27.4", url, sha256_url = url + ".sha256") + "/bin/" + executa
 | `sha256`     | `""`     | The SHA-256 of the archive                                                                  |
 | `sha256_url` | `""`     | A file with it: only the checksum, or lines of a checksum and a file name like `SHA256SUMS` |
 
+- A tool runs on this machine: a plugin picks its archive with `host_operating_system()` and `host_architecture()`, and its program with `host_executable()`. Those stay the same when the script is evaluated for another target.
 - The archive is checked before it is unpacked. A single directory at the top of the archive is dropped: the directory of `go1.27.4.darwin-arm64.tar.gz` is that of `go/`.
 - project.lock keeps the SHA-256 of every archive, `tool:go/1.27.4/go1.27.4.darwin-arm64.tar.gz sha256=...`. Without `sha256` and `sha256_url`, the first download is trusted and the lock keeps it, like the first build with a new Maven library.
 - Tools go next to the JDKs, `tools/<name>/<version>-<hash of the URL>/`, and `clean --cache` keeps them.
@@ -126,9 +130,14 @@ Every script has these, but plugins need them most:
 
 | Function                   | What it does                                                                                                     |
 |----------------------------|------------------------------------------------------------------------------------------------------------------|
-| `operating_system()`       | `"macos"`, `"linux"` or `"windows"`                                                                              |
-| `architecture()`           | `"aarch64"` or `"x86_64"`                                                                                        |
-| `executable(name)`         | `name`, on Windows `name.exe`                                                                                    |
+| `operating_system()`       | `"macos"`, `"linux"`, `"windows"` or `"android"`, of the target the script is evaluated for                      |
+| `architecture()`           | `"aarch64"`, `"x86_64"`, `"armv7"` or `"x86"`, of that target                                                    |
+| `executable(name)`         | `name`, for Windows `name.exe`                                                                                   |
+| `target()`                 | The target, like `"linux-aarch64"`                                                                               |
+| `host_operating_system()`  | The same for the machine build-script runs on, for the tools a plugin downloads                                  |
+| `host_architecture()`      | Its processor                                                                                                    |
+| `host_executable(name)`    | A program on it                                                                                                  |
+| `host_target()`            | Its target                                                                                                       |
 | `cache_directory(name)`    | A directory in build-script's cache for the caches of a tool, like the modules of Go. `clean --cache` removes it |
 | `read_file(path, default)` | The content of a file relative to the script, `default` when there is none                                       |
 | `match(text, pattern)`     | The first group of a regular expression, like the version in `go.mod`                                            |

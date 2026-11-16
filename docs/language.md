@@ -83,9 +83,14 @@ A plugin is itself a script. It runs once, in a scope of its own, and the script
 | `env(name, default = ...)` | An environment variable, an error when it is not set and there is no default                    |
 | `has_env(name)`            | Whether an environment variable is set                                                          |
 | `git(url, commit)`         | A commit of a repository, checked out into the cache, see below                                 |
-| `operating_system()`       | The system build-script runs on: `"macos"`, `"linux"` or `"windows"`                            |
-| `architecture()`           | The processor build-script runs on: `"aarch64"` or `"x86_64"`                                   |
-| `executable(name)`         | The name of a program on this system: `name`, on Windows `name.exe`                             |
+| `operating_system()`       | The system the script is evaluated for: `"macos"`, `"linux"`, `"windows"` or `"android"`        |
+| `architecture()`           | Its processor: `"aarch64"`, `"x86_64"`, `"armv7"` or `"x86"`                                    |
+| `executable(name)`         | The name of a program on that system: `name`, on Windows `name.exe`                             |
+| `target()`                 | The target the script is evaluated for, like `"linux-aarch64"`, see below                       |
+| `host_target()`            | The target of the machine build-script runs on                                                  |
+| `host_operating_system()`  | The system build-script runs on, like `operating_system()`                                      |
+| `host_architecture()`      | The processor build-script runs on                                                              |
+| `host_executable(name)`    | The name of a program on the machine build-script runs on                                       |
 | `read_file(path, default)` | The content of a file, relative to the script, `default` when it does not exist                 |
 | `match(text, pattern)`     | The first group of a regular expression in `text`, the whole match without groups, `""` without |
 | `fail(message)`            | Stops the build with this message                                                               |
@@ -101,6 +106,8 @@ fmt = build_cpp("fmt", list(), directory = git("https://github.com/fmtlib/fmt", 
 ```
 
 The commit is best given as its whole hash, which is then checked. A tag like `"v1.3.1"` works too: project.lock keeps the commit it pointed to, and a tag that was moved since stops the build.
+
+A script is evaluated once for every target its modules are built for, see [cpp.md](cpp.md#other-targets): first for this machine, then for the others, like those of `targets` and the ABIs of Android apps with libraries of C and C++. `operating_system()`, `architecture()`, `executable()` and `target()` describe the target of each evaluation, the `host_` functions always the machine build-script runs on. For this machine both describe the same. Plugins download their tools with the `host_` functions, which run on this machine, see [plugins.md](plugins.md#tool).
 
 The functions of a language come with its `use`, see [java.md](java.md), [kotlin.md](kotlin.md), [android.md](android.md) and [cpp.md](cpp.md).
 
@@ -163,3 +170,4 @@ build("app", toolchain = "locl")       // error: must be "auto" | "local", got "
 - A value that is none of them is an error, which suggests the nearest one for a typo.
 - They mix with other types: `"auto" | int` takes the string `"auto"` or any number.
 - A string twice in one union, or a string next to `str`, which takes it anyway, is an error.
+- `target` is the union of the names of the targets: a parameter `targets: list<target>` takes `list("linux-aarch64")`, and `list("linux-arm64")` is an error that lists the names.

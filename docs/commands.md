@@ -33,6 +33,7 @@
 - A module builds into `build/` in its directory. Where a file is in the way, like a `BUILD` file of Bazel on macOS, which does not tell upper and lower case apart, it builds into `.build/`.
 - `--refresh` asks the repositories again: Maven repositories for newer SNAPSHOT builds, which [project.lock](#projectlock) keeps otherwise, and for the versions `install` offers, which are kept a day otherwise. Plugins move to their newest release of the same major version.
 - `--release` builds Android apps and C and C++ modules for release, only with `build` and `run`. See [android.md](android.md#release-builds).
+- `--target <name>` builds for that target instead of the targets the script names, see [cpp.md](cpp.md#other-targets). `build` takes it several times, `run` and `test` once: they start the programs of that target, this machine itself where it can, otherwise through `runner.<target>`, see [cpp.md](cpp.md#programs-of-other-targets).
 - `run` starts the module `--module` names, otherwise the last one that can start: one with a `main_class`, an Android app, a C or C++ program, or a `build_command` with a `run`. Jars start with the JDK they were built with, in their module directory, C and C++ programs too. Android apps are installed on a device, see [android.md](android.md).
 - `test` builds everything first, then runs the tests module by module. A failing module does not stop the others. Arguments after `--` go to the test programs of C and C++ modules, like `--gtest_filter=Lexer.*`. At the end it lists every module, and exits with 1 when one failed:
 
@@ -155,16 +156,18 @@ The first build writes `project.lock` next to the script, like `Cargo.lock`. Kee
 
 The settings are in the file `settings` next to the downloads, one `name = value` per line.
 
-| Setting           | Meaning                                                                                   |
-|-------------------|-------------------------------------------------------------------------------------------|
-| `domain`          | Your domain, like `mvmo.dev`: the packages of new modules start with it                   |
-| `remember_domain` | `never`: `new` and `add` do not offer to remember the domain                              |
-| `mirror.<URL>`    | Another URL for tools whose URL starts with `<URL>`, see [plugins.md](plugins.md#mirrors) |
+| Setting           | Meaning                                                                                                               |
+|-------------------|-----------------------------------------------------------------------------------------------------------------------|
+| `domain`          | Your domain, like `mvmo.dev`: the packages of new modules start with it                                               |
+| `remember_domain` | `never`: `new` and `add` do not offer to remember the domain                                                          |
+| `mirror.<URL>`    | Another URL for tools whose URL starts with `<URL>`, see [plugins.md](plugins.md#mirrors)                             |
+| `runner.<target>` | What starts the programs of a target this machine does not run itself, see [cpp.md](cpp.md#programs-of-other-targets) |
 
 ```bash
 build config domain mvmo.dev                                         # remembers the domain
 build config --unset remember_domain                                 # offers to remember it again
 build config mirror.https://dl.google.com/go/ https://mirror.example.com/go/
+build config runner.linux-aarch64 'qemu-aarch64 -L /usr/aarch64-linux-gnu'
 ```
 
 ## Where downloads go
