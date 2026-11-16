@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::command::{self, CommandOutput};
+use crate::common::runner::Runner;
 use crate::jvm::{self, JvmOutput};
 use crate::native::NativeOutput;
 use crate::language::lexer::Span;
@@ -104,12 +105,13 @@ pub enum ModuleOutput {
     Command(CommandOutput),
 }
 
-/// Starts what a module built and returns the exit code for the process
-pub fn launch(module: &BuiltModule, args: &[String]) -> Result<i32, String> {
+/// Starts what a module built and returns the exit code for the process. A program of another target starts
+/// through `runner`, jars run on the machine's JVM.
+pub fn launch(module: &BuiltModule, args: &[String], runner: &Runner) -> Result<i32, String> {
     match &module.output {
         ModuleOutput::Jvm(output) => return jvm::launch(module, output, args),
-        ModuleOutput::Native(output) => return crate::native::launch(module, output, args),
-        ModuleOutput::Command(output) => return command::launch(module, output, args),
+        ModuleOutput::Native(output) => return crate::native::launch(module, output, args, runner),
+        ModuleOutput::Command(output) => return command::launch(module, output, args, runner),
     }
 }
 

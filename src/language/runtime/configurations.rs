@@ -14,40 +14,41 @@ pub struct Evaluations {
     pub others: Vec<Runtime>,
     /// the first error of an evaluation, described by its runtime: no evaluation follows it
     pub error: Option<String>,
-    /// run and test: the modules of the machine are those to run, the others are built for what packs them
-    for_the_machine: bool,
+    /// run and test: the targets whose modules they run, the others are built for what packs them
+    ran: Option<Vec<Target>>,
 }
 
 /// What a build is for
 pub struct Wanted<'a> {
-    /// build --target: those instead of the targets the script names
+    /// build --target: those instead of the targets the script names, run and test --target: the one they run
     pub targets: &'a [Target],
-    /// run and test: every module for the machine, which runs them, and no other targets
-    pub for_the_machine: bool,
+    /// run and test: every module for the target they run, the machine without --target, and of the other
+    /// targets only what modules for that one pack
+    pub runs: bool,
 }
 
 /// Evaluates the script for the machine, then for the other targets. `runtime_for` makes the runtime of a
 /// target with what the command line gives, none is the machine.
 pub fn evaluate(script: &Script, wanted: Wanted, runtime_for: impl Fn(Option<Target>) -> Runtime) -> Evaluations {
-    let Wanted { targets, for_the_machine } = wanted;
+    let Wanted { targets, runs } = wanted;
 
     // the machine first: the modules built once for every target and the programs builds run come from it
-    let machine_requests = match (for_the_machine, targets.is_empty()) {
-        (true, _) => Requests::All,
+    let machine_requests = match (runs, targets.is_empty()) {
+        (true, true) => Requests::All,
         (false, true) => Requests::Declared,
-        (false, false) if targets.iter().any(Target::is_host) => Requests::All,
-        (false, false) => Requests::HostOnly,
+        (_, false) if targets.iter().any(Target::is_host) => Requests::All,
+        (_, false) => Requests::HostOnly,
     };
     let mut machine = runtime_for(None).with_requests(machine_requests);
     let mut error = machine.run(script).err().map(|error| machine.describe(&error));
 
-    let mut others: Vec<(Target, Requests)> = match (for_the_machine, targets.is_empty()) {
-        (true, _) => vec![],
+    let mut others: Vec<(Target, Requests)> = match (runs, targets.is_empty()) {
+        (true, true) => vec![],
         (false, true) => machine.declared_targets()
             .into_iter()
             .map(|target| (target, Requests::Declared))
             .collect(),
-        (false, false) => targets.iter()
+        (_, false) => targets.iter()
             .filter(|target| !target.is_host())
             .map(|target| (*target, Requests::All))
             .collect(),
@@ -79,20 +80,30 @@ pub fn evaluate(script: &Script, wanted: Wanted, runtime_for: impl Fn(Option<Tar
     let without_module = machine.fail_forwards_without_module();
     let error = error.or_else(|| (!without_module.is_empty()).then(|| without_module.join("\n")));
 
-    return Evaluations { machine, others: evaluations, error, for_the_machine };
+    // run and test get the modules of the target they run
+    let ran = match (runs, targets.is_empty()) {
+        (false, _) => None,
+        (true, true) => Some(vec![Target::host()]),
+        (true, false) => Some(targets.to_vec()),
+    };
+
+    return Evaluations { machine, others: evaluations, error, ran };
 }
 
 impl Evaluations {
     /// Waits for the builds still running: the modules of every target, the machine's first, for run and test
-    /// only those of the machine, or why builds failed. Builds that started before an error finish, none of
-    /// their tools keep running.
+    /// only those of the target they run, or why builds failed. Builds that started before an error finish,
+    /// none of their tools keep running.
     pub fn finish(&self) -> Result<Vec<Arc<BuiltModule>>, Vec<String>> {
         let mut modules = vec![];
         let mut errors: Vec<String> = self.error.iter().cloned().collect();
 
-        for (index, runtime) in std::iter::once(&self.machine).chain(&self.others).enumerate() {
+        for runtime in std::iter::once(&self.machine).chain(&self.others) {
+            let target = runtime.context.target.unwrap_or_else(Target::host);
+            let ran = self.ran.as_ref().is_none_or(|ran| ran.contains(&target));
+
             match runtime.finish() {
-                Ok(built) if index == 0 || !self.for_the_machine => modules.extend(built),
+                Ok(built) if ran => modules.extend(built),
                 Ok(_) => {}
                 Err(failed) => errors.extend(failed.iter().map(|error| runtime.describe(error))),
             }

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::lock;
+use common::runner::{RUNNER, Runner};
 use common::settings::Settings;
 use common::target::Target;
 use common::terminal::{self, Color};
@@ -40,7 +41,8 @@ const BUILD_OPTIONS: &[&str] = &["--jobs", "--refresh", "--release", "--target"]
 const BUILD_OPTIONS_USAGE: &str = "build, run and test take --jobs <n>, the number of modules built at the same time;
 they and install take --refresh, which asks the repositories again for the newest
 versions and SNAPSHOTs; build and run take --release, which builds Android apps for release;
-build takes --target <name>, once per target, for those instead of the targets the script names";
+build takes --target <name>, once per target, for those instead of the targets the script names,
+run and test take one, whose programs this machine starts itself or through runner.<target>";
 
 /// what commands without a script argument build
 const DEFAULT_SCRIPT: &str = "project.build";
@@ -489,10 +491,13 @@ fn help() -> String {
   idea    builds and sets the project up for IntelliJ: a module file per module in .idea,
           every build after keeps them current
   run     builds, then starts a module: the last one with a main_class or the last
-          Android app, or the one --module names; arguments after -- go to the program
+          Android app, or the one --module names; arguments after -- go to the program;
+          with --target a program of that target, through runner.<target> unless this
+          machine starts it itself like programs of macos-x86_64 on Apple silicon
   test    builds, then compiles and runs the tests of every module, or of one; failing
           tests do not stop the others, a summary of all of them follows; arguments
-          after -- go to the test programs of C and C++ modules
+          after -- go to the test programs of C and C++ modules; with --target those of
+          that target, started like by run
   clean   removes the build directories build-script wrote below the script's
           directory, the downloads stay; --cache removes the downloads and what was
           made of them, the JDKs, SDKs and toolchains stay
@@ -505,7 +510,8 @@ fn help() -> String {
           C++ module; --module picks one in scripts with several, these pick another
           list than dependencies:
           {}
-  config  shows or changes what new and add remember, like your domain:
+  config  shows or changes what new and add remember, like your domain, where tools come
+          from (mirror.<URL>) and how programs of other targets run (runner.<target>):
           {}
   plugins lists the official plugins with their templates: use <name> in a script loads
           one, new <name> <path> starts a project from its template
@@ -540,14 +546,8 @@ fn main() {
         std::process::exit(2);
     });
 
-    // tests run against debug builds, like with the Android Gradle plugin
-    if options.release && !matches!(command, Command::Build { .. } | Command::Run { .. }) {
-        eprintln!("--release only goes with build and run, tests run against debug builds");
-        std::process::exit(2);
-    }
-
-    if !options.targets.is_empty() && !matches!(command, Command::Build { .. }) {
-        eprintln!("--target only goes with build: run and test build for this machine");
+    if let Err(error) = options_fit(&command, &options) {
+        eprintln!("{error}");
         std::process::exit(2);
     }
 
@@ -643,10 +643,11 @@ fn main() {
                 .map(|(name, _)| *name)
                 .collect();
 
-            // config alone shows them all, config --unset asks which; mirrors have names of their own
+            // config alone shows them all, config --unset asks which; mirrors and runners have names of their own
             let setting = match (setting, unset) {
                 (None, false) => None,
                 (Some(mirror), _) if mirror.starts_with(project::MIRROR) => Some(mirror.clone()),
+                (Some(runner), _) if runner.starts_with(RUNNER) => Some(runner.clone()),
                 _ => Some(argument("config", setting.as_deref(), "setting", &settings)),
             };
 
@@ -696,7 +697,8 @@ fn main() {
             ..BuildRequest::of(script)
         },
         Command::Run { script, .. } => BuildRequest {
-            for_the_machine: true,
+            targets: options.targets.clone(),
+            runs: true,
             ..BuildRequest::of(script)
         },
         Command::Idea { script } => BuildRequest {
@@ -706,7 +708,8 @@ fn main() {
         Command::Test { script, module, args } => BuildRequest {
             tests: module.clone().map_or(TestSelection::All, TestSelection::Module),
             test_arguments: args.clone(),
-            for_the_machine: true,
+            targets: options.targets.clone(),
+            runs: true,
             ..BuildRequest::of(script)
         },
     };
@@ -716,11 +719,35 @@ fn main() {
 
     match &command {
         Command::Run { module, args, .. } => {
-            std::process::exit(run_module(&modules, module.as_deref(), args))
+            // the programs of another target start through its runner, unless this machine runs them itself
+            let runner = match options.targets.first() {
+                Some(target) => exit_on_error(Runner::for_target(*target).map_err(|error| format!("run: {error}"))),
+                None => Runner::direct(),
+            };
+            std::process::exit(run_module(&modules, module.as_deref(), args, &runner))
         }
         Command::Test { module, .. } => std::process::exit(run_tests(&modules, module.as_deref())),
         _ => {}
     }
+}
+
+/// Whether the command takes the build options it was given
+fn options_fit(command: &Command, options: &BuildOptions) -> Result<(), String> {
+    // tests run against debug builds, like with the Android Gradle plugin
+    if options.release && !matches!(command, Command::Build { .. } | Command::Run { .. }) {
+        return Err("--release only goes with build and run, tests run against debug builds".to_string());
+    }
+
+    if !options.targets.is_empty() && !matches!(command, Command::Build { .. } | Command::Run { .. } | Command::Test { .. }) {
+        return Err("--target only goes with build, run and test".to_string());
+    }
+
+    // a program runs for one target, which runs it
+    if options.targets.len() > 1 && matches!(command, Command::Run { .. } | Command::Test { .. }) {
+        return Err("run and test take one --target, whose programs they start".to_string());
+    }
+
+    return Ok(());
 }
 
 /// What the commands that build take besides their own arguments
@@ -799,10 +826,10 @@ struct BuildRequest<'a> {
     test_arguments: Vec<String>,
     /// build idea: every build after keeps IntelliJ current
     set_up_idea: bool,
-    /// build --target: those instead of the targets the script names
+    /// build --target: those instead of the targets the script names, run and test --target: the one they run
     targets: Vec<Target>,
-    /// run and test: every module for the machine, which runs them, and no other targets
-    for_the_machine: bool,
+    /// run and test: every module for the target they run, the machine without --target
+    runs: bool,
 }
 
 impl<'a> BuildRequest<'a> {
@@ -813,14 +840,14 @@ impl<'a> BuildRequest<'a> {
             test_arguments: vec![],
             set_up_idea: false,
             targets: vec![],
-            for_the_machine: false,
+            runs: false,
         };
     }
 }
 
 /// The modules the script built, the builds of independent modules ran in parallel
 fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<BuiltModule>> {
-    let BuildRequest { script: script_path, tests, test_arguments, set_up_idea, targets, for_the_machine } = request;
+    let BuildRequest { script: script_path, tests, test_arguments, set_up_idea, targets, runs } = request;
 
     let source = std::fs::read_to_string(script_path).unwrap_or_else(|error| {
         match error.kind() {
@@ -853,12 +880,17 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     exit_on_error(lock::open(Path::new(script_path), common::refresh::REFRESHED_AT.get().is_some()));
     let idea = exit_on_error(jvm::before_build(&project_dir, set_up_idea, release));
 
-    // the tests run on the machine, the evaluations for other targets build without them
-    let wanted = configurations::Wanted { targets: &targets, for_the_machine };
+    // the tests are those of the target test runs, the machine's without --target, the other evaluations build
+    // without them
+    let wanted = configurations::Wanted { targets: &targets, runs };
+    let tested = |target: Option<Target>| match targets.first() {
+        Some(tested) => *tested == target.unwrap_or_else(Target::host),
+        None => target.is_none(),
+    };
     let evaluations = configurations::evaluate(&script, wanted, |target| {
         Runtime::new(project_dir.clone())
             .with_script(Path::new(script_path), &source)
-            .with_tests(if target.is_none() { tests.clone() } else { TestSelection::None })
+            .with_tests(if tested(target) { tests.clone() } else { TestSelection::None })
             .with_test_arguments(test_arguments.clone())
             .with_jobs(jobs)
             .with_release(release)
@@ -929,10 +961,20 @@ fn config(setting: Option<&str>, value: Option<&str>, unset: bool) -> Result<(),
             println!("  {}<URL> is not set (where tools whose URL starts with it come from instead)", project::MIRROR);
         }
 
+        let runners = settings.with_prefix(RUNNER);
+        for (target, runner) in &runners {
+            println!("  {RUNNER}{target} = {runner}");
+        }
+
+        if runners.is_empty() {
+            println!("  {RUNNER}<target> is not set (what starts the programs of a target this machine does not run itself)");
+        }
+
         return Ok(());
     };
 
-    if !project::SETTINGS.iter().any(|(name, _)| *name == setting) && !setting.starts_with(project::MIRROR) {
+    let named = setting.starts_with(project::MIRROR) || setting.starts_with(RUNNER);
+    if !project::SETTINGS.iter().any(|(name, _)| *name == setting) && !named {
         // the same message as for a value
         return project::checked_setting(setting, "").map(|_| ());
     }
@@ -965,7 +1007,7 @@ fn exit_on_error<T>(result: Result<T, String>) -> T {
 }
 
 /// Starts a module the script built and returns the exit code for the process
-fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -> i32 {
+fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String], runner: &Runner) -> i32 {
     let module = match name {
         Some(name) => built.iter().rev().find(|module| module.name == name),
         None => built.iter().rev().find(|module| module.can_launch()),
@@ -985,7 +1027,7 @@ fn run_module(built: &[Arc<BuiltModule>], name: Option<&str>, args: &[String]) -
         println!("{} Running {}", terminal::paint(">", Color::Primary), module.name);
     }
 
-    match runtime::launch(module, args) {
+    match runtime::launch(module, args, runner) {
         Ok(code) => return code,
         Err(error) => {
             eprintln!("run: {error}");
@@ -1514,5 +1556,27 @@ mod tests {
             ))
         );
         assert!(take_build_options(&args(&["test", "--jobs", "0"])).is_err());
+    }
+
+    #[test]
+    fn run_and_test_take_one_target() {
+        let target = |names: &[&str]| BuildOptions {
+            targets: names.iter().map(|name| Target::named(name).unwrap()).collect(),
+            ..BuildOptions::default()
+        };
+        let run = parse_args(&["run".to_string()]).unwrap();
+        let test = parse_args(&["test".to_string()]).unwrap();
+        let build = parse_args(&["build".to_string()]).unwrap();
+        let clean = parse_args(&["clean".to_string()]).unwrap();
+
+        assert_eq!(options_fit(&run, &target(&["macos-x86_64"])), Ok(()));
+        assert_eq!(options_fit(&test, &target(&["linux-aarch64"])), Ok(()));
+        assert_eq!(options_fit(&build, &target(&["linux-aarch64", "windows-x86_64"])), Ok(()));
+        assert_eq!(
+            options_fit(&run, &target(&["linux-aarch64", "windows-x86_64"])),
+            Err("run and test take one --target, whose programs they start".to_string())
+        );
+        assert_eq!(options_fit(&clean, &target(&["linux-aarch64"])), Err("--target only goes with build, run and test".to_string()));
+        assert!(options_fit(&test, &BuildOptions { release: true, ..BuildOptions::default() }).is_err());
     }
 }

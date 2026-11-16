@@ -6,6 +6,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::runner::Runner;
 use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
 use crate::jvm::JvmLaunch;
@@ -268,15 +269,13 @@ impl CommandSpec {
 }
 
 /// `build-script run` of a command: its `run` with the arguments after --, in its directory
-pub fn launch(module: &BuiltModule, output: &CommandOutput, args: &[String]) -> Result<i32, String> {
+pub fn launch(module: &BuiltModule, output: &CommandOutput, args: &[String], runner: &Runner) -> Result<i32, String> {
     let Some((program, arguments)) = output.run.split_first() else {
         return Err(format!("{} has nothing to run, build_command(run = ...) names what", module.name));
     };
 
-    let mut process = Command::new(program);
-    process.args(arguments)
-        .args(args)
-        .current_dir(&module.directory);
+    let mut process = runner.command(Path::new(program), &module.directory);
+    process.args(arguments).args(args);
     set_environment(&mut process, &output.environment, &output.path)?;
 
     return system::run_interactive(&mut process);

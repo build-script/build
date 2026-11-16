@@ -1,8 +1,9 @@
-// What every language category uses: the host system, the targets, up-to-date checks, XML, sources from git,
-// questions in the terminal
+// What every language category uses: the host system, the targets and how their programs run, up-to-date checks,
+// XML, sources from git, questions in the terminal
 pub mod git;
 pub mod lock;
 pub mod refresh;
+pub mod runner;
 pub mod semaphore;
 pub mod settings;
 pub mod system;

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::common::runner::Runner;
 use crate::jvm::{JvmOutput, maven};
 use crate::language::parser::Parser;
 
@@ -753,7 +754,7 @@ fn built_modules_are_remembered_for_run() {
 
     assert_eq!(names, ["core", "app"]);
 
-    let error = launch(&built[0], &[]).unwrap_err();
+    let error = launch(&built[0], &[], &Runner::direct()).unwrap_err();
     assert!(error.contains("core cannot be run"), "{error}");
 }
 
@@ -952,7 +953,7 @@ fn build_for(directory: &std::path::Path, source: &str, targets: &[Target]) -> R
     let script = Parser::new(source)
         .parse_script()
         .expect("script should parse");
-    let wanted = configurations::Wanted { targets, for_the_machine: false };
+    let wanted = configurations::Wanted { targets, runs: false };
     let evaluations = configurations::evaluate(&script, wanted, |target| {
         Runtime::new(directory)
             .with_script(std::path::Path::new("project.build"), source)
@@ -1139,7 +1140,7 @@ fn apps_pack_the_libraries_their_android_targets_build() {
 
     let build = |source: &str| {
         let script = Parser::new(source).parse_script().unwrap();
-        let wanted = configurations::Wanted { targets: &[], for_the_machine: false };
+        let wanted = configurations::Wanted { targets: &[], runs: false };
         return configurations::evaluate(&script, wanted, runtime_for).finish();
     };
 
@@ -1214,7 +1215,7 @@ fn jars_pack_the_libraries_for_the_targets_they_name() {
     let build = |source: &str| {
         BUILT.lock().unwrap().clear();
         let script = Parser::new(source).parse_script().unwrap();
-        let wanted = configurations::Wanted { targets: &[], for_the_machine: false };
+        let wanted = configurations::Wanted { targets: &[], runs: false };
         return configurations::evaluate(&script, wanted, runtime_for).finish();
     };
 
@@ -1252,12 +1253,62 @@ fn jars_pack_the_libraries_for_the_targets_they_name() {
     // run and test get the modules of the machine, the jar still packs those of the other targets
     let source = "greeter = build_c(\"greeter\", targets = list(host_target(), \"linux-aarch64\"))\nbuild_kotlin(\"app\", list(greeter))";
     let script = Parser::new(source).parse_script().unwrap();
-    let wanted = configurations::Wanted { targets: &[], for_the_machine: true };
+    let wanted = configurations::Wanted { targets: &[], runs: true };
     let modules = configurations::evaluate(&script, wanted, runtime_for).finish().unwrap();
     let mut names: Vec<String> = modules.iter().map(|module| format!("{} {}", module.name, module.artifact.display())).collect();
     names.sort();
     assert_eq!(names, ["app app.jar".to_string(), format!("greeter {host}/libgreeter.so")]);
     assert!(PACKED.lock().unwrap().contains(&"linux-aarch64 linux-aarch64/libgreeter.so".to_string()));
+}
+
+#[test]
+fn run_and_test_get_the_modules_of_their_target() {
+    static BUILT: Mutex<Vec<String>> = Mutex::new(vec![]);
+
+    fn build_c(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        let name: String = args.get("name")?;
+        BUILT.lock().unwrap().push(format!("{name} {}", context.target().name()));
+        let mut module = Arc::try_unwrap(finished_module(&name)).unwrap();
+        module.artifact = PathBuf::from(format!("{}/{name}", context.target().name()));
+        return Ok(Value::from(Arc::new(module)));
+    }
+
+    let runtime_for = |target: Option<Target>| {
+        let mut runtime = Runtime::new(".").with_script(std::path::Path::new("project.build"), "").with_target(target).with_jobs(1);
+        let parameters = FunctionParameters::new()
+            .required("name", Type::String)
+            .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
+            .returns(Type::Module);
+        let (name, value) = builtin("build_c", parameters, build_c);
+        runtime.define(name, value);
+        return runtime;
+    };
+
+    // what run and test get, what was built
+    let run = |targets: &[Target]| {
+        BUILT.lock().unwrap().clear();
+        let script = Parser::new("build_c(\"tool\", targets = list(\"windows-x86_64\"))\nbuild_c(\"other\")").parse_script().unwrap();
+        let wanted = configurations::Wanted { targets, runs: true };
+        let modules = configurations::evaluate(&script, wanted, runtime_for).finish().unwrap();
+        let mut got: Vec<String> = modules.iter().map(|module| module.artifact.display().to_string()).collect();
+        let mut built = BUILT.lock().unwrap().clone();
+        got.sort();
+        built.sort();
+        return (got, built);
+    };
+
+    let host = Target::host().name();
+    let linux = Target::named("linux-aarch64").unwrap();
+
+    // without --target the machine's, with one that target's, also of modules that name others
+    let mut expected = vec![format!("{host}/other"), format!("{host}/tool")];
+    expected.sort();
+    assert_eq!(run(&[]).0, expected, "run builds every module for the machine");
+    assert_eq!(run(&[linux]), (
+        vec!["linux-aarch64/other".to_string(), "linux-aarch64/tool".to_string()],
+        vec!["other linux-aarch64".to_string(), "tool linux-aarch64".to_string()],
+    ));
+    assert_eq!(run(&[Target::host()]).0, expected);
 }
 
 #[cfg(unix)]
@@ -1295,7 +1346,7 @@ fn commands_take_an_environment_a_path_and_run_and_test() {
     assert_eq!(system::read_file(&file("build/commands/greeting/greeting")).unwrap(), "two\n", "the later entry wins");
     assert_eq!(system::read_file(&file("build/commands/greeting/hello")).unwrap(), "hello from the path\n");
     assert!(built[0].can_launch());
-    assert_eq!(launch(&built[0], &["7".to_string()]), Ok(7), "run takes the arguments after --");
+    assert_eq!(launch(&built[0], &["7".to_string()], &Runner::direct()), Ok(7), "run takes the arguments after --");
 
     let report = "<testsuite><testcase name=\\\"a\\\"/><testcase name=\\\"b\\\"><failure/></testcase></testsuite>";
     let tested = |test: &str| {

@@ -15,10 +15,10 @@ mod vcpkg;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::common::runner::Runner;
 use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
 use crate::language::runtime::{
@@ -604,11 +604,11 @@ fn copy_shared_libraries(libraries: &[PathBuf], shared_dir: &Path) -> Result<(),
 }
 
 /// Returns the exit code. Programs start like jars, in the module's directory.
-pub fn launch(module: &BuiltModule, output: &NativeOutput, args: &[String]) -> Result<i32, String> {
+pub fn launch(module: &BuiltModule, output: &NativeOutput, args: &[String], runner: &Runner) -> Result<i32, String> {
     let program = output.program.as_ref()
         .ok_or(format!("{} is a library, only programs can be run", module.name))?;
 
-    return system::run_interactive(Command::new(program).args(args).current_dir(&module.directory));
+    return system::run_interactive(runner.command(program, &module.directory).args(args));
 }
 
 impl Dependencies {
@@ -770,9 +770,15 @@ fn test_program(
 
     compile::link(tests.toolchain, cpp, objects, link_flags, &executable)?;
 
+    // those of another target run through its runner, see build test --target
+    let target = tests.toolchain.target;
+    let starts_it = match target.is_host() {
+        true => Runner::direct(),
+        false => Runner::for_target(target)?,
+    };
+
     let reports_dir = build_dir.join("test-results").join(program);
-    let mut command = Command::new(&executable);
-    command.current_dir(module.module_dir);
+    let mut command = starts_it.command(&executable, module.module_dir);
 
     let runner = match setup.framework {
         Some((port, runner, _, arguments)) => {

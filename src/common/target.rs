@@ -96,6 +96,19 @@ impl Target {
         return *self == Target::host();
     }
 
+    /// Whether this machine starts its programs itself: those of its own target, of x86_64 on Apple silicon
+    /// (Rosetta) and on Windows on ARM, and of Linux for its processor, the static ones of musl too
+    pub fn runs_on(&self, machine: Target) -> bool {
+        use Architecture::*;
+        use OperatingSystem::*;
+
+        return match (machine.os, machine.arch, self.os, self.arch) {
+            (MacOs, Aarch64, MacOs, X86_64) | (Windows, Aarch64, Windows, X86_64) => true,
+            (Linux, ours, Linux, theirs) => ours == theirs,
+            (ours, ours_arch, theirs, theirs_arch) => ours == theirs && ours_arch == theirs_arch,
+        };
+    }
+
     /// What zig builds for with -target, none for Android, which the NDK builds for
     pub fn zig_triple(&self) -> Option<String> {
         let arch = match self.arch {

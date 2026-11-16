@@ -9,8 +9,10 @@ use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use crate::common::{git, lock};
+use crate::common::runner::{self, RUNNER};
 use crate::common::settings::Settings;
 use crate::common::system;
+use crate::common::target::Target;
 use crate::common::up_to_date;
 use crate::jvm::templates;
 use crate::language::runtime;
@@ -566,6 +568,20 @@ pub fn checked_setting(name: &str, value: &str) -> Result<String, String> {
 
             return Ok(value.to_string());
         }
+        name if name.starts_with(RUNNER) => {
+            let target = &name[RUNNER.len()..];
+            if Target::named(target).is_none() {
+                let names = Target::names();
+                let known: Vec<&str> = names.iter().map(String::as_str).collect();
+                return Err(format!("{target} is no target{}\nthe targets: {}", crate::suggestion(target, &known), names.join(", ")));
+            }
+
+            if runner::words(value)?.is_empty() {
+                return Err(format!("{name} takes what starts the programs of {target}, the program comes after it, like {name} 'qemu-aarch64 -L /usr/aarch64-linux-gnu'"));
+            }
+
+            return Ok(value.trim().to_string());
+        }
         REMEMBER_DOMAIN if value == "never" => return Ok(value.to_string()),
         REMEMBER_DOMAIN => {
             return Err(format!(
@@ -673,6 +689,12 @@ mod tests {
                 .unwrap_err()
                 .starts_with("unknown setting 'colour'")
         );
+
+        // runners: a target and at least the program that starts its programs
+        assert_eq!(checked_setting("runner.linux-aarch64", " qemu-aarch64 -L /usr/aarch64-linux-gnu "), Ok("qemu-aarch64 -L /usr/aarch64-linux-gnu".to_string()));
+        assert!(checked_setting("runner.linux-arm64", "qemu-aarch64").unwrap_err().starts_with("linux-arm64 is no target, did you mean linux-aarch64?"));
+        assert!(checked_setting("runner.windows-x86_64", "  ").unwrap_err().starts_with("runner.windows-x86_64 takes what starts the programs of windows-x86_64"));
+        assert!(checked_setting("runner.windows-x86_64", "'wine").is_err());
         assert_eq!(variable_name("my-lib"), "my_lib");
         // a module named like a builtin must not shadow it
         assert_eq!(variable_name("list"), "list_module");
