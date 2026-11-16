@@ -1106,7 +1106,7 @@ fn apps_pack_the_libraries_their_android_targets_build() {
 
     // an apk: what it packs of the evaluations for its ABIs
     fn app(_: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
-        let mut packed: Vec<String> = args.foreign_modules()
+        let mut packed: Vec<String> = args.packed_libraries()
             .iter()
             .map(|(target, module)| format!("{} {}", target.name(), module.artifact.display()))
             .collect();
@@ -1130,7 +1130,7 @@ fn apps_pack_the_libraries_their_android_targets_build() {
             .with_default("accept_sdk_license", Type::Bool, false)
             .returns(Type::Module)
             .placed(Placement::HostOnly)
-            .packing_native_libraries();
+            .packing(Packing::ForItsAbis);
         for (name, value) in [builtin("build_c", library, build_c), builtin("app", apk, app)] {
             runtime.define(name, value);
         }
@@ -1168,6 +1168,96 @@ fn apps_pack_the_libraries_their_android_targets_build() {
     // an app is for Android
     let errors = build("greeter = build_c(\"greeter\")\napp(\"app\", list(greeter), targets = list(\"linux-aarch64\"))").unwrap_err();
     assert!(errors[0].contains("an Android app is built for Android targets only"), "{errors:?}");
+}
+
+#[test]
+fn jars_pack_the_libraries_for_the_targets_they_name() {
+    static PACKED: Mutex<Vec<String>> = Mutex::new(vec![]);
+    static BUILT: Mutex<Vec<String>> = Mutex::new(vec![]);
+
+    fn build_c(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        let name: String = args.get("name")?;
+        BUILT.lock().unwrap().push(format!("{name} {}", context.target().name()));
+        let mut module = Arc::try_unwrap(finished_module(&name)).unwrap();
+        module.artifact = PathBuf::from(format!("{}/lib{name}.so", context.target().name()));
+        return Ok(Value::from(Arc::new(module)));
+    }
+
+    fn jar(_: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+        let mut packed: Vec<String> = args.packed_libraries()
+            .iter()
+            .map(|(target, module)| format!("{} {}", target.name(), module.artifact.display()))
+            .collect();
+        packed.sort();
+        *PACKED.lock().unwrap() = packed;
+        return Ok(Value::from(finished_module(&args.get::<String>("name")?)));
+    }
+
+    let runtime_for = |target: Option<Target>| {
+        let mut runtime = Runtime::new(".").with_script(std::path::Path::new("project.build"), "").with_target(target).with_jobs(1);
+        let library = FunctionParameters::new()
+            .required("name", Type::String)
+            .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
+            .returns(Type::Module);
+        let jar_parameters = FunctionParameters::new()
+            .required("name", Type::String)
+            .with_default("dependencies", Type::list(Type::Module), Value::List(vec![]))
+            .returns(Type::Module)
+            .placed(Placement::HostOnly)
+            .packing(Packing::ForTheirTargets);
+        for (name, value) in [builtin("build_c", library, build_c), builtin("build_kotlin", jar_parameters, jar)] {
+            runtime.define(name, value);
+        }
+        return runtime;
+    };
+
+    let build = |source: &str| {
+        BUILT.lock().unwrap().clear();
+        let script = Parser::new(source).parse_script().unwrap();
+        let wanted = configurations::Wanted { targets: &[], for_the_machine: false };
+        return configurations::evaluate(&script, wanted, runtime_for).finish();
+    };
+
+    // the machine's own module for the machine, those of the other evaluations for the others, none for Android:
+    // its apps pack by ABI
+    let host = Target::host().name();
+    build(&format!(
+        "greeter = build_c(\"greeter\", targets = list(host_target(), \"linux-aarch64\", \"windows-x86_64\", \"android-x86\", host_target()))\n\
+         plain = build_c(\"plain\")\n\
+         build_kotlin(\"app\", list(greeter, plain))"
+    )).unwrap();
+    let mut expected = vec![
+        format!("{host} {host}/libgreeter.so"),
+        "linux-aarch64 linux-aarch64/libgreeter.so".to_string(),
+        "windows-x86_64 windows-x86_64/libgreeter.so".to_string(),
+    ];
+    expected.sort();
+    expected.dedup();
+    assert_eq!(*PACKED.lock().unwrap(), expected, "a library without targets stays outside");
+
+    // the library is built for the targets it names, plain for the machine, which runs the jar
+    let mut built = BUILT.lock().unwrap().clone();
+    built.sort();
+    let mut expected = vec![
+        format!("greeter {host}"),
+        "greeter android-x86".to_string(),
+        "greeter linux-aarch64".to_string(),
+        "greeter windows-x86_64".to_string(),
+        format!("plain {host}"),
+    ];
+    expected.sort();
+    expected.dedup();
+    assert_eq!(built, expected);
+
+    // run and test get the modules of the machine, the jar still packs those of the other targets
+    let source = "greeter = build_c(\"greeter\", targets = list(host_target(), \"linux-aarch64\"))\nbuild_kotlin(\"app\", list(greeter))";
+    let script = Parser::new(source).parse_script().unwrap();
+    let wanted = configurations::Wanted { targets: &[], for_the_machine: true };
+    let modules = configurations::evaluate(&script, wanted, runtime_for).finish().unwrap();
+    let mut names: Vec<String> = modules.iter().map(|module| format!("{} {}", module.name, module.artifact.display())).collect();
+    names.sort();
+    assert_eq!(names, ["app app.jar".to_string(), format!("greeter {host}/libgreeter.so")]);
+    assert!(PACKED.lock().unwrap().contains(&"linux-aarch64 linux-aarch64/libgreeter.so".to_string()));
 }
 
 #[cfg(unix)]

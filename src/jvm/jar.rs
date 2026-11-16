@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::common::system;
 use crate::language::runtime::{
-    Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, Placement, Type, Value,
-    builtin,
+    Arguments, BuildScriptContext, BuiltModule, FunctionParameters, FunctionSignature, ModuleOutput, Packing,
+    Placement, Type, Value, builtin,
 };
 
 use super::JvmLaunch;
@@ -54,8 +54,9 @@ fn jar_parameters(sources: Sources) -> FunctionSignature {
         sources,
     )
     .returns(Type::Module)
-    // a jar runs on every system
-    .placed(Placement::HostOnly);
+    // a jar runs on every system, with the libraries of C and C++ for those they name
+    .placed(Placement::HostOnly)
+    .packing(Packing::ForTheirTargets);
 }
 
 /// build/libs/<name>.jar with its runtime libraries in build/libs/lib, or with
@@ -207,12 +208,13 @@ fn build_jar(
 
     let manifest_file = build_dir.join("tmp/jar/MANIFEST.MF");
     system::write_file(&manifest_file, &jar_manifest(main_class, &libraries, false))?;
-    create_jar(
-        &inputs.jdk,
-        &jar,
-        Some(&manifest_file),
-        &[&classes_dir, &resources_dir],
-    )?;
+
+    let native_dir = build_dir.join("tmp/jar/native");
+    let mut contents = vec![classes_dir.as_path(), resources_dir.as_path()];
+    if stage_native_libraries(args, &native_dir)? {
+        contents.push(&native_dir);
+    }
+    create_jar(&inputs.jdk, &jar, Some(&manifest_file), &contents)?;
 
     if fat_jar {
         // the module first, then the modules and libraries it needs at runtime
@@ -229,6 +231,24 @@ fn build_jar(
     fingerprint.store_done(&inputs.name, &artifact)?;
 
     return Ok((jar, artifact));
+}
+
+/// The shared libraries of C and C++ the jar packs, below `dir` as META-INF/native/<target>/<file>, for a loader
+/// that picks the one of the system it runs on. Whether there are any.
+fn stage_native_libraries(args: &Arguments, dir: &Path) -> Result<bool, String> {
+    system::remove_dir(dir)?;
+    let libraries = args.packed_libraries();
+
+    for (target, library) in &libraries {
+        let ModuleOutput::Native(output) = &library.output else { continue };
+        let file = output.shared_library.as_ref()
+            .ok_or_else(|| format!("{} is no shared library, jars pack only those of build_cpp with shared = true", library.name))?;
+        let name = file.file_name().ok_or_else(|| format!("{} has no file name", file.display()))?;
+
+        system::copy_file(file, &dir.join("META-INF/native").join(target.name()).join(name))?;
+    }
+
+    return Ok(!libraries.is_empty());
 }
 
 /// The packages of `relocate` as (from, to), only a fat jar has them

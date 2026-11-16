@@ -221,7 +221,7 @@ pub fn native_library_dirs(
     let staged = system::build_dir(&inputs.directory).join("intermediates/native-dependencies");
     system::remove_dir(&staged)?;
 
-    for (target, module) in args.foreign_modules() {
+    for (target, module) in args.packed_libraries() {
         let ModuleOutput::Native(output) = &module.output else { continue };
         let Some(library) = &output.shared_library else {
             return Err(format!("{} is no shared library, apps pack only those of build_cpp with shared = true", module.name));

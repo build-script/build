@@ -54,8 +54,19 @@ pub struct FunctionSignature {
     /// parameters whose modules run while the build goes on, like the program of a command: those are
     /// the machine's modules of their names
     pub runs_on_host: Vec<&'static str>,
-    /// an apk: it packs its shared libraries of C and C++ for the Android targets it names
-    pub packs_native_libraries: bool,
+    /// an apk or a jar: what it packs of the shared libraries of C and C++ among its arguments
+    pub packing: Packing,
+}
+
+/// What a build function packs of the shared libraries of C and C++ among its arguments, for which targets
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Packing {
+    #[default]
+    Nothing,
+    /// an apk: each library for the Android targets the apk names, all four without
+    ForItsAbis,
+    /// a jar: each library for the targets the library names, one without targets stays outside
+    ForTheirTargets,
 }
 
 /// Where the modules of a build function are built when the script is evaluated for other targets too
@@ -95,9 +106,9 @@ pub struct Arguments {
     pub values: Vec<(String, Option<Value>)>,
     /// arguments of the variadic parameter
     pub rest: Vec<Value>,
-    /// modules of other targets the build needs besides, like the libraries of C and C++ an apk packs for
-    /// each of its ABIs: the script does not see them
-    pub foreign: Vec<(Target, Value)>,
+    /// the shared libraries of C and C++ it packs with their targets, see Packing: those of other targets are
+    /// modules of their evaluations, the script does not see them
+    pub packed: Vec<(Target, Value)>,
 }
 
 /// Rust types that builtins can read their arguments as
@@ -258,7 +269,7 @@ pub fn bind(
         function: function.to_string(),
         values,
         rest,
-        foreign: vec![],
+        packed: vec![],
     });
 }
 
@@ -315,7 +326,7 @@ impl FunctionParameters {
             returns,
             placement: Placement::default(),
             runs_on_host: vec![],
-            packs_native_libraries: false,
+            packing: Packing::Nothing,
         };
     }
 
@@ -357,9 +368,9 @@ impl FunctionSignature {
         return self;
     }
 
-    /// It packs its shared libraries of C and C++, built for each Android target of its targets
-    pub fn packing_native_libraries(mut self) -> Self {
-        self.packs_native_libraries = true;
+    /// It packs its shared libraries of C and C++ for the targets `packing` says
+    pub fn packing(mut self, packing: Packing) -> Self {
+        self.packing = packing;
         return self;
     }
 
@@ -421,9 +432,9 @@ impl Arguments {
             .collect();
     }
 
-    /// The modules of other targets with their targets, once they are built
-    pub fn foreign_modules(&self) -> Vec<(Target, Arc<BuiltModule>)> {
-        return self.foreign
+    /// The libraries it packs with their targets, once they are built
+    pub fn packed_libraries(&self) -> Vec<(Target, Arc<BuiltModule>)> {
+        return self.packed
             .iter()
             .filter_map(|(target, value)| match value {
                 Value::Module(module) => module.wait().ok().map(|module| (*target, module)),
@@ -447,7 +458,7 @@ impl Arguments {
         for value in self.values.iter()
             .filter_map(|(_, value)| value.as_ref())
             .chain(&self.rest)
-            .chain(self.foreign.iter().map(|(_, value)| value))
+            .chain(self.packed.iter().map(|(_, value)| value))
         {
             collect(value, &mut modules);
         }
@@ -587,7 +598,7 @@ mod tests {
             function: "f".to_string(),
             values: vec![("pairs".to_string(), Some(Value::string_list(entries)))],
             rest: vec![],
-            foreign: vec![],
+            packed: vec![],
         };
 
         assert_eq!(

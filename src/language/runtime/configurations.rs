@@ -14,6 +14,8 @@ pub struct Evaluations {
     pub others: Vec<Runtime>,
     /// the first error of an evaluation, described by its runtime: no evaluation follows it
     pub error: Option<String>,
+    /// run and test: the modules of the machine are those to run, the others are built for what packs them
+    for_the_machine: bool,
 }
 
 /// What a build is for
@@ -77,19 +79,21 @@ pub fn evaluate(script: &Script, wanted: Wanted, runtime_for: impl Fn(Option<Tar
     let without_module = machine.fail_forwards_without_module();
     let error = error.or_else(|| (!without_module.is_empty()).then(|| without_module.join("\n")));
 
-    return Evaluations { machine, others: evaluations, error };
+    return Evaluations { machine, others: evaluations, error, for_the_machine };
 }
 
 impl Evaluations {
-    /// Waits for the builds still running: the modules of every target, the machine's first, or why builds
-    /// failed. Builds that started before an error finish, none of their tools keep running.
+    /// Waits for the builds still running: the modules of every target, the machine's first, for run and test
+    /// only those of the machine, or why builds failed. Builds that started before an error finish, none of
+    /// their tools keep running.
     pub fn finish(&self) -> Result<Vec<Arc<BuiltModule>>, Vec<String>> {
         let mut modules = vec![];
         let mut errors: Vec<String> = self.error.iter().cloned().collect();
 
-        for runtime in std::iter::once(&self.machine).chain(&self.others) {
+        for (index, runtime) in std::iter::once(&self.machine).chain(&self.others).enumerate() {
             match runtime.finish() {
-                Ok(built) => modules.extend(built),
+                Ok(built) if index == 0 || !self.for_the_machine => modules.extend(built),
+                Ok(_) => {}
                 Err(failed) => errors.extend(failed.iter().map(|error| runtime.describe(error))),
             }
         }

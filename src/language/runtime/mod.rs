@@ -26,7 +26,7 @@ use functions::{BuiltinFunction, CallArgument, FunctionParameter, UserFunction, 
 
 pub use error::{RuntimeError, RuntimeErrorType};
 pub use functions::{
-    Arguments, FromValue, FunctionParameters, FunctionSignature, ParameterDefault, Placement, builtin,
+    Arguments, FromValue, FunctionParameters, FunctionSignature, Packing, ParameterDefault, Placement, builtin,
 };
 pub use modules::{BuildFailure, BuiltModule, ModuleCall, ModuleOutput, PendingModule, launch};
 pub use testing::{ModuleTests, TestCounts, TestOutcome, TestRun, TestRunner, TestSuite};
@@ -1091,8 +1091,12 @@ impl Runtime {
                     self.fill_forwards(target, &machine);
                     return Ok(Value::Module(machine));
                 }
-            } else if signature.packs_native_libraries {
-                self.pack_native_libraries(name, &mut args, &targets, span)?;
+            } else {
+                match signature.packing {
+                    Packing::Nothing => {}
+                    Packing::ForItsAbis => self.pack_for_abis(name, &mut args, &targets, span)?,
+                    Packing::ForTheirTargets => self.pack_for_their_targets(name, &mut args, span),
+                }
             }
 
             let requested = self.requested_at_call(signature.placement, &targets);
@@ -1166,9 +1170,53 @@ impl Runtime {
         }
     }
 
+    /// The libraries of C and C++ among the arguments of a call, also in lists
+    fn native_libraries(args: &Arguments) -> Vec<Arc<PendingModule>> {
+        fn collect(value: &Value, found: &mut Vec<Arc<PendingModule>>) {
+            match value {
+                Value::Module(module) if matches!(module.function, "build_c" | "build_cpp") => found.push(module.clone()),
+                Value::List(items) => items.iter().for_each(|item| collect(item, found)),
+                _ => {}
+            }
+        }
+
+        let mut found = vec![];
+        args.values.iter().filter_map(|(_, value)| value.as_ref()).for_each(|value| collect(value, &mut found));
+        return found;
+    }
+
+    /// What stands for the module of `library` the evaluation for `target` builds, until it does: one per target
+    /// and name, with the lowest min_sdk of the apps packing it
+    fn placeholder(&self, function: &'static str, span: Span, library: &PendingModule, target: Target, android: Option<&AndroidSettings>) -> Arc<PendingModule> {
+        let mut forwards = self.forwards.lock().unwrap();
+
+        if let Some(forward) = forwards.iter_mut().find(|forward| forward.target == target && forward.name == library.name) {
+            forward.android = android.cloned().into_iter()
+                .chain(forward.android.take())
+                .min_by_key(|settings| settings.min_sdk);
+            return forward.placeholder.clone();
+        }
+
+        let placeholder = PendingModule::placeholder(ModuleCall {
+            function,
+            span,
+            called_from: None,
+            name: library.name.clone(),
+            arguments: None,
+            targets: vec![],
+        });
+        forwards.push(Forward {
+            target,
+            name: library.name.clone(),
+            placeholder: placeholder.clone(),
+            android: android.cloned(),
+        });
+        return placeholder;
+    }
+
     /// An apk on the machine: its libraries of C and C++ for each Android target it names, all four without
     /// targets. The evaluations of those targets build them later, placeholders stand for them until then.
-    fn pack_native_libraries(&self, function: &'static str, args: &mut Arguments, targets: &[String], span: Span) -> Result<(), RuntimeError> {
+    fn pack_for_abis(&self, function: &'static str, args: &mut Arguments, targets: &[String], span: Span) -> Result<(), RuntimeError> {
         let error = |message: String| RuntimeError::builtin_failed(function, message, span);
         let android = crate::common::target::TARGETS.iter().filter(|target| target.os == crate::common::target::OperatingSystem::Android);
 
@@ -1186,25 +1234,13 @@ impl Runtime {
             accept_sdk_license: args.get("accept_sdk_license").map_err(error)?,
         };
 
-        // the libraries of C and C++ among its arguments, also in lists
-        fn libraries(value: &Value, found: &mut Vec<Arc<PendingModule>>) {
-            match value {
-                Value::Module(module) if matches!(module.function, "build_c" | "build_cpp") => found.push(module.clone()),
-                Value::List(items) => items.iter().for_each(|item| libraries(item, found)),
-                _ => {}
-            }
-        }
-
-        let mut found = vec![];
-        args.values.iter().filter_map(|(_, value)| value.as_ref()).for_each(|value| libraries(value, &mut found));
-
         // a library that names its targets is packed for the ABIs both name, and one that leaves out the machine
         // is no library of the machine's evaluation: the app's unit tests on the JVM do without it
         let host = Target::host().name();
         let mut without_machine: Vec<Arc<PendingModule>> = vec![];
         let mut packed: Vec<(Arc<PendingModule>, Vec<Target>)> = vec![];
 
-        for library in found {
+        for library in Self::native_libraries(args) {
             if library.targets.is_empty() {
                 packed.push((library, abis.clone()));
                 continue;
@@ -1238,41 +1274,35 @@ impl Runtime {
             args.values.iter_mut().filter_map(|(_, value)| value.as_mut()).for_each(|value| without(value, &without_machine));
         }
 
-        let mut forwards = self.forwards.lock().unwrap();
-
         for (library, abis) in packed {
-            for target in &abis {
-                let placeholder = match forwards.iter_mut().find(|forward| forward.target == *target && forward.name == library.name) {
-                    Some(forward) => {
-                        forward.android = Some(settings.clone()).into_iter()
-                            .chain(forward.android.take())
-                            .min_by_key(|settings| settings.min_sdk);
-                        forward.placeholder.clone()
-                    }
-                    None => {
-                        let placeholder = PendingModule::placeholder(ModuleCall {
-                            function,
-                            span,
-                            called_from: None,
-                            name: library.name.clone(),
-                            arguments: None,
-                            targets: vec![],
-                        });
-                        forwards.push(Forward {
-                            target: *target,
-                            name: library.name.clone(),
-                            placeholder: placeholder.clone(),
-                            android: Some(settings.clone()),
-                        });
-                        placeholder
-                    }
-                };
-
-                args.foreign.push((*target, Value::Module(placeholder)));
+            for target in abis {
+                let placeholder = self.placeholder(function, span, &library, target, Some(&settings));
+                args.packed.push((target, Value::Module(placeholder)));
             }
         }
 
         return Ok(());
+    }
+
+    /// A jar: its libraries of C and C++ for each target they name but Android, whose apps pack them by ABI: the
+    /// machine's module for this machine and a placeholder for the others. Libraries without targets are for
+    /// run and test, which load them from where they were built.
+    fn pack_for_their_targets(&self, function: &'static str, args: &mut Arguments, span: Span) {
+        for library in Self::native_libraries(args) {
+            let targets = library.targets.iter()
+                .filter_map(|name| Target::named(name))
+                .filter(|target| target.os != crate::common::target::OperatingSystem::Android);
+
+            for target in targets {
+                let module = match target.is_host() {
+                    true => library.clone(),
+                    false => self.placeholder(function, span, &library, target, None),
+                };
+                if !args.packed.iter().any(|(packed, value)| *packed == target && matches!(value, Value::Module(other) if Arc::ptr_eq(other, &module))) {
+                    args.packed.push((target, Value::Module(module)));
+                }
+            }
+        }
     }
 
     /// For another target: the placeholders of the machine's evaluation that stand for this module
