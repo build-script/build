@@ -162,7 +162,7 @@ greeter = build_cpp("greeter", list(), shared = true, directory = "greeter")
 build_android("app", "com.example.app", list(greeter, ...), repositories, targets = list("android-aarch64", "android-x86_64"))
 ```
 
-- The libraries it links and its commands are built for the ABI too. vcpkg ports do not build for Android yet.
+- Its vcpkg ports, the libraries it links and its commands are built for the ABI too. vcpkg builds the ports with the NDK, at the API level of the apps and with the static libc++, as triplets like `ndk-android-aarch64-24`.
 - It links `liblog`, for `__android_log_print`.
 - The API level is the lowest `min_sdk` of the apps that pack it. The NDK is the `ndk_version` of that app, of `ANDROID_HOME`, else build-script installs it next to its Android SDK, once its license is accepted, like with `accept_sdk_license` of the app.
 - A library with `targets` of its own is packed for the ABIs both name. When its targets leave out this machine, it is not built for this machine either.
@@ -270,7 +270,7 @@ standalone = build_cpp(
 - Modules install their ports one after another, because vcpkg gives up waiting for its lock.
 - A port brings all its libraries, `gtest` also brings gmock. Those whose names end in `main`, like `gtest_main`, only the tests take, when they have no `main()` of their own.
 - vcpkg needs `git`, and with the `system` toolchain the compiler of the system. CMake and Ninja it downloads itself.
-- For other systems vcpkg builds the ports with zig, as triplets named after the target, like `zig-linux-aarch64`. That works on macOS and Linux, not yet for Android.
+- For other systems vcpkg builds the ports with zig, as triplets named after the target, like `zig-linux-aarch64`. That works on macOS and Linux. For Android it builds them with the NDK, at the API level of the apps: `ndk-android-aarch64-24`.
 - On Windows vcpkg builds the ports with MSVC of Visual Studio, static and only for release, with the static C library: `x64-windows-static-release`. Debug builds link them too, clang links that C library by default. Flags of MSVC in their pkg-config files, like `/DNOMINMAX` of abseil, become those of clang. With `zig` vcpkg is not set up on Windows.
 
 ## Toolchains
@@ -321,7 +321,7 @@ tool = build_cpp(
 
 With `toolchain = "auto"`, the default, other systems build with zig and Android with the clang of the NDK, `"system"` builds only for this machine. zig builds programs for Windows with the ABI of MinGW. From other machines, programs for macOS build without the frameworks of the macOS SDK, like Cocoa. `jni = true` takes `jni.h` of the JDK and a `jni_md.h` of the target, which build-script writes into its cache when the JDK has none for that system.
 
-vcpkg ports and [CMake projects](#cmake-projects) build for other systems with zig too, on macOS and Linux, not yet for Android. Not for other targets:
+vcpkg ports build for other systems with zig too, on macOS and Linux, and for Android with the NDK. [CMake projects](#cmake-projects) build for other systems with zig, not yet for Android. Not for other targets:
 
 - `system_library`: the libraries of the system are those of this machine.
 - `compile_flags_from` and `link_flags_from` of `build_cmake`, which start a program of the installation: other targets name what they link with `libraries`.
