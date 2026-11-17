@@ -8,7 +8,7 @@ use std::process::Command;
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
 use crate::common::target::{Architecture, OperatingSystem};
 
-use super::toolchain::{Toolchain, write_executable};
+use super::toolchain::{Ndk, Toolchain, write_executable};
 
 const VCPKG_RELEASE: &str = "2026.10.16";
 
@@ -55,22 +55,13 @@ pub fn install(
         return Err(format!("{module}: vcpkg ports with the zig toolchain are not set up for Windows, the system toolchain builds them"));
     }
 
-    // ports built by zig link with code zig compiled, also on Linux, where the system has libstdc++. For another
-    // target zig builds them for that one.
-    let foreign = !toolchain.target.is_host();
-    let triplet = match (toolchain.zig, foreign) {
-        (false, _) => host.to_string(),
-        (true, false) => format!("{host}-zig"),
-        // vcpkg names triplets in lowercase letters, digits and hyphens: zig-linux-x86-64-musl
-        (true, true) => format!("zig-{}", toolchain.target.name().replace('_', "-")),
-    };
-
+    let triplet = triplet(toolchain, host);
     let manifest_dir = build_dir.join("vcpkg").join(&triplet);
     let installed = Installed {
         root: manifest_dir.join("installed"),
         triplet,
-        msvc: cfg!(windows) && !toolchain.zig,
-        of_the_machine: !foreign,
+        msvc: cfg!(windows) && !toolchain.zig && toolchain.ndk.is_none(),
+        of_the_machine: toolchain.target.is_host(),
     };
 
     let dependencies: Vec<serde_json::Value> = ports.iter()
@@ -125,6 +116,12 @@ pub fn install(
         }
     }
 
+    if let Some(ndk) = &toolchain.ndk {
+        let triplets = ndk_triplets(&tools, toolchain, ndk, &installed.triplet)?;
+        command.arg(format!("--overlay-triplets={}", triplets.display()))
+            .env("ANDROID_NDK_HOME", &ndk.home);
+    }
+
     // vcpkg locks its root and gives up when another one holds the lock for long, modules install one by one
     system::installing(&vcpkg, || {
         system::log(module, &format!("Installing {} with vcpkg", ports.join(", ")));
@@ -132,6 +129,59 @@ pub fn install(
     })?;
 
     return Ok(Some(installed));
+}
+
+/// The triplet the ports of the toolchain are built for. Ports built by zig link with code zig compiled, also on
+/// Linux, where the system has libstdc++, for another target zig builds them for that one. The NDK builds them for
+/// an Android target at the API level of the apps.
+fn triplet(toolchain: &Toolchain, host: &str) -> String {
+    // vcpkg names triplets in lowercase letters, digits and hyphens: zig-linux-x86-64-musl
+    let target = toolchain.target.name().replace('_', "-");
+
+    match (&toolchain.ndk, toolchain.zig, toolchain.target.is_host()) {
+        (Some(ndk), _, _) => return format!("ndk-{target}-{}", ndk.api_level),
+        (None, false, _) => return host.to_string(),
+        (None, true, true) => return format!("{host}-zig"),
+        (None, true, false) => return format!("zig-{target}"),
+    }
+}
+
+/// How vcpkg names the processor of a target
+fn architecture(arch: Architecture) -> &'static str {
+    match arch {
+        Architecture::X86_64 => return "x64",
+        Architecture::Aarch64 => return "arm64",
+        Architecture::Armv7 => return "arm",
+        Architecture::X86 => return "x86",
+    }
+}
+
+/// The triplet of the ports the NDK builds for an Android target, like arm64-android of vcpkg, at the API level of
+/// the apps and with the static libc++, which the libraries of build_c and build_cpp link for Android
+fn ndk_triplets(tools: &Path, toolchain: &Toolchain, ndk: &Ndk, triplet: &str) -> Result<PathBuf, String> {
+    let target = toolchain.target;
+    let (Some(host), Some(abi)) = (target.ndk_triple(), target.android_abi()) else {
+        return Err(format!("the NDK builds for Android, not for {}", target.name()));
+    };
+
+    let content = format!(
+        r#"set(VCPKG_TARGET_ARCHITECTURE {})
+set(VCPKG_CRT_LINKAGE static)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CMAKE_SYSTEM_NAME Android)
+set(VCPKG_CMAKE_SYSTEM_VERSION {})
+set(VCPKG_MAKE_BUILD_TRIPLET "--host={host}")
+set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI={abi})
+set(VCPKG_ENV_PASSTHROUGH ANDROID_NDK_HOME)
+"#,
+        architecture(target.arch),
+        ndk.api_level,
+    );
+
+    let triplets = tools.join("triplets").join(triplet);
+    system::write_file_if_changed(&triplets.join(format!("{triplet}.cmake")), &content)?;
+
+    return Ok(triplets);
 }
 
 /// "llvm[clang,lld]": the port and the features it is built with
@@ -239,12 +289,7 @@ fn zig_triplets(tools: &Path, toolchain: &Toolchain, triplet: &str) -> Result<Pa
     let toolchain_file = toolchain.cmake_toolchain_file()?;
     let target = toolchain.target;
 
-    let architecture = match target.arch {
-        Architecture::X86_64 => "x64",
-        Architecture::Aarch64 => "arm64",
-        Architecture::Armv7 => "arm",
-        Architecture::X86 => "x86",
-    };
+    let architecture = architecture(target.arch);
 
     // vcpkg names Windows without Visual Studio MinGW, its ports then name their libraries lib<name>.a
     let system_name = match target.os {
@@ -465,6 +510,44 @@ mod tests {
     use crate::common::test_support::ScratchDir;
 
     use super::*;
+
+    #[test]
+    fn the_ndk_builds_the_ports_of_android_targets_at_the_api_level_of_the_apps() {
+        use crate::common::target::Target;
+        use crate::native::toolchain::Ndk;
+
+        let toolchain = |target: &str, zig: bool, ndk: Option<Ndk>| Toolchain {
+            zig,
+            target: Target::named(target).unwrap(),
+            c_compiler: vec![],
+            cpp_compiler: vec![],
+            archiver: vec![],
+            environment: vec![],
+            ndk,
+        };
+        let ndk = Ndk { home: PathBuf::from("/sdk/ndk/28.2.13676358"), api_level: 24 };
+
+        assert_eq!(triplet(&toolchain("android-aarch64", false, Some(ndk.clone())), "arm64-osx"), "ndk-android-aarch64-24");
+        assert_eq!(triplet(&toolchain("android-x86_64", false, Some(ndk.clone())), "arm64-osx"), "ndk-android-x86-64-24");
+        assert_eq!(triplet(&toolchain("linux-x86_64-musl", true, None), "arm64-osx"), "zig-linux-x86-64-musl");
+        assert_eq!(triplet(&toolchain(&Target::host().name(), false, None), "arm64-osx"), "arm64-osx");
+
+        let directory = ScratchDir::new("ndk-triplets");
+        let armv7 = toolchain("android-armv7", false, Some(ndk.clone()));
+        let triplets = ndk_triplets(&directory, &armv7, &ndk, "ndk-android-armv7-24").unwrap();
+        let content = system::read_file(&triplets.join("ndk-android-armv7-24.cmake")).unwrap();
+
+        for line in [
+            "set(VCPKG_TARGET_ARCHITECTURE arm)",
+            "set(VCPKG_CRT_LINKAGE static)",
+            "set(VCPKG_CMAKE_SYSTEM_NAME Android)",
+            "set(VCPKG_CMAKE_SYSTEM_VERSION 24)",
+            "set(VCPKG_MAKE_BUILD_TRIPLET \"--host=armv7a-linux-androideabi\")",
+            "set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI=armeabi-v7a)",
+        ] {
+            assert!(content.contains(line), "{line} is missing in\n{content}");
+        }
+    }
 
     #[test]
     fn ports_take_features_but_no_versions() {

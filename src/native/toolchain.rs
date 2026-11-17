@@ -25,6 +25,16 @@ pub struct Toolchain {
     pub archiver: Vec<String>,
     /// zig keeps the libc++ it builds once in its cache
     pub environment: Vec<(&'static str, PathBuf)>,
+    /// of an Android target: vcpkg builds the ports with it too
+    pub ndk: Option<Ndk>,
+}
+
+/// The NDK a toolchain for Android is of
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ndk {
+    pub home: PathBuf,
+    /// the lowest min_sdk of the apps packing the library
+    pub api_level: i64,
 }
 
 impl Toolchain {
@@ -43,6 +53,7 @@ impl Toolchain {
                 cpp_compiler: from_environment("CXX", &cpp_compiler),
                 archiver: from_environment("AR", &archiver),
                 environment: vec![],
+                ndk: None,
             });
         }
 
@@ -59,6 +70,7 @@ impl Toolchain {
             cpp_compiler: vec![zig.clone(), "c++".to_string()],
             archiver: vec![zig, "ar".to_string()],
             environment: vec![("ZIG_GLOBAL_CACHE_DIR", system::cache_dir("zig"))],
+            ndk: None,
         });
     }
 

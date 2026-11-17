@@ -5,7 +5,7 @@ use crate::common::target::Target;
 use crate::jvm::android;
 use crate::language::runtime::AndroidSettings;
 
-use super::toolchain::Toolchain;
+use super::toolchain::{Ndk, Toolchain};
 
 /// What a module named for an Android target without an app that packs it builds with: the defaults of
 /// build_android
@@ -42,5 +42,6 @@ pub fn toolchain(target: Target, settings: &AndroidSettings) -> Result<Toolchain
         cpp_compiler: vec![tool("clang++"), clang_target],
         archiver: vec![tool("llvm-ar")],
         environment: vec![],
+        ndk: Some(Ndk { home: ndk.clone(), api_level: settings.min_sdk }),
     });
 }
