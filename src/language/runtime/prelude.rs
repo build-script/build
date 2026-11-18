@@ -1,5 +1,5 @@
-// What every script has without `use`: print, type, env, git, the target and the machine, files, the time,
-// list, build_command and tool
+// What every script has without `use`: print, type, env, git, the target and the machine, files, patterns,
+// joining and replacing text, the time, list, build_command and tool
 use std::path::Path;
 
 use super::*;
@@ -196,6 +196,52 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                     .map_or("", |found| found.as_str());
 
                 return Ok(found.into());
+            },
+        ),
+        builtin(
+            "join",
+            FunctionParameters::new()
+                .required("items", Type::list(Type::String))
+                .required("separator", Type::String)
+                .returns(Type::String),
+            // the items in one string, like the lines of a file a tool reads: no loop needed for a list
+            |_, args| {
+                let items: Vec<String> = args.get("items")?;
+                let separator: String = args.get("separator")?;
+                return Ok(items.join(&separator).into());
+            },
+        ),
+        builtin(
+            "replace",
+            FunctionParameters::new()
+                .required("text", Type::String)
+                .required("old", Type::String)
+                .required("new", Type::String)
+                .returns(Type::String),
+            // every occurrence, like the @ of name@version for the space of a go.mod
+            |_, args| {
+                let text: String = args.get("text")?;
+                let old: String = args.get("old")?;
+                let new: String = args.get("new")?;
+
+                if old.is_empty() {
+                    return Err("replace needs a text to replace, old is empty".to_string());
+                }
+
+                return Ok(text.replace(&old, &new).into());
+            },
+        ),
+        builtin(
+            "file",
+            FunctionParameters::new()
+                .required("path", Type::String)
+                .required("content", Type::String)
+                .returns(Type::list(Type::String)),
+            // for the files of build_command, which writes them before its command runs
+            |_, args| {
+                let path: String = args.get("path")?;
+                let content: String = args.get("content")?;
+                return Ok(Value::List(vec![path.into(), content.into()]));
             },
         ),
         builtin(

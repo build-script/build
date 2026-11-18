@@ -1396,6 +1396,30 @@ fn scripts_ask_for_the_system_files_and_patterns() {
     assert!(message("cache_directory(\"../maven\")").contains("cannot name a directory of the cache"));
 }
 
+#[test]
+fn lists_join_and_text_replaces_without_loops() {
+    let runtime = run(r#"
+        libraries = list("github.com/spf13/cobra@v1.9.1", "golang.org/x/text@v0.24.0")
+        lines = replace(join(libraries, "\n\t"), "@", " ")
+        none = join(list(), ",")
+        one = join(list("a"), ", ")
+        go_mod = file("src/go.mod", "module x\n")
+        empty = libraries == list()
+    "#)
+    .unwrap();
+
+    assert_eq!(string(&runtime, "lines"), "github.com/spf13/cobra v1.9.1\n\tgolang.org/x/text v0.24.0");
+    assert_eq!(string(&runtime, "none"), "");
+    assert_eq!(string(&runtime, "one"), "a");
+    let Value::List(file) = variable(&runtime, "go_mod") else { panic!("file gives a list") };
+    assert_eq!(file.iter().map(Value::to_string).collect::<Vec<_>>(), ["src/go.mod", "module x\n"]);
+    assert_eq!(string(&runtime, "empty"), "false");
+
+    let message = |source: &str| run(source).err().expect(source).to_string();
+    assert_eq!(message("replace(\"abc\", \"\", \"x\")"), "replace: replace needs a text to replace, old is empty");
+    assert!(message("join(list(1, 2), \",\")").contains("list<str>"), "{}", message("join(list(1, 2), \",\")"));
+}
+
 /// A runtime for a script in `directory` whose errors name project.build and the plugins by their paths
 fn plugin_runtime(directory: &std::path::Path, source: &str) -> (Runtime, Result<(), String>) {
     let project = system::canonical_path(directory).unwrap();
