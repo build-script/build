@@ -1058,6 +1058,11 @@ fn run_tests(built: &[Arc<BuiltModule>], name: Option<&str>) -> i32 {
     let mut outcomes: Vec<(String, Option<TestOutcome>)> = vec![];
 
     for module in selected {
+        // a command without a test, like the one writing a go.mod, is no module with tests left out
+        if module.tests.is_empty() && name.is_none() && matches!(module.output, runtime::ModuleOutput::Command(_)) {
+            continue;
+        }
+
         if module.tests.is_empty() {
             outcomes.push((module.name.clone(), None));
             continue;

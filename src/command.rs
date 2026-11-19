@@ -1,14 +1,15 @@
 // build_command: a command with declared inputs and outputs as a module, what plugins build languages with.
 // It runs again only when an input, a module it uses or its command line changed.
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use crate::common::runner::Runner;
 use crate::common::system;
-use crate::common::up_to_date::InputFingerprint;
+use crate::common::up_to_date::{self, InputFingerprint};
 use crate::jvm::JvmLaunch;
 use crate::language::runtime::{
     Arguments, BuildScriptContext, BuiltModule, FunctionParameters, ModuleOutput, ModuleTests, Placement, TestOutcome,
@@ -20,6 +21,10 @@ const OUTPUT_PLACEHOLDER: &str = "{output}";
 
 /// stands for the directory the tests write JUnit XML reports to, build-script counts them
 const TEST_REPORTS_PLACEHOLDER: &str = "{test_reports}";
+
+/// The files of `files` by the command and the target that write them: two writers would overwrite each other,
+/// and run at the same time
+static WRITERS: LazyLock<Mutex<HashMap<PathBuf, (String, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// What `build-script run` and the modules using it need of a command
 #[derive(Debug, Hash)]
@@ -55,6 +60,14 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .with_default("test_timeout", Type::Int, Value::Int(0))
             .with_default("always", Type::Bool, false)
             .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
+            // what file(path, content) gives: written below the directory before the command, like the go.mod
+            // of the libraries the script lists
+            .with_default("files", Type::list(Type::list(Type::String)), Value::List(vec![]))
+            // the libraries the script lists, name@version; direct_libraries prints those the command took once it
+            // ran, like go mod tidy completing the go.mod of `files`: one a line, name@version, the name and the
+            // version like serde v1.0.215 of cargo tree, or the name alone
+            .strings("libraries")
+            .with_default("direct_libraries", command_line(), Value::List(vec![]))
             .returns(Type::Module)
             // a program that writes a file once for every target, a compiler of Go once per target
             .placed(Placement::UnlessUnchanged)
@@ -79,14 +92,21 @@ struct CommandSpec {
     path: Vec<PathBuf>,
     /// what the modules of the command and its dependencies produced
     module_files: Vec<PathBuf>,
+    /// written before the command: below the directory, with their content
+    files: Vec<(PathBuf, String)>,
+    libraries: Vec<String>,
+    direct_libraries: Vec<String>,
 }
 
 fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
     let spec = CommandSpec::read(context, args)?;
     let always: bool = args.get("always")?;
+    let target = context.target.map_or("this machine".to_string(), |target| target.name());
+    claim_files(&spec, &target)?;
 
     let mut fingerprint = InputFingerprint::in_build_dir(&spec.build_dir, &format!("commands/{}", spec.name));
     fingerprint.add((&spec.command, &spec.outputs, &spec.environment, &spec.environment_inputs, &spec.path));
+    fingerprint.add((&spec.files, &spec.libraries, &spec.direct_libraries));
     fingerprint.add_files(&spec.inputs)?;
     fingerprint.add_files(&spec.module_files)?;
 
@@ -99,8 +119,19 @@ fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value
         .map(PathBuf::as_path)
         .collect();
 
-    if always || !fingerprint.reports_up_to_date(&spec.name, &outputs)? {
+    // the files it writes are next to the sources, where an editor may change what the command made of them
+    let kept_outputs = spec.build_dir
+        .join(up_to_date::FINGERPRINTS_DIR)
+        .join(format!("commands/{}.outputs", spec.name));
+    let outputs_changed = !spec.files.is_empty() && !outputs_as_left(&kept_outputs, &spec.outputs);
+
+    if always || outputs_changed || !fingerprint.reports_up_to_date(&spec.name, &outputs)? {
         spec.run()?;
+
+        if !spec.files.is_empty() {
+            system::write_file(&kept_outputs, &format!("{:016x}", up_to_date::files_hash(&spec.outputs)?))?;
+        }
+
         fingerprint.store_done(&spec.name, &artifact)?;
     }
 
@@ -134,25 +165,7 @@ fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value
 
 impl CommandSpec {
     fn read(context: &BuildScriptContext, args: &Arguments) -> Result<Self, String> {
-        let name: String = args.get("name")?;
-
-        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
-            return Err(format!("\"{name}\" cannot name a command, its files go to build/commands/<name>"));
-        }
-
-        // without the . of directory = "." in every path of the log
-        let directory: PathBuf = context.project_dir
-            .join(args.get::<String>("directory")?)
-            .components()
-            .filter(|component| *component != Component::CurDir)
-            .collect();
-
-        if !directory.is_dir() {
-            return Err(format!("directory {} does not exist", directory.display()));
-        }
-
-        let build_dir = context.build_dir(&directory);
-        let output_dir = build_dir.join("commands").join(&name);
+        let Place { name, directory, build_dir, output_dir } = Place::of(context, args)?;
 
         let command = command_line(args.get("command")?, &output_dir)?;
 
@@ -165,15 +178,7 @@ impl CommandSpec {
             .map(|output| directory.join(with_output(output, &output_dir)))
             .collect();
 
-        let mut environment = vec![];
-
-        for entry in args.get::<Vec<String>>("environment")? {
-            let Some((variable, value)) = entry.split_once('=') else {
-                return Err(format!("environment takes NAME=value, not {entry}"));
-            };
-
-            environment.push((variable.to_string(), with_output(value, &output_dir)));
-        }
+        let environment = environment(args, &output_dir)?;
 
         let environment_inputs = args.get::<Vec<String>>("environment_inputs")?
             .into_iter()
@@ -183,12 +188,21 @@ impl CommandSpec {
             })
             .collect();
 
-        let path = args.get::<Vec<String>>("path")?
-            .iter()
-            .map(|directory_on_path| directory.join(with_output(directory_on_path, &output_dir)))
-            .collect();
+        let path = path(args, &directory, &output_dir)?;
 
         let inputs = system::files_matching(&directory, &args.get::<Vec<String>>("inputs")?, &args.get::<Vec<String>>("exclude")?);
+
+        let mut files = vec![];
+
+        for file in args.get::<Vec<Vec<String>>>("files")? {
+            let [path, content] = file.as_slice() else {
+                return Err(format!("files takes file(path, content), not a list of {} strings", file.len()));
+            };
+
+            files.push((below(&directory, path)?, content.clone()));
+        }
+
+        let direct_libraries = command_line(args.get("direct_libraries")?, &output_dir)?;
 
         let mut module_values = args.get::<Vec<Value>>("command")?;
         module_values.extend(args.get::<Vec<Value>>("dependencies")?);
@@ -205,6 +219,9 @@ impl CommandSpec {
             environment_inputs,
             path,
             module_files: module_files(&module_values)?,
+            files,
+            libraries: args.get("libraries")?,
+            direct_libraries,
         });
     }
 
@@ -216,10 +233,16 @@ impl CommandSpec {
         return Ok(process);
     }
 
-    /// Into a fresh {output}: what a renamed source left there is gone
+    /// Into a fresh {output}: what a renamed source left there is gone. The files first, the libraries the
+    /// command took once it ran.
     fn run(&self) -> Result<(), String> {
         let what = what(&self.command);
         system::recreate_dir(&self.output_dir)?;
+
+        for (path, content) in &self.files {
+            system::write_file(path, content)?;
+        }
+
         system::log(&self.name, &format!("Running {what}"));
 
         let mut process = self.process(&self.command[0], &self.command[1..])?;
@@ -227,6 +250,16 @@ impl CommandSpec {
 
         if let Some(missing) = self.outputs.iter().find(|output| !output.exists()) {
             return Err(format!("{what} did not write {}", system::relative_with_slashes(&self.directory, missing)));
+        }
+
+        if !self.direct_libraries.is_empty() {
+            let listing = crate::command::what(&self.direct_libraries);
+            let mut process = self.process(&self.direct_libraries[0], &self.direct_libraries[1..])?;
+            let taken = system::command_output(&mut process, &listing)?;
+
+            for note in checked_libraries(&self.name, &self.libraries, &taken)? {
+                system::log(&self.name, &note);
+            }
         }
 
         return Ok(());
@@ -266,6 +299,203 @@ impl CommandSpec {
 
         return Ok(ModuleTests::Run(Box::new(run)));
     }
+}
+
+/// Where a command runs and writes: its name, directory, build/ and {output}
+struct Place {
+    name: String,
+    directory: PathBuf,
+    /// build/ of its directory, build/<target>/ for another target than the machine
+    build_dir: PathBuf,
+    output_dir: PathBuf,
+}
+
+impl Place {
+    fn of(context: &BuildScriptContext, args: &Arguments) -> Result<Self, String> {
+        let name: String = args.get("name")?;
+
+        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+            return Err(format!("\"{name}\" cannot name a command, its files go to build/commands/<name>"));
+        }
+
+        // without the . of directory = "." in every path of the log
+        let directory: PathBuf = context.project_dir
+            .join(args.get::<String>("directory")?)
+            .components()
+            .filter(|component| *component != Component::CurDir)
+            .collect();
+
+        if !directory.is_dir() {
+            return Err(format!("directory {} does not exist", directory.display()));
+        }
+
+        let build_dir = context.build_dir(&directory);
+        let output_dir = build_dir.join("commands").join(&name);
+
+        return Ok(Place { name, directory, build_dir, output_dir });
+    }
+}
+
+/// NAME=value of `environment`, {output} replaced
+fn environment(args: &Arguments, output_dir: &Path) -> Result<Vec<(String, String)>, String> {
+    let mut environment = vec![];
+
+    for entry in args.get::<Vec<String>>("environment")? {
+        let Some((variable, value)) = entry.split_once('=') else {
+            return Err(format!("environment takes NAME=value, not {entry}"));
+        };
+
+        environment.push((variable.to_string(), with_output(value, output_dir)));
+    }
+
+    return Ok(environment);
+}
+
+/// The directories of `path`, relative to the directory of the command
+fn path(args: &Arguments, directory: &Path, output_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    return Ok(args.get::<Vec<String>>("path")?
+        .iter()
+        .map(|directory_on_path| directory.join(with_output(directory_on_path, output_dir)))
+        .collect());
+}
+
+/// A path of `files` below the directory of the command: neither absolute nor up with ..
+fn below(directory: &Path, path: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(path);
+    let leaves = relative.components()
+        .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)));
+
+    if path.is_empty() || leaves {
+        return Err(format!("files go below the directory of the command, \"{path}\" does not"));
+    }
+
+    return Ok(directory.join(relative));
+}
+
+/// The files of the command are its own: no other command writes them, and no other target of it
+fn claim_files(spec: &CommandSpec, target: &str) -> Result<(), String> {
+    let mut writers = WRITERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    for (path, _) in &spec.files {
+        let file = system::relative_with_slashes(&spec.directory, path);
+
+        match writers.get(path) {
+            Some((name, _)) if *name != spec.name => {
+                return Err(format!(
+                    "{} writes {file} like {name}: commands that need the same file depend on one command that writes it",
+                    spec.name
+                ));
+            }
+            Some((_, other)) if other != target => {
+                return Err(format!(
+                    "{} writes {file} for {target} and for {other}: the files of a command are the same for every target, \
+                     a command of its own writes them once",
+                    spec.name
+                ));
+            }
+            _ => {
+                writers.insert(path.clone(), (spec.name.clone(), target.to_string()));
+            }
+        }
+    }
+
+    return Ok(());
+}
+
+/// Whether the outputs are as the last run left them, which `kept` holds the hash of
+fn outputs_as_left(kept: &Path, outputs: &[PathBuf]) -> bool {
+    let Ok(stored) = std::fs::read_to_string(kept) else {
+        return false;
+    };
+
+    return up_to_date::files_hash(outputs).is_ok_and(|hash| stored.trim() == format!("{hash:016x}"));
+}
+
+/// The name of name@version, all of it without a version: github.com/spf13/cobra, @types/node of npm
+pub fn library_name(notation: &str) -> &str {
+    return split_library(notation).0;
+}
+
+/// The name and version of name@version, "" without a version
+fn split_library(notation: &str) -> (&str, &str) {
+    match notation.rfind('@') {
+        Some(at) if at > 0 => return (&notation[..at], &notation[at + 1..]),
+        _ => return (notation, ""),
+    }
+}
+
+/// A library as a tool prints it, written name@version: name@version itself, the name and the version like
+/// serde v1.0.215 of cargo tree, serde = "1.0.229" of cargo search, what follows them left out, or the name
+/// alone. None when what stands for the version is none, like the = of serde@=.
+fn printed_library(line: &str) -> Option<String> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let first = *fields.first()?;
+
+    // @types/node 22.0.0 of npm: its @ starts the name
+    let (name, version) = match split_library(first) {
+        (name, version) if !version.is_empty() => (name, Some(version)),
+        _ => match fields.get(1) {
+            Some(&"=") => (first, Some(fields.get(2).map_or("", |version| version.trim_matches(['"', '\''])))),
+            version => (first, version.copied()),
+        },
+    };
+
+    match version {
+        None => return Some(name.to_string()),
+        Some(version) if version.starts_with(|character: char| character.is_ascii_alphanumeric()) => {
+            return Some(format!("{name}@{version}"));
+        }
+        Some(_) => return None,
+    }
+}
+
+/// v1.0.215 of cargo tree is 1.0.215 of a script, the v of a Go version is in both
+fn same_version(first: &str, second: &str) -> bool {
+    fn without_v(version: &str) -> &str {
+        match version.strip_prefix('v') {
+            Some(rest) if rest.starts_with(|character: char| character.is_ascii_digit()) => return rest,
+            _ => return version,
+        }
+    }
+
+    return without_v(first) == without_v(second);
+}
+
+/// What the command took, one library a line, against what the script lists: an error for one the script does
+/// not list, notes for listed ones it does not take and for other versions than a listed one names
+fn checked_libraries(module: &str, listed: &[String], taken: &str) -> Result<Vec<String>, String> {
+    let taken: Vec<String> = taken.lines()
+        .filter_map(printed_library)
+        .collect();
+    let listing = |library: &str| listed.iter().find(|listed| library_name(listed) == library_name(library));
+
+    let mut unlisted = vec![];
+    let mut notes = vec![];
+
+    for library in &taken {
+        match listing(library) {
+            None => unlisted.push(format!("{module} uses {library}, which its libraries do not list: build install {library}")),
+            Some(listed) => {
+                let (wanted, version) = (split_library(listed).1, split_library(library).1);
+
+                if !wanted.is_empty() && !same_version(wanted, version) {
+                    notes.push(format!("uses {library} for {listed} of its libraries"));
+                }
+            }
+        }
+    }
+
+    for library in listed {
+        if !taken.iter().any(|taken| library_name(taken) == library_name(library)) {
+            notes.push(format!("lists {library}, which it does not use"));
+        }
+    }
+
+    if !unlisted.is_empty() {
+        return Err(unlisted.join("\n"));
+    }
+
+    return Ok(notes);
 }
 
 /// `build-script run` of a command: its `run` with the arguments after --, in its directory
@@ -315,10 +545,21 @@ fn what(command: &[String]) -> String {
         .to_string_lossy()
         .to_string();
 
-    return match command.get(1) {
-        Some(first) if !first.starts_with('-') && !first.contains(['/', '\\', '.']) => format!("{program} {first}"),
-        _ => program,
+    // go -C src mod tidy: the subcommand after the directory to change to
+    let start = match command.get(1).map(String::as_str) {
+        Some("-C") => 3,
+        _ => 1,
     };
+
+    // up to two words, like mod tidy of go and run build of npm, not options or paths
+    let words: Vec<&str> = command.iter()
+        .skip(start)
+        .take(2)
+        .map(String::as_str)
+        .take_while(|word| !word.is_empty() && !word.starts_with('-') && !word.contains(['/', '\\', '.', ' ', '=']))
+        .collect();
+
+    return [program.as_str()].into_iter().chain(words).collect::<Vec<_>>().join(" ");
 }
 
 fn with_output(text: &str, output_dir: &Path) -> String {
@@ -383,4 +624,70 @@ fn module_files(values: &[Value]) -> Result<Vec<PathBuf>, String> {
     }
 
     return Ok(files);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(arguments: &[&str]) -> Vec<String> {
+        return arguments.iter().map(|argument| argument.to_string()).collect();
+    }
+
+    #[test]
+    fn libraries_are_named_before_their_last_at() {
+        assert_eq!(library_name("github.com/spf13/cobra@v1.9.1"), "github.com/spf13/cobra");
+        assert_eq!(library_name("@types/node@22.0.0"), "@types/node");
+        assert_eq!(library_name("@types/node"), "@types/node");
+        assert_eq!(library_name("serde"), "serde");
+        assert_eq!(split_library("golang.org/x/text@v0.24.0"), ("golang.org/x/text", "v0.24.0"));
+    }
+
+    #[test]
+    fn libraries_are_read_in_the_forms_tools_print_them() {
+        let printed = |line: &str| printed_library(line);
+        assert_eq!(printed("github.com/spf13/cobra@v1.9.1").as_deref(), Some("github.com/spf13/cobra@v1.9.1"));
+        assert_eq!(printed("serde v1.0.215 (proc-macro)").as_deref(), Some("serde@v1.0.215"));
+        assert_eq!(printed("@types/node 22.0.0").as_deref(), Some("@types/node@22.0.0"));
+        assert_eq!(printed("  rich  ").as_deref(), Some("rich"));
+        assert_eq!(printed("   "), None);
+
+        // like a line of Cargo.toml, a version that is none is no library
+        assert_eq!(printed("serde = \"1.0.229\"    # A generic serialization framework").as_deref(), Some("serde@1.0.229"));
+        assert_eq!(printed("serde@="), None);
+        assert_eq!(printed("serde = "), None);
+        assert_eq!(printed("hello (*)"), None);
+
+        assert!(same_version("v1.0.215", "1.0.215"));
+        assert!(same_version("v1.9.1", "v1.9.1"));
+        assert!(!same_version("v1.9.1", "v1.9.2"));
+        assert!(!same_version("version", "ersion"));
+    }
+
+    #[test]
+    fn what_a_command_took_is_checked_against_the_libraries_of_the_script() {
+        let listed = line(&["a@v1", "b@v1", "unused@v3", "serde@1.0.215", "tokio"]);
+
+        // a listed one without a version takes any, the v of cargo tree is no other version
+        let notes = checked_libraries("m", &listed, "a@v1\n\nb@v2\nserde v1.0.215 (proc-macro)\ntokio v1.41.0\n").unwrap();
+        assert_eq!(notes, [
+            "uses b@v2 for b@v1 of its libraries",
+            "lists unused@v3, which it does not use",
+        ]);
+
+        let error = checked_libraries("m", &listed, "a@v1\nc@v4\nd v5").unwrap_err();
+        assert_eq!(error, "m uses c@v4, which its libraries do not list: build install c@v4\n\
+                           m uses d@v5, which its libraries do not list: build install d@v5");
+
+        assert_eq!(checked_libraries("m", &[], "").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn commands_are_named_by_their_subcommand_also_after_a_directory() {
+        assert_eq!(what(&line(&["/go/bin/go", "-C", "src", "mod", "tidy"])), "go mod tidy");
+        assert_eq!(what(&line(&["/go/bin/go", "build", "-o", "x"])), "go build");
+        assert_eq!(what(&line(&["/go/bin/go", "test", "./..."])), "go test");
+        assert_eq!(what(&line(&["npm", "run", "build", "--", "x"])), "npm run build");
+        assert_eq!(what(&line(&["sh", "-c", "true"])), "sh");
+    }
 }

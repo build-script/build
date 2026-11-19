@@ -946,6 +946,65 @@ fn commands_run_again_only_when_what_they_depend_on_changed() {
     assert!(error.contains("\"a/b\" cannot name a command"), "{error}");
 }
 
+#[cfg(unix)]
+#[test]
+fn commands_write_their_files_and_take_only_listed_libraries() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command-files");
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |name: &str| project.join(name);
+    system::write_file(&file("src/main.txt"), "main").unwrap();
+    system::write_file(&file("taken.txt"), "a@1\n").unwrap();
+
+    // like go.mod: the script writes the start, the command completes it next to the sources
+    let script = |libraries: &str| format!(
+        "build_command(\"m\", list(\"sh\", \"-c\", \"echo completed >> src/manifest; echo built >> runs.log\"), \
+         files = list(file(\"src/manifest\", \"start\\n\")), \
+         libraries = {libraries}, direct_libraries = list(\"cat\", \"taken.txt\"), \
+         inputs = list(\"src/*.txt\"), outputs = list(\"src/manifest\"))"
+    );
+    let runs = || system::read_file(&file("runs.log")).unwrap_or_default().lines().count();
+
+    build_in(&directory, &script("list(\"a@1\")"), TestSelection::None).unwrap();
+    assert_eq!((runs(), system::read_file(&file("src/manifest")).unwrap()), (1, "start\ncompleted\n".to_string()));
+
+    build_in(&directory, &script("list(\"a@1\")"), TestSelection::None).unwrap();
+    assert_eq!(runs(), 1, "up to date, what the command completed is its output");
+
+    // an editor changed what the command made of the files
+    system::write_file(&file("src/manifest"), "start\nby hand\n").unwrap();
+    build_in(&directory, &script("list(\"a@1\")"), TestSelection::None).unwrap();
+    assert_eq!(runs(), 2, "a changed output of a command with files builds again");
+    assert_eq!(system::read_file(&file("src/manifest")).unwrap(), "start\ncompleted\n");
+
+    // a source imports another library
+    system::write_file(&file("taken.txt"), "a@1\nb@2\n").unwrap();
+    system::write_file(&file("src/main.txt"), "main, which takes b").unwrap();
+    let error = build_in(&directory, &script("list(\"a@1\")"), TestSelection::None).unwrap_err();
+    assert!(error.ends_with("m uses b@2, which its libraries do not list: build install b@2"), "{error}");
+
+    build_in(&directory, &script("list(\"a@1\", \"b@2\")"), TestSelection::None).unwrap();
+    assert_eq!(runs(), 4, "listed now, it builds");
+
+    let outside = "build_command(\"m\", list(\"true\"), files = list(file(\"../manifest\", \"\")))";
+    assert!(build_in(&directory, outside, TestSelection::None).unwrap_err().contains("files go below the directory of the command"));
+    let pair = "build_command(\"m\", list(\"true\"), files = list(list(\"a\")))";
+    assert!(build_in(&directory, pair, TestSelection::None).unwrap_err().contains("files takes file(path, content)"));
+
+    // two commands that write one file would overwrite each other
+    let both = "build_command(\"one\", list(\"true\"), files = list(file(\"shared\", \"1\")))\n\
+                build_command(\"two\", list(\"true\"), files = list(file(\"shared\", \"2\")))";
+    let error = build_in(&directory, both, TestSelection::None).unwrap_err();
+    assert!(error.contains(" writes shared like "), "{error}");
+
+    // a command whose files are written for every target
+    let per_target = "build_command(\"each\", list(\"true\"), files = list(file(\"each.txt\", target())), \
+                      targets = list(host_target(), \"windows-x86_64\"))";
+    let errors = build_for(&directory, per_target, &[]).unwrap_err();
+    assert!(errors[0].contains("the files of a command are the same for every target"), "{errors:?}");
+}
+
 /// The modules of a build of `source` for the machine and the other targets, like the command line does it,
 /// on one job: a build that waits for another while it holds the job would never end
 #[cfg(unix)]
