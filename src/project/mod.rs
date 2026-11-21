@@ -266,8 +266,18 @@ fn new_plugin_project(
     };
     let script = script::with_module("", &variable_name(name), &module, &template)?;
 
-    let mut files = vec![(PathBuf::from(".gitignore"), "build/\n".to_string())];
-    files.extend(template.files.into_iter().map(|(file, content)| (PathBuf::from(file), content)));
+    // what the template ignores besides build/, like the go.mod build-script writes
+    let mut ignored = "build/\n".to_string();
+    let mut files = vec![];
+
+    for (file, content) in template.files {
+        match file == ".gitignore" {
+            true => ignored = with_ignored(&ignored, &content),
+            false => files.push((PathBuf::from(file), content)),
+        }
+    }
+
+    files.insert(0, (PathBuf::from(".gitignore"), ignored));
     files.push((PathBuf::from("project.build"), script));
 
     for (file, content) in &files {
@@ -278,6 +288,19 @@ fn new_plugin_project(
     println!("Created {kind} project {name} in {} from the template {template_name} of {plugin}", path.display());
 
     return Ok(());
+}
+
+/// The lines of `ignored`, then those of `more` it does not have yet
+fn with_ignored(ignored: &str, more: &str) -> String {
+    let mut lines: Vec<&str> = ignored.lines().collect();
+
+    for line in more.lines().map(str::trim_end) {
+        if !line.is_empty() && !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+
+    return lines.iter().map(|line| format!("{line}\n")).collect();
 }
 
 /// The template of the plugin `kind` names, with how `use` names the plugin and the template's name
@@ -911,6 +934,7 @@ mod tests {
             write("plugin.build", "// Go programs\nbuild_go = fn(name: str, directory: str = \".\") -> module { build_command(name, list(\"true\")) }\n");
             write("templates/app/module.build", "// a Go program\nbuild_go(\"{{build.name}}\")\n");
             write("templates/app/go.mod", "module {{build.domain}}/{{build.name}}\n\ngo 1.27\n");
+            write("templates/app/.gitignore", "build/\ngo.sum\n");
             write("templates/app/main.go", &format!("package main // {greeting} from {{{{build.name}}}}\n"));
             git(&["add", "."]);
             git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", tag]);
@@ -934,7 +958,7 @@ mod tests {
         assert_eq!(read("project.build"), "use go\n\nhello = build_go(\n    \"hello\",\n)\n");
         assert_eq!(read("go.mod"), "module example.com/hello\n\ngo 1.27\n");
         assert_eq!(read("main.go"), "package main // Hello from hello\n");
-        assert_eq!(read(".gitignore"), "build/\n");
+        assert_eq!(read(".gitignore"), "build/\ngo.sum\n", "what the template ignores, build/ once");
         assert!(read("project.lock").contains("ref=go-v1.0.0"), "{}", read("project.lock"));
 
         // a newer release does not change what the project builds with: add takes the release of the lock
@@ -943,6 +967,7 @@ mod tests {
         assert!(read("project.build").ends_with("worker = build_go(\n    \"worker\",\n    directory = \"worker\",\n)\n"), "{}", read("project.build"));
         assert_eq!(read("worker/main.go"), "package main // Hello from worker\n");
         assert_eq!(read("worker/go.mod"), "module example.com/worker\n\ngo 1.27\n");
+        assert_eq!(read("worker/.gitignore"), "build/\ngo.sum\n", "git takes the .gitignore of a directory for it");
 
         // a script without use go gets it
         let other = root.join("other");
