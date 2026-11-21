@@ -226,8 +226,10 @@ pub struct ModuleCall<'a> {
     /// what its name argument says, else the variable it is assigned to
     pub name: String,
     pub function: &'a str,
-    /// whose `use` brought the function
-    pub platform: &'static str,
+    /// whose `use` brought the function: a platform like kotlin or a plugin like go
+    pub platform: &'a str,
+    /// a function of a plugin, whose libraries its own tools resolve
+    pub plugin: bool,
     pub signature: Arc<FunctionSignature>,
     /// where its statement starts: the variables it uses are assigned before
     pub statement_start: usize,
@@ -256,8 +258,20 @@ pub struct DependencyEdit {
 
 /// The build calls of modules at the top level of the script: calls of the
 /// functions of its platforms that build a module
+#[cfg(test)]
 pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
-    let mut functions: Vec<(&'static str, &'static str, Arc<FunctionSignature>)> = vec![];
+    return module_calls_with(script, &[]);
+}
+
+/// Like module_calls, also of the build functions of plugins: their plugin, name and signature, which the
+/// runtime reads from the plugins of the script
+pub fn module_calls_with<'a>(
+    script: &'a Script,
+    plugin_functions: &'a [(String, String, Arc<FunctionSignature>)],
+) -> Vec<ModuleCall<'a>> {
+    let mut functions: Vec<(&'a str, &'a str, Arc<FunctionSignature>, bool)> = plugin_functions.iter()
+        .map(|(plugin, function, signature)| (plugin.as_str(), function.as_str(), signature.clone(), true))
+        .collect();
     let mut calls = vec![];
 
     for statement in &script.statements {
@@ -270,13 +284,13 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
                         if let Value::Builtin { signature, .. } = value
                             && matches!(signature.returns, Type::Module)
                         {
-                            functions.push((platform.name, function, signature));
+                            functions.push((platform.name, function, signature, false));
                         }
                     }
                 }
                 continue;
             }
-            // calls of plugin functions are not known without running them
+            // the functions of plugins come with plugin_functions
             StatementType::UsePlugin(_) => continue,
             StatementType::Expression(expression) => expression,
         };
@@ -290,8 +304,8 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
             continue;
         };
 
-        let Some((platform, function, signature)) = identifier(target)
-            .and_then(|name| functions.iter().find(|(_, function, _)| *function == name))
+        let Some((platform, function, signature, plugin)) = identifier(target)
+            .and_then(|name| functions.iter().find(|(_, function, ..)| *function == name))
         else {
             continue;
         };
@@ -315,6 +329,7 @@ pub fn module_calls(script: &Script) -> Vec<ModuleCall<'_>> {
             name,
             function,
             platform,
+            plugin: *plugin,
             signature: signature.clone(),
             statement_start: statement.span.start,
             call: value,
@@ -429,10 +444,13 @@ fn not_a_list(module: &ModuleCall, parameter: &str, notation: &str) -> String {
 /// group:artifact of a Maven notation, which versions do not change, else the vcpkg port, which its
 /// features do not change: llvm of llvm[clang]
 fn library_of(notation: &str) -> &str {
-    match notation.match_indices(':').nth(1) {
-        Some((second_colon, _)) => return &notation[..second_colon],
-        None => return notation.split('[').next().unwrap_or(notation),
+    if let Some((second_colon, _)) = notation.match_indices(':').nth(1) {
+        return &notation[..second_colon];
     }
+
+    // name@version of the libraries of plugins, name[features] of vcpkg ports
+    let name = crate::command::library_name(notation);
+    return name.split('[').next().unwrap_or(name);
 }
 
 /// The value of the last top level assignment to `variable` before `before`

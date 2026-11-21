@@ -135,7 +135,7 @@ fn command_usage(command: &str) -> String {
         "new" => vec![format!("<kind>: {}, or a plugin like go, go:<template>", project::project_kinds().join(", "))],
         "add" => vec![format!("<kind>: {}, or a plugin like go, go:<template>", project::module_kinds().join(", "))],
         "install" => vec![
-            "<library>: group:artifact[:version] of Maven, or a vcpkg port for a C or C++ module".to_string(),
+            "<library>: group:artifact[:version] of Maven, a vcpkg port for a C or C++ module, or name[@version] for a module of a plugin, like a Go module".to_string(),
             format!("<list>: {}, without one dependencies", lists.join(", ")),
         ],
         "config" => vec![format!("<setting>: {}", settings.join(", "))],
@@ -664,7 +664,7 @@ fn main() {
             let library = argument(
                 "install",
                 library.as_deref(),
-                "library, group:artifact[:version] or a vcpkg port",
+                "library, group:artifact[:version], a vcpkg port or name[@version]",
                 &[],
             );
 

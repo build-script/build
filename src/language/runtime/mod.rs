@@ -102,6 +102,8 @@ pub enum Requests {
     All,
     /// only the modules built once for every target, like jars: build --target without the machine
     HostOnly,
+    /// none, and what waits for a module gets an error: build install, which reads the arguments of a module
+    Nothing,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -447,13 +449,47 @@ impl Runtime {
                 self.evaluate(expression)?;
                 return Ok(());
             }
-            StatementType::Use(platform) => return self.load_platform(&platform.name, statement.span),
-            StatementType::UsePlugin(plugin) => return self.load_plugin(plugin, statement.span),
+            StatementType::Use(platform) => return self.load_platform(&platform.name, statement.span).map(|_| ()),
+            StatementType::UsePlugin(plugin) => return self.load_plugin(plugin, statement.span).map(|_| ()),
         }
     }
 
+    /// The build functions the plugins of the script define, with the name of their plugin, without running
+    /// the script: build install finds the modules of plugins by them
+    pub fn plugin_build_functions(&mut self, script: &Script) -> Result<Vec<(String, String, Arc<FunctionSignature>)>, String> {
+        let mut functions = vec![];
+
+        for statement in &script.statements {
+            let (plugin, definitions) = match &statement.variant {
+                StatementType::Use(platform) if platforms().any(|known| known.name == platform.name) => continue,
+                StatementType::Use(platform) => (platform.name.clone(), self.load_platform(&platform.name, statement.span)),
+                StatementType::UsePlugin(plugin) => (plugin.clone(), self.load_plugin(plugin, statement.span)),
+                StatementType::Expression(_) => continue,
+            };
+
+            for (name, value) in definitions.map_err(|error| self.describe(&error))? {
+                if let Value::Function(function) = &value && matches!(function.signature.returns, Type::Module) {
+                    functions.push((plugin.clone(), name, function.signature.clone()));
+                }
+            }
+        }
+
+        return Ok(functions);
+    }
+
+    /// The module the script named `name`, built or not
+    pub fn module_named(&self, name: &str) -> Option<Arc<PendingModule>> {
+        return self.built.iter()
+            .find(|module| module.name == name)
+            .cloned();
+    }
+
+    pub fn context(&self) -> &BuildScriptContext {
+        return &self.context;
+    }
+
     /// A file of the project or a plugin of a repository: `use "./go.build"`, `use "owner/repository"`
-    fn load_plugin(&mut self, plugin: &str, span: Span) -> Result<(), RuntimeError> {
+    fn load_plugin(&mut self, plugin: &str, span: Span) -> Result<Vec<(String, Value)>, RuntimeError> {
         if plugin.starts_with("./") || plugin.starts_with("../") {
             // relative to the file with the use
             let file = self.source_directory(span.source).join(plugin);
@@ -471,7 +507,7 @@ impl Runtime {
     }
 
     /// Defines what the plugin defines, loaded once and in a scope of its own
-    fn load_plugin_file(&mut self, plugin: &str, file: PathBuf, span: Span) -> Result<(), RuntimeError> {
+    fn load_plugin_file(&mut self, plugin: &str, file: PathBuf, span: Span) -> Result<Vec<(String, Value)>, RuntimeError> {
         let path = system::canonical_path(&file).map_err(|_| {
             let (plugin, path) = (plugin.to_string(), file.display().to_string());
             return RuntimeError::new(RuntimeErrorType::PluginNotFound { plugin, path }, span);
@@ -491,19 +527,19 @@ impl Runtime {
             }
         };
 
-        for (name, value) in definitions {
-            let defined = self.scope.lock().unwrap().get(&name);
+        for (name, value) in &definitions {
+            let defined = self.scope.lock().unwrap().get(name);
 
             // the same plugin used twice defines the same values
-            if let Some(defined) = defined && Self::values_equal(&defined, &value) != Some(true) {
-                let plugin = plugin.to_string();
+            if let Some(defined) = defined && Self::values_equal(&defined, value) != Some(true) {
+                let (plugin, name) = (plugin.to_string(), name.clone());
                 return Err(RuntimeError::new(RuntimeErrorType::PluginNameTaken { plugin, name }, span));
             }
 
-            self.define(&name, value);
+            self.define(name, value.clone());
         }
 
-        return Ok(());
+        return Ok(definitions);
     }
 
     /// The names a plugin assigns at its top, but those starting with _, and their values
@@ -568,7 +604,7 @@ impl Runtime {
     }
 
     /// A platform of build-script, otherwise a plugin of the official list: `use go`, `use go@1.4`
-    fn load_platform(&mut self, name: &str, span: Span) -> Result<(), RuntimeError> {
+    fn load_platform(&mut self, name: &str, span: Span) -> Result<Vec<(String, Value)>, RuntimeError> {
         let Some(platform) = platforms().find(|platform| platform.name == name) else {
             let repository = self.official_plugins.clone();
             let source = crate::plugins::PluginSource::official(name, &repository);
@@ -585,11 +621,16 @@ impl Runtime {
             return self.load_plugin_file(name, file, span);
         };
 
-        for (function, value) in (platform.functions)() {
-            self.define(function, value);
+        let functions: Vec<(String, Value)> = (platform.functions)()
+            .into_iter()
+            .map(|(function, value)| (function.to_string(), value))
+            .collect();
+
+        for (function, value) in &functions {
+            self.define(function, value.clone());
         }
 
-        return Ok(());
+        return Ok(functions);
     }
 
     fn evaluate(&mut self, expression: &Expression) -> Result<Value, RuntimeError> {
@@ -1160,6 +1201,7 @@ impl Runtime {
         let names = |target: Target| targets.iter().any(|name| *name == target.name());
 
         match (self.context.target, self.requests) {
+            (_, Requests::Nothing) => return false,
             // built once for every target, by the machine's evaluation
             (None, _) if placement == Placement::HostOnly => return true,
             // those without targets once the evaluation knows which modules need them, see run
@@ -1396,9 +1438,16 @@ impl Runtime {
         let jobs = self.jobs.clone();
         let dependencies = args.pending_modules();
         let label = self.context.target.map(|target| target.name());
+        let builds = self.requests != Requests::Nothing;
 
         return PendingModule::new(call, dependencies, move |module| {
             terminal::set_target_label(label);
+
+            if !builds {
+                let needed = format!("build install builds nothing, but the script needs {} {} built", module.function, module.name);
+                module.finish(Err(BuildFailure::Failed(needed)));
+                return;
+            }
 
             let dependencies_built = args.pending_modules()
                 .iter()

@@ -68,6 +68,9 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             // version like serde v1.0.215 of cargo tree, or the name alone
             .strings("libraries")
             .with_default("direct_libraries", command_line(), Value::List(vec![]))
+            // prints {name} in {version}, latest without one, like direct_libraries or the version alone like npm
+            // view: what build install writes
+            .with_default("resolve", Type::list(Type::String), Value::List(vec![]))
             .returns(Type::Module)
             // a program that writes a file once for every target, a compiler of Go once per target
             .placed(Placement::UnlessUnchanged)
@@ -449,6 +452,34 @@ fn printed_library(line: &str) -> Option<String> {
     }
 }
 
+/// What resolve printed for the library `name`, in its first line: a library like printed_library reads it, or
+/// its version alone like npm view prints it. An error without a version, or for another library, like the
+/// nearest one a search found.
+fn resolved_library(name: &str, printed: &str) -> Result<String, String> {
+    let line = printed.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| format!("printed no version of {name}"))?;
+
+    let resolved = match !line.contains(char::is_whitespace) && split_library(line).1.is_empty() && line != name {
+        true => printed_library(&format!("{name}@{line}")),
+        false => printed_library(line),
+    };
+
+    let Some(resolved) = resolved.filter(|resolved| !split_library(resolved).1.is_empty()) else {
+        return Err(format!("printed no version of {name}: {line}"));
+    };
+
+    // crates.io and PyPI take serde_json for serde-json, PyPI also any case
+    let normalized = |name: &str| name.to_lowercase().replace(['_', '.'], "-");
+
+    if normalized(library_name(&resolved)) != normalized(name) {
+        return Err(format!("printed {resolved}, which is no version of {name}"));
+    }
+
+    return Ok(resolved);
+}
+
 /// v1.0.215 of cargo tree is 1.0.215 of a script, the v of a Go version is in both
 fn same_version(first: &str, second: &str) -> bool {
     fn without_v(version: &str) -> &str {
@@ -496,6 +527,35 @@ fn checked_libraries(module: &str, listed: &[String], taken: &str) -> Result<Vec
     }
 
     return Ok(notes);
+}
+
+/// What build install writes for `library` of the command `args` describe: what its `resolve` prints with
+/// {name} and {version}, latest without one. None when it has no resolve.
+pub fn resolve(context: &BuildScriptContext, args: &Arguments, library: &str) -> Result<Option<String>, String> {
+    let resolve: Vec<String> = args.get("resolve")?;
+
+    if resolve.is_empty() {
+        return Ok(None);
+    }
+
+    let Place { name, directory, output_dir, .. } = Place::of(context, args)?;
+    let (library_name, version) = match split_library(library) {
+        (library_name, "") => (library_name, "latest"),
+        named => named,
+    };
+    let line: Vec<String> = resolve.iter()
+        .map(|argument| argument.replace("{name}", library_name).replace("{version}", version))
+        .collect();
+
+    let mut process = Command::new(&line[0]);
+    process.args(&line[1..]).current_dir(&directory);
+    set_environment(&mut process, &environment(args, &output_dir)?, &path(args, &directory, &output_dir)?)?;
+
+    let printed = system::command_output(&mut process, &what(&line))?;
+
+    return resolved_library(library_name, &printed)
+        .map(Some)
+        .map_err(|problem| format!("{} for {name} {problem}", what(&line)));
 }
 
 /// `build-script run` of a command: its `run` with the arguments after --, in its directory
@@ -657,6 +717,20 @@ mod tests {
         assert_eq!(printed("serde@="), None);
         assert_eq!(printed("serde = "), None);
         assert_eq!(printed("hello (*)"), None);
+
+        // the version alone, like npm view prints it, is one of the library asked for
+        let resolved = |name: &str, printed: &str| resolved_library(name, printed);
+        assert_eq!(resolved("lodash", "4.17.21\n").as_deref(), Ok("lodash@4.17.21"));
+        assert_eq!(resolved("@types/node", "\n22.0.0").as_deref(), Ok("@types/node@22.0.0"));
+        assert_eq!(resolved("serde", "serde 1.0.215\n").as_deref(), Ok("serde@1.0.215"));
+        assert_eq!(resolved("github.com/google/uuid", "github.com/google/uuid@v1.6.0").as_deref(), Ok("github.com/google/uuid@v1.6.0"));
+        assert_eq!(resolved("serde", "serde = \"1.0.229\"    # A generic\n... and 26400 crates more").as_deref(), Ok("serde@1.0.229"));
+        assert_eq!(resolved("serde-json", "serde_json = \"1.0.140\"").as_deref(), Ok("serde_json@1.0.140"));
+
+        assert_eq!(resolved("x", "\n \n"), Err("printed no version of x".to_string()));
+        assert_eq!(resolved("serde", "serde"), Err("printed no version of serde: serde".to_string()));
+        assert_eq!(resolved("serde", "serde = \"\""), Err("printed no version of serde: serde = \"\"".to_string()));
+        assert_eq!(resolved("serdee", "serde = \"1.0.229\""), Err("printed serde@1.0.229, which is no version of serdee".to_string()));
 
         assert!(same_version("v1.0.215", "1.0.215"));
         assert!(same_version("v1.9.1", "v1.9.1"));
