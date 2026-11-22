@@ -336,14 +336,16 @@ mod tests {
 
     #[test]
     fn the_programs_of_conda_forge_are_named_for_their_target() {
-        let linux = conda_programs(Path::new("/gcc"), "linux-aarch64");
-        assert_eq!(linux.cpp_compiler, Path::new("/gcc/bin/aarch64-conda-linux-gnu-g++").display().to_string());
+        let prefix = Path::new("/gcc");
+        let linux = conda_programs(prefix, "linux-aarch64");
+        assert_eq!(linux.cpp_compiler, prefix.join("bin").join("aarch64-conda-linux-gnu-g++").display().to_string());
         assert!(linux.path.is_none());
 
         // on Windows in Library/bin, where the assembler and the linker find zstd.dll
-        let windows = conda_programs(Path::new("/gcc"), "win-64");
-        assert_eq!(windows.archiver, Path::new("/gcc/Library/bin/x86_64-w64-mingw32-gcc-ar.exe").display().to_string());
-        assert_eq!(windows.path, Some(Path::new("/gcc").join("Library").join("bin")));
+        let windows = conda_programs(prefix, "win-64");
+        let bin = prefix.join("Library").join("bin");
+        assert_eq!(windows.archiver, bin.join("x86_64-w64-mingw32-gcc-ar.exe").display().to_string());
+        assert_eq!(windows.path, Some(bin));
     }
 
     #[test]
