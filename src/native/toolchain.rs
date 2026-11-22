@@ -46,6 +46,41 @@ pub struct Ndk {
     pub api_level: i64,
 }
 
+/// The C++ standard library and the C library what a toolchain compiled links with: the C++ libraries of one
+/// link need the same, on Windows the C libraries too
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Abi {
+    /// libstdc++ of GCC, also that of clang on Linux
+    LibStdCxx,
+    /// libc++ of LLVM: the clang of macOS, zig and the NDK
+    LibCxx,
+    /// the C library and the STL of Visual Studio, which the clang of Windows takes
+    Msvc,
+    /// MinGW with libc++, like zig for Windows
+    MinGwLibCxx,
+    /// MinGW with libstdc++, like GCC for Windows
+    MinGwLibStdCxx,
+}
+
+impl Abi {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Abi::LibStdCxx => return "libstdc++",
+            Abi::LibCxx => return "libc++",
+            Abi::Msvc => return "the C library and STL of Visual Studio",
+            Abi::MinGwLibCxx => return "MinGW and libc++",
+            Abi::MinGwLibStdCxx => return "MinGW and libstdc++",
+        }
+    }
+
+    /// Whether C libraries of the one link with the other: on Windows MinGW and Visual Studio have C libraries
+    /// of their own
+    pub fn links_c_of(self, other: Abi) -> bool {
+        let mingw = |abi: Abi| matches!(abi, Abi::MinGwLibCxx | Abi::MinGwLibStdCxx);
+        return (self == Abi::Msvc) == (other == Abi::Msvc) && mingw(self) == mingw(other);
+    }
+}
+
 impl Toolchain {
     /// "system": cc, c++ and ar of the system, on Windows clang, clang++ and llvm-ar, or those CC, CXX
     /// and AR name, like make takes them. "zig": zig cc, zig c++ and zig ar.
@@ -92,6 +127,13 @@ impl Toolchain {
         return self.target.os == OperatingSystem::Windows && self.kind == Kind::System;
     }
 
+    /// What its C++ links with. Those of the system are what CC names: clang takes libc++ on macOS and
+    /// libstdc++ on Linux, a GCC there libstdc++ everywhere.
+    pub fn abi(&self) -> Abi {
+        let gcc = self.kind == Kind::System && is_gcc(&self.version(&self.c_compiler));
+        return abi_of(&self.kind, self.target.os, gcc);
+    }
+
     /// The compilers of a module for the target the script is evaluated for. "auto": those of the system for
     /// this machine, zig for another desktop system. "system" builds for this machine alone, "zig" for every
     /// desktop system.
@@ -127,12 +169,11 @@ impl Toolchain {
     /// `release` with UBSan, whose runtime it links only for -fsanitize=undefined when the link is not its own
     /// debug build.
     pub fn c_compiler_for_tools(&self, release: bool) -> super::CCompiler {
-        let cpp_runtime: &[&str] = match (&self.kind, self.target.os) {
-            (Kind::Zig, _) => &["-lc++"],
+        let cpp_runtime: &[&str] = match (&self.kind, self.abi()) {
             (Kind::Ndk(_), _) => &["-lc++_static", "-lc++abi"],
-            (Kind::System, OperatingSystem::MacOs) => &["-lc++"],
-            (Kind::System, OperatingSystem::Linux) => &["-lstdc++"],
-            _ => &[],
+            (_, Abi::LibCxx | Abi::MinGwLibCxx) => &["-lc++"],
+            (_, Abi::LibStdCxx | Abi::MinGwLibStdCxx) => &["-lstdc++"],
+            (_, Abi::Msvc) => &[],
         };
 
         return super::CCompiler {
@@ -250,6 +291,23 @@ impl Toolchain {
                     .unwrap_or_default();
             })
             .clone();
+    }
+}
+
+/// Of what a compiler says to --version: GCC names no clang, nothing when it does not start
+fn is_gcc(version: &str) -> bool {
+    return !version.is_empty() && !version.contains("clang");
+}
+
+fn abi_of(kind: &Kind, os: OperatingSystem, gcc: bool) -> Abi {
+    match (kind, os) {
+        (Kind::Zig, OperatingSystem::Windows) => return Abi::MinGwLibCxx,
+        (Kind::Zig | Kind::Ndk(_), _) => return Abi::LibCxx,
+        (Kind::System, OperatingSystem::Windows) if gcc => return Abi::MinGwLibStdCxx,
+        (Kind::System, OperatingSystem::Windows) => return Abi::Msvc,
+        (Kind::System, _) if gcc => return Abi::LibStdCxx,
+        (Kind::System, OperatingSystem::Linux) => return Abi::LibStdCxx,
+        (Kind::System, _) => return Abi::LibCxx,
     }
 }
 
@@ -422,6 +480,30 @@ mod tests {
 
         let error = Toolchain::for_target("zig", Target::named("android-aarch64"), None).err().unwrap();
         assert!(error.contains("NDK"), "{error}");
+    }
+
+    #[test]
+    fn the_standard_libraries_follow_the_compilers() {
+        use super::{Abi, Kind, abi_of, is_gcc};
+        use crate::common::target::OperatingSystem::{Linux, MacOs, Windows};
+
+        assert!(is_gcc("gcc (Homebrew GCC 16.2.0) 16.2.0"));
+        assert!(!is_gcc("Apple clang version 16.0.0 (clang-1600.0.26.6)"));
+        // a compiler that does not start says nothing: the default of the system
+        assert!(!is_gcc(""));
+
+        assert_eq!(abi_of(&Kind::System, MacOs, false), Abi::LibCxx);
+        assert_eq!(abi_of(&Kind::System, MacOs, true), Abi::LibStdCxx);
+        assert_eq!(abi_of(&Kind::System, Linux, false), Abi::LibStdCxx);
+        assert_eq!(abi_of(&Kind::System, Windows, false), Abi::Msvc);
+        assert_eq!(abi_of(&Kind::System, Windows, true), Abi::MinGwLibStdCxx);
+        assert_eq!(abi_of(&Kind::Zig, Linux, false), Abi::LibCxx);
+        assert_eq!(abi_of(&Kind::Zig, Windows, false), Abi::MinGwLibCxx);
+
+        // C libraries differ on Windows alone
+        assert!(Abi::LibCxx.links_c_of(Abi::LibStdCxx));
+        assert!(Abi::MinGwLibCxx.links_c_of(Abi::MinGwLibStdCxx));
+        assert!(!Abi::Msvc.links_c_of(Abi::MinGwLibStdCxx));
     }
 
     #[cfg(unix)]

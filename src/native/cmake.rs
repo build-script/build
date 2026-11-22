@@ -13,7 +13,7 @@ use crate::language::runtime::{
 };
 
 use super::toolchain::{self, Toolchain};
-use super::{CCompiler, NativeOutput, vcpkg};
+use super::{NativeOutput, vcpkg};
 
 pub fn build_cmake_signature() -> FunctionSignature {
     return FunctionParameters::new()
@@ -194,11 +194,9 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
 
     // what CMake built it with, always for release: the compilers of the system for the machine, zig for another
     // target
-    let c_compiler = Toolchain::for_target("auto", context.target, context.android.as_ref())
-        .ok()
-        .map(|toolchain| toolchain.c_compiler_for_tools(true));
+    let toolchain = Toolchain::for_target("auto", context.target, context.android.as_ref()).ok();
 
-    return Ok(library_module(name, source, stamp, compile_flags, link_flags, install_dir.join("bin"), c_compiler));
+    return Ok(library_module(name, source, stamp, compile_flags, link_flags, install_dir.join("bin"), toolchain));
 }
 
 /// A library installed on the system, like the LLVM of Homebrew or apt, through its llvm-config
@@ -220,11 +218,8 @@ pub fn system_library(context: &BuildScriptContext, args: &Arguments) -> Result<
     let tools_dir = tool.parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
-    let c_compiler = Toolchain::named("system")
-        .ok()
-        .map(|toolchain| toolchain.c_compiler_for_tools(true));
-
-    return Ok(library_module(name, tools_dir.clone(), tool, compile_flags, link_flags, tools_dir, c_compiler));
+    // like the LLVM of Homebrew with the compilers of the system
+    return Ok(library_module(name, tools_dir.clone(), tool, compile_flags, link_flags, tools_dir, Toolchain::named("system").ok()));
 }
 
 fn library_module(
@@ -234,7 +229,8 @@ fn library_module(
     compile_flags: Vec<String>,
     link_flags: Vec<String>,
     tools_dir: PathBuf,
-    c_compiler: Option<CCompiler>,
+    // what built it
+    toolchain: Option<Toolchain>,
 ) -> Value {
     return Value::from(Arc::new(BuiltModule {
         name,
@@ -249,9 +245,10 @@ fn library_module(
             shared_library: None,
             // CMake projects, like LLVM, are of C++ mostly
             cpp: true,
-            c_compiler,
+            c_compiler: toolchain.as_ref().map(|toolchain| toolchain.c_compiler_for_tools(true)),
             // installed with it, like the many of LLVM: what depends on it builds again with its artifact
             header_dirs: vec![],
+            abi: toolchain.as_ref().map(Toolchain::abi),
         }),
         tests: vec![],
     }));
