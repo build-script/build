@@ -8,7 +8,7 @@ use std::process::Command;
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
 use crate::common::target::{Architecture, OperatingSystem};
 
-use super::toolchain::{Ndk, Toolchain, write_executable};
+use super::toolchain::{Kind, Ndk, Toolchain, write_executable};
 
 const VCPKG_RELEASE: &str = "2026.10.16";
 
@@ -51,7 +51,7 @@ pub fn install(
     };
 
     // vcpkg builds the ports of Windows with MSVC, zig's are of MinGW
-    if toolchain.zig && cfg!(windows) {
+    if toolchain.kind == Kind::Zig && cfg!(windows) {
         return Err(format!("{module}: vcpkg ports with the zig toolchain are not set up for Windows, the system toolchain builds them"));
     }
 
@@ -60,7 +60,7 @@ pub fn install(
     let installed = Installed {
         root: manifest_dir.join("installed"),
         triplet,
-        msvc: cfg!(windows) && !toolchain.zig && toolchain.ndk.is_none(),
+        msvc: toolchain.msvc(),
         of_the_machine: toolchain.target.is_host(),
     };
 
@@ -107,7 +107,7 @@ pub fn install(
             .env("PATH", format!("{}:{path}", tools.display()));
     }
 
-    if toolchain.zig {
+    if toolchain.kind == Kind::Zig {
         let triplets = zig_triplets(&tools, toolchain, &installed.triplet)?;
         command.arg(format!("--overlay-triplets={}", triplets.display()));
 
@@ -116,7 +116,7 @@ pub fn install(
         }
     }
 
-    if let Some(ndk) = &toolchain.ndk {
+    if let Kind::Ndk(ndk) = &toolchain.kind {
         let triplets = ndk_triplets(&tools, toolchain, ndk, &installed.triplet)?;
         command.arg(format!("--overlay-triplets={}", triplets.display()))
             .env("ANDROID_NDK_HOME", &ndk.home);
@@ -138,11 +138,11 @@ fn triplet(toolchain: &Toolchain, host: &str) -> String {
     // vcpkg names triplets in lowercase letters, digits and hyphens: zig-linux-x86-64-musl
     let target = toolchain.target.name().replace('_', "-");
 
-    match (&toolchain.ndk, toolchain.zig, toolchain.target.is_host()) {
-        (Some(ndk), _, _) => return format!("ndk-{target}-{}", ndk.api_level),
-        (None, false, _) => return host.to_string(),
-        (None, true, true) => return format!("{host}-zig"),
-        (None, true, false) => return format!("zig-{target}"),
+    match (&toolchain.kind, toolchain.target.is_host()) {
+        (Kind::Ndk(ndk), _) => return format!("ndk-{target}-{}", ndk.api_level),
+        (Kind::System, _) => return host.to_string(),
+        (Kind::Zig, true) => return format!("{host}-zig"),
+        (Kind::Zig, false) => return format!("zig-{target}"),
     }
 }
 
@@ -514,26 +514,24 @@ mod tests {
     #[test]
     fn the_ndk_builds_the_ports_of_android_targets_at_the_api_level_of_the_apps() {
         use crate::common::target::Target;
-        use crate::native::toolchain::Ndk;
 
-        let toolchain = |target: &str, zig: bool, ndk: Option<Ndk>| Toolchain {
-            zig,
+        let toolchain = |target: &str, kind: Kind| Toolchain {
+            kind,
             target: Target::named(target).unwrap(),
             c_compiler: vec![],
             cpp_compiler: vec![],
             archiver: vec![],
             environment: vec![],
-            ndk,
         };
         let ndk = Ndk { home: PathBuf::from("/sdk/ndk/28.2.13676358"), api_level: 24 };
 
-        assert_eq!(triplet(&toolchain("android-aarch64", false, Some(ndk.clone())), "arm64-osx"), "ndk-android-aarch64-24");
-        assert_eq!(triplet(&toolchain("android-x86_64", false, Some(ndk.clone())), "arm64-osx"), "ndk-android-x86-64-24");
-        assert_eq!(triplet(&toolchain("linux-x86_64-musl", true, None), "arm64-osx"), "zig-linux-x86-64-musl");
-        assert_eq!(triplet(&toolchain(&Target::host().name(), false, None), "arm64-osx"), "arm64-osx");
+        assert_eq!(triplet(&toolchain("android-aarch64", Kind::Ndk(ndk.clone())), "arm64-osx"), "ndk-android-aarch64-24");
+        assert_eq!(triplet(&toolchain("android-x86_64", Kind::Ndk(ndk.clone())), "arm64-osx"), "ndk-android-x86-64-24");
+        assert_eq!(triplet(&toolchain("linux-x86_64-musl", Kind::Zig), "arm64-osx"), "zig-linux-x86-64-musl");
+        assert_eq!(triplet(&toolchain(&Target::host().name(), Kind::System), "arm64-osx"), "arm64-osx");
 
         let directory = ScratchDir::new("ndk-triplets");
-        let armv7 = toolchain("android-armv7", false, Some(ndk.clone()));
+        let armv7 = toolchain("android-armv7", Kind::Ndk(ndk.clone()));
         let triplets = ndk_triplets(&directory, &armv7, &ndk, "ndk-android-armv7-24").unwrap();
         let content = system::read_file(&triplets.join("ndk-android-armv7-24.cmake")).unwrap();
 

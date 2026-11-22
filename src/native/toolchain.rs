@@ -16,8 +16,8 @@ static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new
 
 /// Compiler, archiver and what they need in their environment
 pub struct Toolchain {
-    /// vcpkg builds the ports with zig too
-    pub zig: bool,
+    /// vcpkg builds the ports with the same compilers
+    pub kind: Kind,
     /// what it builds for: the machine itself, or with zig and the NDK another system
     pub target: Target,
     pub c_compiler: Vec<String>,
@@ -25,8 +25,17 @@ pub struct Toolchain {
     pub archiver: Vec<String>,
     /// zig keeps the libc++ it builds once in its cache
     pub environment: Vec<(&'static str, PathBuf)>,
-    /// of an Android target: vcpkg builds the ports with it too
-    pub ndk: Option<Ndk>,
+}
+
+/// Whose compilers a toolchain has
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kind {
+    /// cc and c++ of the system, or those CC and CXX name
+    System,
+    /// zig cc and zig c++, for this machine and other desktop systems
+    Zig,
+    /// the clang of the NDK, for an Android target
+    Ndk(Ndk),
 }
 
 /// The NDK a toolchain for Android is of
@@ -47,13 +56,12 @@ impl Toolchain {
             let [c_compiler, cpp_compiler, archiver] = system_compilers()?;
 
             return Ok(Toolchain {
-                zig: false,
+                kind: Kind::System,
                 target: Target::host(),
                 c_compiler: from_environment("CC", &c_compiler),
                 cpp_compiler: from_environment("CXX", &cpp_compiler),
                 archiver: from_environment("AR", &archiver),
                 environment: vec![],
-                ndk: None,
             });
         }
 
@@ -64,14 +72,24 @@ impl Toolchain {
         let zig = install_zig()?.display().to_string();
 
         return Ok(Toolchain {
-            zig: true,
+            kind: Kind::Zig,
             target: Target::host(),
             c_compiler: vec![zig.clone(), "cc".to_string()],
             cpp_compiler: vec![zig.clone(), "c++".to_string()],
             archiver: vec![zig, "ar".to_string()],
             environment: vec![("ZIG_GLOBAL_CACHE_DIR", system::cache_dir("zig"))],
-            ndk: None,
         });
+    }
+
+    /// Windows with the C library and the linker of MinGW, like zig builds for it: libraries are lib<name>.a,
+    /// a .def file exports what a DLL has
+    pub fn mingw(&self) -> bool {
+        return self.target.os == OperatingSystem::Windows && self.kind == Kind::Zig;
+    }
+
+    /// Windows with the C library and the linker of Visual Studio: the clang of the system there
+    pub fn msvc(&self) -> bool {
+        return self.target.os == OperatingSystem::Windows && self.kind == Kind::System;
     }
 
     /// The compilers of a module for the target the script is evaluated for. "auto": those of the system for
@@ -109,11 +127,11 @@ impl Toolchain {
     /// `release` with UBSan, whose runtime it links only for -fsanitize=undefined when the link is not its own
     /// debug build.
     pub fn c_compiler_for_tools(&self, release: bool) -> super::CCompiler {
-        let cpp_runtime: &[&str] = match (self.zig, self.ndk.is_some(), self.target.os) {
-            (true, ..) => &["-lc++"],
-            (_, true, _) => &["-lc++_static", "-lc++abi"],
-            (_, _, OperatingSystem::MacOs) => &["-lc++"],
-            (_, _, OperatingSystem::Linux) => &["-lstdc++"],
+        let cpp_runtime: &[&str] = match (&self.kind, self.target.os) {
+            (Kind::Zig, _) => &["-lc++"],
+            (Kind::Ndk(_), _) => &["-lc++_static", "-lc++abi"],
+            (Kind::System, OperatingSystem::MacOs) => &["-lc++"],
+            (Kind::System, OperatingSystem::Linux) => &["-lstdc++"],
             _ => &[],
         };
 
@@ -124,7 +142,7 @@ impl Toolchain {
                 .map(|(variable, value)| (variable.to_string(), value.clone()))
                 .collect(),
             cpp_runtime: cpp_runtime.iter().map(|flag| flag.to_string()).collect(),
-            link_flags: match self.zig && !release {
+            link_flags: match self.kind == Kind::Zig && !release {
                 true => vec!["-fsanitize=undefined".to_string()],
                 false => vec![],
             },
@@ -135,7 +153,7 @@ impl Toolchain {
     /// scripts start zig cc, zig c++, zig ar and zig ranlib, for another target with -target. In the cache,
     /// one directory for this machine and one per target.
     pub fn cmake_toolchain_file(&self) -> Result<PathBuf, String> {
-        if !self.zig || cfg!(windows) {
+        if self.kind != Kind::Zig || cfg!(windows) {
             return Err("CMake and vcpkg take zig only on macOS and Linux, its scripts are of sh".to_string());
         }
 
@@ -394,7 +412,7 @@ mod tests {
     fn the_toolchain_follows_the_target() {
         // "auto" on this machine: the compilers of the system, like "system"
         let auto = Toolchain::for_target("auto", None, None).unwrap();
-        assert!(!auto.zig);
+        assert_eq!(auto.kind, super::Kind::System);
         assert_eq!(auto.target, Target::host());
 
         // those of the system build for this machine alone, the NDK builds for Android

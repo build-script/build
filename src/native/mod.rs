@@ -577,7 +577,7 @@ fn link_shared_library(
             exports::write_def_file(objects, def_file)?;
             system::create_parent_dir(linked)?;
 
-            match toolchain.zig {
+            match toolchain.mingw() {
                 true => flags.extend([def_file.display().to_string(), format!("-Wl,--out-implib,{}", linked.display())]),
                 false => flags.extend([format!("-Wl,-def:{}", def_file.display()), format!("-Wl,-implib:{}", linked.display())]),
             }

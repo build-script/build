@@ -529,7 +529,7 @@ pub fn link(
     arguments.extend(toolchain.target.os.system_libraries().iter().map(|library| format!("-l{library}")));
 
     let windows_program = toolchain.target.os == OperatingSystem::Windows && program.extension().is_some_and(|extension| extension == "exe");
-    if windows_program && !toolchain.zig {
+    if windows_program && !toolchain.mingw() {
         arguments.push("-Wl,-subsystem:console".to_string());
     }
 
