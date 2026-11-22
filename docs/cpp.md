@@ -32,7 +32,7 @@ A library goes to `build/lib/lib<name>.a`, a program to `build/bin/<name>`, whic
 | `program`             | `false`     | A program that `run` starts, otherwise a static library                                                               |
 | `shared`              | `false`     | A shared library, `lib<name>.dylib`, `.so` or `<name>.dll`, see [Shared libraries and JNI](#shared-libraries-and-jni) |
 | `jni`                 | `false`     | `jni.h` of the JDK                                                                                                    |
-| `toolchain`           | `"auto"`    | `"auto"`, `"system"` or `"zig"`, see [Toolchains](#toolchains)                                                        |
+| `toolchain`           | `"auto"`    | `"auto"`, `"system"`, `"zig"` or `"gcc"`, see [Toolchains](#toolchains)                                               |
 | `targets`             | `[]`        | The targets it is built for, like `"linux-aarch64"`, see [Other targets](#other-targets)                              |
 | `cpp_standard`        | `"c++20"`   | `-std` of the C++ sources, only `build_cpp`                                                                           |
 | `c_standard`          | `"c17"`     | `-std` of the C sources                                                                                               |
@@ -120,6 +120,7 @@ build install doctest --test --module greet
 - A module depending on a library gets the library's headers and `public_defines` and links it, and everything the library needs.
 - Modules depend on modules of `build_c` and `build_cpp`. Kotlin, Java and Android modules depend on their shared libraries, see [Shared libraries and JNI](#shared-libraries-and-jni).
 - A [build_command](plugins.md#build_command) among the dependencies adds its `{output}` to the include path, and the C and C++ sources it wrote compile with the module: code generators that vcpkg does not have.
+- The C++ libraries of one program link with one C++ standard library: a library of zig, which has libc++, does not link into a program of GCC, which has libstdc++. The build fails and names both, like `app is built for libstdc++, its library greeter for libc++`. On Windows C libraries of MinGW and of Visual Studio do not mix either. Modules that link each other take the same `toolchain`.
 
 ## Shared libraries and JNI
 
@@ -272,6 +273,7 @@ standalone = build_cpp(
 - vcpkg needs `git`, and with the `system` toolchain the compiler of the system. CMake and Ninja it downloads itself.
 - For other systems vcpkg builds the ports with zig, as triplets named after the target, like `zig-linux-aarch64`. That works on macOS and Linux. For Android it builds them with the NDK, at the API level of the apps: `ndk-android-aarch64-24`.
 - On Windows vcpkg builds the ports with MSVC of Visual Studio, static and only for release, with the static C library: `x64-windows-static-release`. Debug builds link them too, clang links that C library by default. Flags of MSVC in their pkg-config files, like `/DNOMINMAX` of abseil, become those of clang. With `zig` vcpkg is not set up on Windows.
+- With `gcc` vcpkg builds the ports with that GCC, as the triplet of the machine with `-gcc`, like `arm64-osx-gcc` or `x64-linux-gcc`, on Windows for MinGW.
 
 ## Toolchains
 
@@ -280,8 +282,65 @@ standalone = build_cpp(
 | `"auto"`    | The default: `"system"` for this machine, `"zig"` for other systems, the clang of the NDK for Android.                                                                                                                                                                                                                                                                   |
 | `"system"`  | `cc`, `c++` and `ar` of the system: Apple Clang of the Xcode Command Line Tools, gcc or clang on Linux. On Windows `clang`, `clang++` and `llvm-ar` of LLVM or of Visual Studio, with the ABI of MSVC: they link with the linker and the C library of Visual Studio, its Build Tools are enough. `CC`, `CXX` and `AR` name others, like for make. Only for this machine. |
 | `"zig"`     | [zig](https://ziglang.org) `0.17.0`, downloaded once with a checked SHA-256. It brings clang, libc and libc++, which it links into the program. vcpkg builds the ports with zig too. On Windows it builds for MinGW and needs no Visual Studio. It builds for every system but Android.                                                                                  |
+| `"gcc"`     | GCC `16.2.0`, which build-script keeps itself, for C++26 reflection. It links its runtime into the program, vcpkg builds the ports with it too. Only for this machine, see [GCC](#gcc).                                                                                                                                                                                  |
 
 > The system's compiler builds faster and links the system's libc++, zig is the same on every machine.
+
+### GCC
+
+`toolchain = "gcc"` builds with GCC `16.2.0`, which build-script keeps itself, not the GCC of the system. It is there for C++26 reflection, which only GCC has so far: `cpp_standard = "c++26"` and the flag `-freflection` turn it on.
+
+```kotlin
+use cpp
+
+names = build_cpp(
+    "names",
+    list("fmt"),
+    directory = "names",
+    toolchain = "gcc",
+    cpp_standard = "c++26",
+    flags = list("-freflection"),
+)
+
+build_cpp(
+    "colors",
+    list(names),
+    program = true,
+    directory = "colors",
+    toolchain = "gcc",
+    cpp_standard = "c++26",
+    flags = list("-freflection"),
+)
+```
+
+```cpp
+#include <meta>
+#include <string_view>
+
+// the name of an enumerator, without a list kept by hand
+template <typename E>
+constexpr std::string_view name_of(E value) {
+    template for (constexpr auto enumerator : std::define_static_array(std::meta::enumerators_of(^^E))) {
+        if (value == [:enumerator:]) {
+            return std::meta::identifier_of(enumerator);
+        }
+    }
+    return "?";
+}
+```
+
+| Machine                  | GCC comes from                                                                                                                                                                                                                                                                                                                                                                   |
+|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| macOS                    | Its sources, with the Darwin patch that Homebrew takes too, built once against the SDK of the Command Line Tools, in about ten minutes, into `gcc/16.2.0/macos-<arch>-sdk-<version>/` of the data directory, like `~/.build-script`, see [Where downloads go](commands.md#where-downloads-go). Another SDK, like after an update of the Command Line Tools, builds it once more. |
+| Linux, x86_64 or aarch64 | The packages of conda-forge, which build-script installs with micromamba, every package checked with its SHA-256.                                                                                                                                                                                                                                                                |
+| Windows, x86_64          | The same, GCC of MinGW-w64.                                                                                                                                                                                                                                                                                                                                                      |
+
+- It builds for this machine alone. `targets` of other systems and Android take zig or the NDK with `"auto"`, which have no reflection.
+- Programs and shared libraries link the runtime of GCC inside, with `-static-libgcc -static-libstdc++`: they run without that GCC, on macOS with the libraries of the system alone. On Linux it builds against its own glibc 2.28: programs run on glibc 2.28 or newer, libraries of the system, like those of apt, do not link with it.
+- vcpkg builds the ports with the same GCC, see [Libraries from vcpkg](#libraries-from-vcpkg).
+- `build_cmake` and `system_library` have no `toolchain`: their libraries are of the compilers of the system. Their C++ libraries link into modules of GCC on Linux, where both have libstdc++, not on macOS or Windows.
+- On Windows it links with `--allow-multiple-definition`: in C++26 the headers of GCC 16 define members of `std::logic_error` and `std::runtime_error` that its static libstdc++ defines too, GCC bug 125151. The linker keeps the first definition, so a symbol defined twice in a project is no error there.
+- clangd is of clang, which has no reflection yet: it marks `^^E` and `[: :]` as errors that GCC compiles. With `--query-driver`, like `--query-driver=**/gcc/16.2.0/**`, clangd reads the headers of that GCC.
 
 ## Other targets
 
@@ -319,7 +378,7 @@ tool = build_cpp(
 - The script is evaluated once for every target. `operating_system()`, `architecture()` and `executable(name)` describe the target, `target()` names it, `host_operating_system()` and the other `host_` functions describe this machine, see [language.md](language.md#functions-every-script-has). So `if operating_system() == "windows"` holds for the build for Windows.
 - Every log line names the target: `[tool linux-aarch64] Compiling 2 C/C++ file(s)`. An error starts with it: `project.build:7:9 [linux-aarch64]: ...`.
 
-With `toolchain = "auto"`, the default, other systems build with zig and Android with the clang of the NDK, `"system"` builds only for this machine. zig builds programs for Windows with the ABI of MinGW. From other machines, programs for macOS build without the frameworks of the macOS SDK, like Cocoa. `jni = true` takes `jni.h` of the JDK and a `jni_md.h` of the target, which build-script writes into its cache when the JDK has none for that system.
+With `toolchain = "auto"`, the default, other systems build with zig and Android with the clang of the NDK, `"system"` and `"gcc"` build only for this machine. zig builds programs for Windows with the ABI of MinGW. From other machines, programs for macOS build without the frameworks of the macOS SDK, like Cocoa. `jni = true` takes `jni.h` of the JDK and a `jni_md.h` of the target, which build-script writes into its cache when the JDK has none for that system.
 
 vcpkg ports build for other systems with zig too, on macOS and Linux, and for Android with the NDK. [CMake projects](#cmake-projects) build for other systems with zig, not yet for Android. Not for other targets:
 
@@ -401,7 +460,7 @@ build_cpp(
 
 ## Editors
 
-Every module writes `build/compile_commands.json`, modules in one directory share it. clangd finds it from the sources, like in VS Code, Neovim or Zed, CLion opens it as a project.
+Every module writes `build/compile_commands.json`, modules in one directory share it. clangd finds it from the sources, like in VS Code, Neovim or Zed, CLion opens it as a project. For modules of GCC see [GCC](#gcc).
 
 ## Outputs
 

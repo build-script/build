@@ -56,7 +56,7 @@ cp target/release/build-script ~/.local/bin/build
 
 The command is `build`. Cargo names the file `build-script`, because a program called `build` would clash with Cargo's own `target/debug/build/`. `build --version` prints the version.
 
-build-script downloads, unpacks and verifies what it needs itself, without tools of the system, on Linux even without CA certificates. C and C++ modules use the compiler of the system unless `toolchain = "zig"` downloads one. vcpkg ports and `git()` need `git`, and on Linux vcpkg also needs `curl`, `zip`, `unzip` and `tar`.
+build-script downloads, unpacks and verifies what it needs itself, without tools of the system, on Linux even without CA certificates. C and C++ modules use the compiler of the system unless `toolchain = "zig"` or `toolchain = "gcc"` brings one. vcpkg ports and `git()` need `git`, and on Linux vcpkg also needs `curl`, `zip`, `unzip` and `tar`.
 
 # Languages
 
@@ -114,6 +114,7 @@ What build-script does not do yet, or what is not known yet:
 - No Kotlin Multiplatform modules, only the JVM and Android variants of their libraries. No kapt: use KSP or javac annotation processors.
 - No publishing to Maven repositories.
 - C and C++ build for other targets with zig and the NDK. The ABI of MSVC builds only on Windows itself, and programs for macOS from other machines go without the frameworks of its SDK. CMake projects do not build for Android yet.
+- C++26 reflection builds only with `toolchain = "gcc"`, for this machine: on macOS, on Linux for x86_64 and aarch64, on Windows for x86_64. clangd does not know it yet.
 - The build language has no loops. A function that calls itself has to end with an `if` and may go at most 64 calls deep.
 - Modules that share a directory must not build at the same time: give them `--jobs 1`.
 
