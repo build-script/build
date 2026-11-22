@@ -11,6 +11,7 @@ use crate::common::runner::Runner;
 use crate::common::system;
 use crate::common::up_to_date::{self, InputFingerprint};
 use crate::jvm::JvmLaunch;
+use crate::native::CCompiler;
 use crate::language::runtime::{
     Arguments, BuildScriptContext, BuiltModule, FunctionParameters, ModuleOutput, ModuleTests, Placement, TestOutcome,
     TestRun, TestSuite, Type, Value, builtin,
@@ -21,6 +22,16 @@ const OUTPUT_PLACEHOLDER: &str = "{output}";
 
 /// stands for the directory the tests write JUnit XML reports to, build-script counts them
 const TEST_REPORTS_PLACEHOLDER: &str = "{test_reports}";
+
+/// In `environment`, for tools that compile and link against the C and C++ libraries among the dependencies
+/// with a compiler of their own, like cgo of Go: -I and -D of their headers, their libraries in link order and
+/// the C compiler that built them. Their words are quoted the way Go and sh split them.
+const COMPILE_FLAGS_PLACEHOLDER: &str = "{compile_flags}";
+const LINK_FLAGS_PLACEHOLDER: &str = "{link_flags}";
+const C_COMPILER_PLACEHOLDER: &str = "{c_compiler}";
+
+/// The headers of C and C++ libraries whose hash those placeholders carry
+const HEADER_EXTENSIONS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "inl", "ipp", "tpp", "tcc"];
 
 /// The files of `files` by the command and the target that write them: two writers would overwrite each other,
 /// and run at the same time
@@ -51,6 +62,8 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .strings("exclude")
             .strings("outputs")
             .with_default("dependencies", Type::list(Type::Module), Value::List(vec![]))
+            // NAME=value, with {compile_flags}, {link_flags} and {c_compiler} of the C and C++ libraries among the
+            // dependencies: an entry they leave empty is not set, the tool takes its default
             .strings("environment")
             .strings("environment_inputs")
             .strings("path")
@@ -181,7 +194,10 @@ impl CommandSpec {
             .map(|output| directory.join(with_output(output, &output_dir)))
             .collect();
 
-        let environment = environment(args, &output_dir)?;
+        let mut module_values = args.get::<Vec<Value>>("command")?;
+        let dependencies = args.get::<Vec<Value>>("dependencies")?;
+        let c_libraries = CLibraries::of(&dependencies)?;
+        let environment = environment(args, &output_dir, &c_libraries)?;
 
         let environment_inputs = args.get::<Vec<String>>("environment_inputs")?
             .into_iter()
@@ -207,8 +223,9 @@ impl CommandSpec {
 
         let direct_libraries = command_line(args.get("direct_libraries")?, &output_dir)?;
 
-        let mut module_values = args.get::<Vec<Value>>("command")?;
-        module_values.extend(args.get::<Vec<Value>>("dependencies")?);
+        module_values.extend(dependencies);
+        let mut module_files = module_files(&module_values)?;
+        module_files.extend(c_libraries.headers);
 
         return Ok(CommandSpec {
             name,
@@ -221,7 +238,7 @@ impl CommandSpec {
             environment,
             environment_inputs,
             path,
-            module_files: module_files(&module_values)?,
+            module_files,
             files,
             libraries: args.get("libraries")?,
             direct_libraries,
@@ -339,19 +356,136 @@ impl Place {
     }
 }
 
-/// NAME=value of `environment`, {output} replaced
-fn environment(args: &Arguments, output_dir: &Path) -> Result<Vec<(String, String)>, String> {
+/// NAME=value of `environment`, {output} and those of the C libraries replaced. What the C compiler needs in
+/// its environment comes first when it is named, so the entries of the script win.
+fn environment(args: &Arguments, output_dir: &Path, c_libraries: &CLibraries) -> Result<Vec<(String, String)>, String> {
     let mut environment = vec![];
+    let mut compiler_environment = vec![];
 
     for entry in args.get::<Vec<String>>("environment")? {
         let Some((variable, value)) = entry.split_once('=') else {
             return Err(format!("environment takes NAME=value, not {entry}"));
         };
 
-        environment.push((variable.to_string(), with_output(value, output_dir)));
+        let names_c = [COMPILE_FLAGS_PLACEHOLDER, LINK_FLAGS_PLACEHOLDER, C_COMPILER_PLACEHOLDER]
+            .iter()
+            .any(|placeholder| value.contains(placeholder));
+
+        if value.contains(C_COMPILER_PLACEHOLDER) && let Some(compiler) = &c_libraries.compiler {
+            compiler_environment = compiler.environment
+                .iter()
+                .map(|(variable, value)| (variable.clone(), value.display().to_string()))
+                .collect();
+        }
+
+        let value = with_output(value, output_dir)
+            .replace(COMPILE_FLAGS_PLACEHOLDER, &quoted_words(&c_libraries.compile_flags)?)
+            .replace(LINK_FLAGS_PLACEHOLDER, &quoted_words(&c_libraries.link_flags)?)
+            .replace(C_COMPILER_PLACEHOLDER, &quoted_words(c_libraries.compiler.as_ref().map_or(&[][..], |compiler| &compiler.command))?);
+
+        // CC= without a C library: the tool takes its own compiler, not none
+        if names_c && value.trim().is_empty() {
+            continue;
+        }
+
+        environment.push((variable.to_string(), value));
     }
 
-    return Ok(environment);
+    return Ok([compiler_environment, environment].concat());
+}
+
+/// What the C and C++ libraries among the dependencies of a command give the placeholders of `environment`
+#[derive(Default)]
+struct CLibraries {
+    compile_flags: Vec<String>,
+    link_flags: Vec<String>,
+    /// that of the first library that names one
+    compiler: Option<CCompiler>,
+    /// the headers of the libraries of the script, also of those they depend on: a change builds the command
+    /// again, and the compile flags define their hash for tools with a cache of their own, like Go, which knows
+    /// no headers outside its packages
+    headers: Vec<PathBuf>,
+}
+
+impl CLibraries {
+    /// Like a module of C depending on them takes them: the libraries of a later one link before those of an
+    /// earlier one, a library of C++ links the runtime of C++, then what the compilers of the libraries need
+    fn of(dependencies: &[Value]) -> Result<Self, String> {
+        let mut libraries = CLibraries::default();
+        let mut modules = vec![];
+        let mut cpp_runtime = None;
+        let mut compiler_link_flags = vec![];
+
+        for value in dependencies {
+            let Value::Module(module) = value else { continue };
+            let module = module.wait()
+                .map_err(|_| format!("{} it uses failed", module.function))?;
+            let ModuleOutput::Native(output) = &module.output else { continue };
+
+            libraries.compile_flags.extend(output.compile_flags.iter().cloned());
+            libraries.link_flags.splice(0..0, output.link_flags.iter().cloned());
+
+            if libraries.compiler.is_none() {
+                libraries.compiler = output.c_compiler.clone();
+            }
+
+            if output.cpp && cpp_runtime.is_none() {
+                cpp_runtime = Some(output.c_compiler.as_ref().map(|compiler| compiler.cpp_runtime.clone()).unwrap_or_default());
+            }
+
+            for flag in output.c_compiler.iter().flat_map(|compiler| &compiler.link_flags) {
+                if !compiler_link_flags.contains(flag) {
+                    compiler_link_flags.push(flag.clone());
+                }
+            }
+
+            modules.push(module);
+        }
+
+        let mut headers: Vec<PathBuf> = BuiltModule::transitive(&modules)
+            .iter()
+            .filter_map(|module| match &module.output {
+                ModuleOutput::Native(output) => Some(&output.header_dirs),
+                _ => None,
+            })
+            .flatten()
+            .flat_map(|dir| system::files_matching(dir, &["**".to_string()], &["build/**".to_string()]))
+            // an include directory may be the module itself, with its sources and build/
+            .filter(|file| file.extension().is_some_and(|extension| HEADER_EXTENSIONS.iter().any(|header| extension == *header)))
+            .collect();
+        headers.sort();
+        headers.dedup();
+
+        if !headers.is_empty() {
+            libraries.compile_flags.push(format!("-DBUILD_SCRIPT_HEADERS={:016x}", up_to_date::files_hash(&headers)?));
+        }
+
+        libraries.compile_flags = crate::native::without_repeated_flags(libraries.compile_flags);
+        libraries.link_flags.extend(cpp_runtime.unwrap_or_default());
+        libraries.link_flags.extend(compiler_link_flags);
+        libraries.headers = headers;
+
+        return Ok(libraries);
+    }
+}
+
+/// Words as one value the way Go reads CC and CGO_CFLAGS, and sh too: a word with a space or a quote in quotes
+/// of the other kind
+fn quoted_words(words: &[String]) -> Result<String, String> {
+    let mut quoted = vec![];
+
+    for word in words {
+        let plain = !word.is_empty() && !word.contains(|character: char| character.is_whitespace() || character == '\'' || character == '"');
+
+        quoted.push(match (plain, word.contains('\'')) {
+            (true, _) => word.clone(),
+            (false, false) => format!("'{word}'"),
+            (false, true) if !word.contains('"') => format!("\"{word}\""),
+            (false, true) => return Err(format!("{word} has quotes of both kinds, a tool could not split it off the others")),
+        });
+    }
+
+    return Ok(quoted.join(" "));
 }
 
 /// The directories of `path`, relative to the directory of the command
@@ -549,7 +683,9 @@ pub fn resolve(context: &BuildScriptContext, args: &Arguments, library: &str) ->
 
     let mut process = Command::new(&line[0]);
     process.args(&line[1..]).current_dir(&directory);
-    set_environment(&mut process, &environment(args, &output_dir)?, &path(args, &directory, &output_dir)?)?;
+    // build install builds no C library: entries of theirs are left out
+    let environment = environment(args, &output_dir, &CLibraries::default())?;
+    set_environment(&mut process, &environment, &path(args, &directory, &output_dir)?)?;
 
     let printed = system::command_output(&mut process, &what(&line))?;
 
@@ -754,6 +890,15 @@ mod tests {
                            m uses d@v5, which its libraries do not list: build install d@v5");
 
         assert_eq!(checked_libraries("m", &[], "").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn words_are_quoted_the_way_go_splits_them() {
+        assert_eq!(quoted_words(&line(&["zig", "cc", "-target", "aarch64-linux-gnu"])).unwrap(), "zig cc -target aarch64-linux-gnu");
+        assert_eq!(quoted_words(&line(&["-I/Users/a b/include", "-DNAME=\"x\""])).unwrap(), "'-I/Users/a b/include' '-DNAME=\"x\"'");
+        assert_eq!(quoted_words(&line(&["-DQUOTE='q'", ""])).unwrap(), "\"-DQUOTE='q'\" ''");
+        assert_eq!(quoted_words(&[]).unwrap(), "");
+        assert!(quoted_words(&line(&["-D'\""])).unwrap_err().contains("quotes of both kinds"));
     }
 
     #[test]

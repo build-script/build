@@ -79,6 +79,23 @@ pub struct NativeOutput {
     pub shared_library: Option<PathBuf>,
     /// C++ is in it: what links it links with the C++ compiler
     pub cpp: bool,
+    /// what built it, for tools that compile and link against it like cgo of Go: none for libraries of the system
+    pub c_compiler: Option<CCompiler>,
+    /// of its own headers, which the modules depending on it include: not those of vcpkg ports
+    pub header_dirs: Vec<PathBuf>,
+}
+
+/// The C compiler of a library, for commands that compile and link against it with one of their own, like cgo
+#[derive(Debug, Clone, Hash)]
+pub struct CCompiler {
+    /// cc of the system, or zig cc -target aarch64-linux-gnu for another target
+    pub command: Vec<String>,
+    /// what it needs in its environment, like the cache of zig
+    pub environment: Vec<(String, PathBuf)>,
+    /// what links the runtime of C++ with it, like -lc++: a C compiler leaves it out
+    pub cpp_runtime: Vec<String>,
+    /// what a link of its libraries needs, like the runtime of UBSan zig checks debug builds with
+    pub link_flags: Vec<String>,
 }
 
 /// What a module builds
@@ -239,13 +256,15 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
     configure::write_headers(&templates, &values, &export_header, &header_dirs, &generated_dir)?;
 
     // what the modules depending on it see too
-    let mut public_flags: Vec<String> = include_dirs.iter()
-        .map(|dir| format!("-I{}", dir.display()))
-        .collect();
+    let mut public_header_dirs = include_dirs.clone();
 
     if !templates.is_empty() || !export_header.is_empty() || !tablegen_entries.is_empty() {
-        public_flags.push(format!("-I{}", generated_dir.display()));
+        public_header_dirs.push(generated_dir.clone());
     }
+
+    let mut public_flags: Vec<String> = public_header_dirs.iter()
+        .map(|dir| format!("-I{}", dir.display()))
+        .collect();
 
     public_flags.extend(args.get::<Vec<String>>("public_defines")?.iter().map(|define| format!("-D{define}")));
 
@@ -528,6 +547,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             tools_dir: None,
             shared_library: (kind == ModuleKind::SharedLibrary).then_some(artifact),
             cpp,
+            c_compiler: Some(toolchain.c_compiler_for_tools(release)),
+            header_dirs: public_header_dirs,
         }),
         tests,
     })));
@@ -845,7 +866,7 @@ impl TestRunner for TestPrograms {
 }
 
 /// The flags, those that stand alone like -I and -D once: the 80 packages of abseil repeat them
-fn without_repeated_flags(mut flags: Vec<String>) -> Vec<String> {
+pub fn without_repeated_flags(mut flags: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
 
     flags.retain(|flag| {

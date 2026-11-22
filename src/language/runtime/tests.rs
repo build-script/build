@@ -1005,6 +1005,53 @@ fn commands_write_their_files_and_take_only_listed_libraries() {
     assert!(errors[0].contains("the files of a command are the same for every target"), "{errors:?}");
 }
 
+/// What a command that compiles against a C library of the script needs of it, the way cgo takes it
+#[cfg(unix)]
+#[test]
+fn commands_get_the_flags_and_the_compiler_of_their_c_libraries() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command-c");
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |name: &str| project.join(name);
+    system::write_file(&file("greet/include/greet.h"), "#define GREETING \"hello\"\nconst char *greet(void);\n").unwrap();
+    system::write_file(&file("greet/src/greet.c"), "#include \"greet.h\"\nconst char *greet(void) { return GREETING; }\n").unwrap();
+
+    let script = "use c\n\
+        greet = build_c(\"greet\", list(), directory = \"greet\")\n\
+        generated = build_command(\"generated\", list(\"true\"))\n\
+        // only the library of C\n\
+        found = c_libraries(list(generated, greet))\n\
+        none = if c_libraries(list(generated)) == list() { list() } else { fail(\"a command is no library of C\") }\n\
+        build_command(\"cgo\", list(\"sh\", \"-c\", \"printf '%s\\\\n' \\\"$CC\\\" \\\"$CGO_CFLAGS\\\" \\\"$CGO_LDFLAGS\\\" > {output}/environment; echo run >> runs.log\"), \
+            environment = list(\"CC={c_compiler}\", \"CGO_CFLAGS={compile_flags}\", \"CGO_LDFLAGS={link_flags}\"), \
+            outputs = list(\"{output}/environment\"), dependencies = found + none)\n\
+        // without a library of C the tool takes its own compiler\n\
+        build_command(\"plain\", list(\"sh\", \"-c\", \"echo ${CC-unset} > {output}/compiler\"), \
+            environment = list(\"CC={c_compiler}\"), outputs = list(\"{output}/compiler\"), dependencies = list(generated))";
+    let environment = || system::read_file(&file("build/commands/cgo/environment")).unwrap();
+    let runs = || system::read_file(&file("runs.log")).unwrap().lines().count();
+
+    build_in(&directory, script, TestSelection::None).unwrap();
+    let first = environment();
+    let lines: Vec<&str> = first.lines().collect();
+    assert_eq!(lines.len(), 3, "{first}");
+    assert!(!lines[0].is_empty() && !lines[0].contains('{'), "the compiler of the library: {first}");
+    assert!(lines[1].contains(&format!("-I{}", file("greet/include").display())), "{first}");
+    assert!(lines[1].contains("-DBUILD_SCRIPT_HEADERS="), "{first}");
+    assert!(lines[2].starts_with(&file("greet/build/lib/libgreet.a").display().to_string()), "{first}");
+    assert_eq!(system::read_file(&file("build/commands/plain/compiler")).unwrap().trim(), std::env::var("CC").unwrap_or("unset".to_string()));
+
+    build_in(&directory, script, TestSelection::None).unwrap();
+    assert_eq!(runs(), 1, "up to date");
+
+    // only a header changed: the command runs again, and a cache keyed by the flags, like that of Go, misses
+    system::write_file(&file("greet/include/greet.h"), "#define GREETING \"hi\"\nconst char *greet(void);\n").unwrap();
+    build_in(&directory, script, TestSelection::None).unwrap();
+    assert_eq!(runs(), 2, "a header of the library builds the command again");
+    assert_ne!(environment().lines().nth(1), first.lines().nth(1), "the define names the headers");
+}
+
 /// The modules of a build of `source` for the machine and the other targets, like the command line does it,
 /// on one job: a build that waits for another while it holds the job would never end
 #[cfg(unix)]

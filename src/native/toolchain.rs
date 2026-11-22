@@ -103,6 +103,34 @@ impl Toolchain {
         return Ok(zig);
     }
 
+    /// The C compiler for commands that compile and link against the libraries it built, like cgo of Go. A
+    /// C compiler links no C++ runtime of its own: zig and the clang of macOS take libc++, gcc libstdc++, the NDK
+    /// its static libc++. Objects of MSVC name their runtime themselves. zig checks what it builds without
+    /// `release` with UBSan, whose runtime it links only for -fsanitize=undefined when the link is not its own
+    /// debug build.
+    pub fn c_compiler_for_tools(&self, release: bool) -> super::CCompiler {
+        let cpp_runtime: &[&str] = match (self.zig, self.ndk.is_some(), self.target.os) {
+            (true, ..) => &["-lc++"],
+            (_, true, _) => &["-lc++_static", "-lc++abi"],
+            (_, _, OperatingSystem::MacOs) => &["-lc++"],
+            (_, _, OperatingSystem::Linux) => &["-lstdc++"],
+            _ => &[],
+        };
+
+        return super::CCompiler {
+            command: self.c_compiler.clone(),
+            environment: self.environment
+                .iter()
+                .map(|(variable, value)| (variable.to_string(), value.clone()))
+                .collect(),
+            cpp_runtime: cpp_runtime.iter().map(|flag| flag.to_string()).collect(),
+            link_flags: match self.zig && !release {
+                true => vec!["-fsanitize=undefined".to_string()],
+                false => vec![],
+            },
+        };
+    }
+
     /// A toolchain file of CMake for zig, for vcpkg and build_cmake: CMake takes a compiler as one program, so
     /// scripts start zig cc, zig c++, zig ar and zig ranlib, for another target with -target. In the cache,
     /// one directory for this machine and one per target.
