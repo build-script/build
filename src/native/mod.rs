@@ -7,6 +7,7 @@ mod cmake;
 mod compile;
 mod configure;
 mod exports;
+mod gcc;
 mod tablegen;
 pub mod templates;
 mod toolchain;
@@ -166,8 +167,9 @@ fn signature(language: Language) -> FunctionSignature {
         .with_default("shared", Type::Bool, false)
         // jni.h of the JDK
         .with_default("jni", Type::Bool, false)
-        // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those
-        .with_default("toolchain", Type::Union(["auto", "system", "zig"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
+        // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those.
+        // "gcc": the GCC build-script keeps, for this machine, with C++26 reflection: flags = list("-freflection")
+        .with_default("toolchain", Type::Union(["auto", "system", "zig", "gcc"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
         // the targets it is built for, like list("linux-aarch64", "windows-x86_64"), each into build/<target>/:
         // this machine without them, and the targets of the modules depending on it
         .with_default("targets", Type::list(Type::target()), Value::List(vec![]))

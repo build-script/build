@@ -107,8 +107,8 @@ pub fn install(
             .env("PATH", format!("{}:{path}", tools.display()));
     }
 
-    if toolchain.kind == Kind::Zig {
-        let triplets = zig_triplets(&tools, toolchain, &installed.triplet)?;
+    if matches!(toolchain.kind, Kind::Zig | Kind::Gcc) {
+        let triplets = chainloaded_triplets(&tools, toolchain, &installed.triplet)?;
         command.arg(format!("--overlay-triplets={}", triplets.display()));
 
         for (name, value) in &toolchain.environment {
@@ -132,8 +132,8 @@ pub fn install(
 }
 
 /// The triplet the ports of the toolchain are built for. Ports built by zig link with code zig compiled, also on
-/// Linux, where the system has libstdc++, for another target zig builds them for that one. The NDK builds them for
-/// an Android target at the API level of the apps.
+/// Linux, where the system has libstdc++, for another target zig builds them for that one. GCC builds its own,
+/// with libstdc++ also on macOS. The NDK builds them for an Android target at the API level of the apps.
 fn triplet(toolchain: &Toolchain, host: &str) -> String {
     // vcpkg names triplets in lowercase letters, digits and hyphens: zig-linux-x86-64-musl
     let target = toolchain.target.name().replace('_', "-");
@@ -143,6 +143,7 @@ fn triplet(toolchain: &Toolchain, host: &str) -> String {
         (Kind::System, _) => return host.to_string(),
         (Kind::Zig, true) => return format!("{host}-zig"),
         (Kind::Zig, false) => return format!("zig-{target}"),
+        (Kind::Gcc, _) => return format!("{host}-gcc"),
     }
 }
 
@@ -284,8 +285,9 @@ fn install_vcpkg() -> Result<PathBuf, String> {
     });
 }
 
-/// The triplet of the ports zig builds, for this machine or another target, through the toolchain file of CMake
-fn zig_triplets(tools: &Path, toolchain: &Toolchain, triplet: &str) -> Result<PathBuf, String> {
+/// The triplet of the ports zig or GCC builds, for this machine or another target, through the toolchain file of
+/// CMake
+fn chainloaded_triplets(tools: &Path, toolchain: &Toolchain, triplet: &str) -> Result<PathBuf, String> {
     let toolchain_file = toolchain.cmake_toolchain_file()?;
     let target = toolchain.target;
 
@@ -306,10 +308,17 @@ set(VCPKG_CMAKE_SYSTEM_NAME {system_name})
 set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "{}")
 set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
 "#,
-        toolchain_file.display()
+        // CMake reads a \ in a path as an escape
+        toolchain_file.display().to_string().replace('\\', "/")
     );
 
-    if target.os == OperatingSystem::MacOs {
+    // the GCC of Windows finds the DLLs of its assembler and linker through the PATH
+    if toolchain.kind == Kind::Gcc && target.os == OperatingSystem::Windows {
+        content.push_str("set(VCPKG_ENV_PASSTHROUGH_UNTRACKED PATH)\n");
+    }
+
+    // GCC builds for its own processor alone, it takes no -arch
+    if target.os == OperatingSystem::MacOs && toolchain.kind == Kind::Zig {
         content.push_str(&format!("set(VCPKG_OSX_ARCHITECTURES {})\n", if target.arch == Architecture::Aarch64 { "arm64" } else { "x86_64" }));
     }
 
@@ -529,6 +538,7 @@ mod tests {
         assert_eq!(triplet(&toolchain("android-x86_64", Kind::Ndk(ndk.clone())), "arm64-osx"), "ndk-android-x86-64-24");
         assert_eq!(triplet(&toolchain("linux-x86_64-musl", Kind::Zig), "arm64-osx"), "zig-linux-x86-64-musl");
         assert_eq!(triplet(&toolchain(&Target::host().name(), Kind::System), "arm64-osx"), "arm64-osx");
+        assert_eq!(triplet(&toolchain(&Target::host().name(), Kind::Gcc), "x64-linux"), "x64-linux-gcc");
 
         let directory = ScratchDir::new("ndk-triplets");
         let armv7 = toolchain("android-armv7", Kind::Ndk(ndk.clone()));

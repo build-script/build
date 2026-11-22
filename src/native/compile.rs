@@ -11,7 +11,7 @@ use crate::common::target::OperatingSystem;
 use crate::common::up_to_date::hash_hex;
 use crate::common::{system, terminal};
 
-use super::toolchain::Toolchain;
+use super::toolchain::{Kind, Toolchain};
 
 static CORES: LazyLock<usize> = LazyLock::new(|| std::thread::available_parallelism().map_or(4, |count| count.get()));
 
@@ -527,6 +527,12 @@ pub fn link(
     // like CMake and Visual Studio every program links the libraries of Windows. link.exe takes a program
     // for the console only by a main() among the objects, that of gtest_main is in a library.
     arguments.extend(toolchain.target.os.system_libraries().iter().map(|library| format!("-l{library}")));
+
+    // the runtime of the GCC build-script keeps is newer than that of the systems: inside, what it builds runs
+    // without that GCC
+    if toolchain.kind == Kind::Gcc {
+        arguments.extend(["-static-libgcc".to_string(), "-static-libstdc++".to_string()]);
+    }
 
     let windows_program = toolchain.target.os == OperatingSystem::Windows && program.extension().is_some_and(|extension| extension == "exe");
     if windows_program && !toolchain.mingw() {
