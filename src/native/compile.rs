@@ -528,11 +528,7 @@ pub fn link(
     // for the console only by a main() among the objects, that of gtest_main is in a library.
     arguments.extend(toolchain.target.os.system_libraries().iter().map(|library| format!("-l{library}")));
 
-    // the runtime of the GCC build-script keeps is newer than that of the systems: inside, what it builds runs
-    // without that GCC
-    if toolchain.kind == Kind::Gcc {
-        arguments.extend(["-static-libgcc".to_string(), "-static-libstdc++".to_string()]);
-    }
+    arguments.extend(runtime_flags(toolchain));
 
     let windows_program = toolchain.target.os == OperatingSystem::Windows && program.extension().is_some_and(|extension| extension == "exe");
     if windows_program && !toolchain.mingw() {
@@ -543,6 +539,25 @@ pub fn link(
     let response_file = PathBuf::from(format!("{}.rsp", program.display()));
     let mut command = toolchain.command_with_arguments(linker, &arguments, &response_file)?;
     return system::run_command_in_one_piece(&mut command, "linking");
+}
+
+/// How the GCC build-script keeps links its runtime: inside, it is newer than that of the systems, what it builds
+/// runs without that GCC. In C++26 its headers define the copy and move members of std::logic_error and
+/// std::runtime_error inline, which libstdc++.a defines too: on ELF and Mach-O the inline ones are weak, on Windows
+/// the linker takes them for a second definition, GCC bug 125151. Both come from the same source, the linker keeps
+/// the first, that of the objects. To go with the GCC that fixes it.
+fn runtime_flags(toolchain: &Toolchain) -> Vec<String> {
+    if toolchain.kind != Kind::Gcc {
+        return vec![];
+    }
+
+    let mut flags = vec!["-static-libgcc".to_string(), "-static-libstdc++".to_string()];
+
+    if toolchain.target.os == OperatingSystem::Windows {
+        flags.push("-Wl,--allow-multiple-definition".to_string());
+    }
+
+    return flags;
 }
 
 /// The flags, a library several modules need once, after the last that needs it: a linker takes static
@@ -564,7 +579,7 @@ fn linked_once(link_flags: &[String]) -> Vec<String> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Family, Precompiled, depfile_inputs, linked_once, precompiled_contents};
+    use super::{Family, Precompiled, Toolchain, depfile_inputs, linked_once, precompiled_contents, runtime_flags};
 
     #[test]
     fn clang_takes_its_pch_and_gcc_finds_its_gch_next_to_the_header() {
@@ -584,6 +599,30 @@ mod tests {
         assert_eq!(precompiled.header(), dir.join("pch.hpp"));
         let headers = ["<vector>", "src/common.hpp"].map(String::from);
         assert_eq!(precompiled_contents(&headers, Path::new("/m")), "#include <vector>\n#include \"/m/src/common.hpp\"\n");
+    }
+
+    #[test]
+    fn gcc_links_its_runtime_inside_and_on_windows_takes_the_inline_exceptions_of_cpp26() {
+        use crate::common::target::Target;
+        use super::Kind;
+
+        let toolchain = |kind: Kind, target: &str| Toolchain {
+            kind,
+            target: Target::named(target).unwrap(),
+            c_compiler: vec![],
+            cpp_compiler: vec![],
+            archiver: vec![],
+            environment: vec![],
+        };
+
+        assert_eq!(runtime_flags(&toolchain(Kind::Gcc, "linux-x86_64")), ["-static-libgcc", "-static-libstdc++"]);
+        assert_eq!(
+            runtime_flags(&toolchain(Kind::Gcc, "windows-x86_64")),
+            ["-static-libgcc", "-static-libstdc++", "-Wl,--allow-multiple-definition"]
+        );
+        // zig and the compilers of the system link their own runtime as they do
+        assert!(runtime_flags(&toolchain(Kind::Zig, "windows-x86_64")).is_empty());
+        assert!(runtime_flags(&toolchain(Kind::System, "linux-x86_64")).is_empty());
     }
 
     #[test]
