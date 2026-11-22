@@ -7,6 +7,7 @@ mod cmake;
 mod compile;
 mod configure;
 mod exports;
+mod gcc;
 mod tablegen;
 pub mod templates;
 mod toolchain;
@@ -28,7 +29,7 @@ use crate::language::runtime::{
 
 use compile::{Compilation, Language};
 use crate::common::target::OperatingSystem;
-use toolchain::Toolchain;
+use toolchain::{Abi, Toolchain};
 
 pub use vcpkg::checked_port;
 
@@ -83,6 +84,9 @@ pub struct NativeOutput {
     pub c_compiler: Option<CCompiler>,
     /// of its own headers, which the modules depending on it include: not those of vcpkg ports
     pub header_dirs: Vec<PathBuf>,
+    /// of a library what links it takes in: the standard libraries its code needs. None for programs, for
+    /// shared libraries, which have theirs inside, and for headers, which compile with what includes them.
+    pub abi: Option<Abi>,
 }
 
 /// The C compiler of a library, for commands that compile and link against it with one of their own, like cgo
@@ -163,8 +167,9 @@ fn signature(language: Language) -> FunctionSignature {
         .with_default("shared", Type::Bool, false)
         // jni.h of the JDK
         .with_default("jni", Type::Bool, false)
-        // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those
-        .with_default("toolchain", Type::Union(["auto", "system", "zig"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
+        // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those.
+        // "gcc": the GCC build-script keeps, for this machine, with C++26 reflection: flags = list("-freflection")
+        .with_default("toolchain", Type::Union(["auto", "system", "zig", "gcc"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
         // the targets it is built for, like list("linux-aarch64", "windows-x86_64"), each into build/<target>/:
         // this machine without them, and the targets of the modules depending on it
         .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
@@ -270,6 +275,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     let dependencies = Dependencies::read(args, "dependencies")?;
     let test_dependencies = Dependencies::read(args, "test_dependencies")?;
+    checked_abi(&name, toolchain.abi(), &[dependencies.modules.clone(), test_dependencies.modules.clone()].concat())?;
 
     // what commands generated: headers the modules depending on it may include too
     let (generated_flags, generated_sources) = dependencies.generated(language);
@@ -549,6 +555,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             cpp,
             c_compiler: Some(toolchain.c_compiler_for_tools(release)),
             header_dirs: public_header_dirs,
+            abi: (kind == ModuleKind::StaticLibrary).then(|| toolchain.abi()),
         }),
         tests,
     })));
@@ -577,7 +584,7 @@ fn link_shared_library(
             exports::write_def_file(objects, def_file)?;
             system::create_parent_dir(linked)?;
 
-            match toolchain.zig {
+            match toolchain.mingw() {
                 true => flags.extend([def_file.display().to_string(), format!("-Wl,--out-implib,{}", linked.display())]),
                 false => flags.extend([format!("-Wl,-def:{}", def_file.display()), format!("-Wl,-implib:{}", linked.display())]),
             }
@@ -599,6 +606,37 @@ fn link_shared_library(
 
     flags.extend(link_flags.iter().cloned());
     return compile::link(toolchain, cpp, objects, &flags, library);
+}
+
+/// The libraries a module links were built for its standard libraries: a C++ library zig built needs libc++,
+/// one of GCC libstdc++. A static library was checked against its own when it was built, headers bring those
+/// they depend on, a shared library has what it needs inside.
+fn checked_abi(name: &str, own: Abi, modules: &[Arc<BuiltModule>]) -> Result<(), String> {
+    for module in modules {
+        let ModuleOutput::Native(output) = &module.output else { continue };
+
+        let Some(theirs) = output.abi else {
+            if output.program.is_none() && output.shared_library.is_none() {
+                checked_abi(name, own, &module.modules)?;
+            }
+            continue;
+        };
+
+        let problem = match (output.cpp && theirs != own, own.links_c_of(theirs)) {
+            (true, _) => "C++ libraries link with one standard library",
+            (false, false) => "libraries for Windows link with one C library",
+            (false, true) => continue,
+        };
+
+        return Err(format!(
+            "{name} is built for {}, its library {} for {}: {problem}, give both the same toolchain",
+            own.describe(),
+            module.name,
+            theirs.describe()
+        ));
+    }
+
+    return Ok(());
 }
 
 /// For clangd, which finds build/compile_commands.json of the module from its sources. Modules in one
@@ -906,5 +944,58 @@ mod tests {
 
         assert!(defines_main(&with_main));
         assert!(!defines_main(&without));
+    }
+
+    fn library(name: &str, cpp: bool, abi: Option<Abi>, modules: Vec<Arc<BuiltModule>>) -> Arc<BuiltModule> {
+        return Arc::new(BuiltModule {
+            name: name.to_string(),
+            directory: PathBuf::from(name),
+            artifact: PathBuf::from(name),
+            modules,
+            output: ModuleOutput::Native(NativeOutput {
+                compile_flags: vec![],
+                link_flags: vec![],
+                program: None,
+                tools_dir: None,
+                shared_library: None,
+                cpp,
+                c_compiler: None,
+                header_dirs: vec![],
+                abi,
+            }),
+            tests: vec![],
+        });
+    }
+
+    #[test]
+    fn libraries_are_linked_only_with_the_standard_libraries_they_were_built_for() {
+        let zig_cpp = library("greeter", true, Some(Abi::LibCxx), vec![]);
+        let zig_c = library("codec", false, Some(Abi::LibCxx), vec![]);
+
+        // C++ of zig needs libc++, GCC links libstdc++
+        let error = checked_abi("names", Abi::LibStdCxx, &[zig_cpp.clone()]).unwrap_err();
+        assert_eq!(
+            error,
+            "names is built for libstdc++, its library greeter for libc++: C++ libraries link with one standard library, give both the same toolchain"
+        );
+        assert!(checked_abi("names", Abi::LibCxx, &[zig_cpp.clone()]).is_ok());
+
+        // C links with every C++ library, on Windows not with another C library
+        assert!(checked_abi("names", Abi::LibStdCxx, &[zig_c.clone()]).is_ok());
+        let windows_c = library("codec", false, Some(Abi::MinGwLibCxx), vec![]);
+        assert!(checked_abi("names", Abi::MinGwLibStdCxx, &[windows_c.clone()]).is_ok());
+        let error = checked_abi("names", Abi::Msvc, &[windows_c]).unwrap_err();
+        assert!(error.contains("its library codec for MinGW and libc++: libraries for Windows link with one C library"), "{error}");
+
+        // headers bring the libraries they depend on, a shared library has what it needs inside
+        let headers = library("headers", true, None, vec![zig_cpp.clone()]);
+        let error = checked_abi("names", Abi::LibStdCxx, &[headers]).unwrap_err();
+        assert!(error.contains("its library greeter for libc++"), "{error}");
+
+        let mut shared = Arc::into_inner(library("shared", true, None, vec![zig_cpp])).unwrap();
+        if let ModuleOutput::Native(output) = &mut shared.output {
+            output.shared_library = Some(PathBuf::from("libshared.so"));
+        }
+        assert!(checked_abi("names", Abi::LibStdCxx, &[Arc::new(shared)]).is_ok());
     }
 }

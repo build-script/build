@@ -1,5 +1,5 @@
-// The compilers of C and C++ modules: those of the system, or zig, which brings clang, libc and
-// libc++ for every target in one download
+// The compilers of C and C++ modules: those of the system, zig, which brings clang, libc and libc++ for
+// every target in one download, or the GCC build-script keeps, for C++26 reflection
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,17 +16,28 @@ static VERSIONS: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new
 
 /// Compiler, archiver and what they need in their environment
 pub struct Toolchain {
-    /// vcpkg builds the ports with zig too
-    pub zig: bool,
+    /// vcpkg builds the ports with the same compilers
+    pub kind: Kind,
     /// what it builds for: the machine itself, or with zig and the NDK another system
     pub target: Target,
     pub c_compiler: Vec<String>,
     pub cpp_compiler: Vec<String>,
     pub archiver: Vec<String>,
-    /// zig keeps the libc++ it builds once in its cache
+    /// zig keeps the libc++ it builds once in its cache, the GCC of Windows finds its DLLs through the PATH
     pub environment: Vec<(&'static str, PathBuf)>,
-    /// of an Android target: vcpkg builds the ports with it too
-    pub ndk: Option<Ndk>,
+}
+
+/// Whose compilers a toolchain has
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kind {
+    /// cc and c++ of the system, or those CC and CXX name
+    System,
+    /// zig cc and zig c++, for this machine and other desktop systems
+    Zig,
+    /// the GCC build-script keeps, for this machine
+    Gcc,
+    /// the clang of the NDK, for an Android target
+    Ndk(Ndk),
 }
 
 /// The NDK a toolchain for Android is of
@@ -37,9 +48,44 @@ pub struct Ndk {
     pub api_level: i64,
 }
 
+/// The C++ standard library and the C library what a toolchain compiled links with: the C++ libraries of one
+/// link need the same, on Windows the C libraries too
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Abi {
+    /// libstdc++ of GCC, also that of clang on Linux
+    LibStdCxx,
+    /// libc++ of LLVM: the clang of macOS, zig and the NDK
+    LibCxx,
+    /// the C library and the STL of Visual Studio, which the clang of Windows takes
+    Msvc,
+    /// MinGW with libc++, like zig for Windows
+    MinGwLibCxx,
+    /// MinGW with libstdc++, like GCC for Windows
+    MinGwLibStdCxx,
+}
+
+impl Abi {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Abi::LibStdCxx => return "libstdc++",
+            Abi::LibCxx => return "libc++",
+            Abi::Msvc => return "the C library and STL of Visual Studio",
+            Abi::MinGwLibCxx => return "MinGW and libc++",
+            Abi::MinGwLibStdCxx => return "MinGW and libstdc++",
+        }
+    }
+
+    /// Whether C libraries of the one link with the other: on Windows MinGW and Visual Studio have C libraries
+    /// of their own
+    pub fn links_c_of(self, other: Abi) -> bool {
+        let mingw = |abi: Abi| matches!(abi, Abi::MinGwLibCxx | Abi::MinGwLibStdCxx);
+        return (self == Abi::Msvc) == (other == Abi::Msvc) && mingw(self) == mingw(other);
+    }
+}
+
 impl Toolchain {
     /// "system": cc, c++ and ar of the system, on Windows clang, clang++ and llvm-ar, or those CC, CXX
-    /// and AR name, like make takes them. "zig": zig cc, zig c++ and zig ar.
+    /// and AR name, like make takes them. "zig": zig cc, zig c++ and zig ar. "gcc": gcc, g++ and gcc-ar.
     pub fn named(name: &str) -> Result<Self, String> {
         let from_environment = |variable: &str, default: &str| vec![std::env::var(variable).unwrap_or(default.to_string())];
 
@@ -47,31 +93,68 @@ impl Toolchain {
             let [c_compiler, cpp_compiler, archiver] = system_compilers()?;
 
             return Ok(Toolchain {
-                zig: false,
+                kind: Kind::System,
                 target: Target::host(),
                 c_compiler: from_environment("CC", &c_compiler),
                 cpp_compiler: from_environment("CXX", &cpp_compiler),
                 archiver: from_environment("AR", &archiver),
                 environment: vec![],
-                ndk: None,
+            });
+        }
+
+        if name == "gcc" {
+            let gcc = super::gcc::install()?;
+            let mut environment = vec![];
+
+            if let Some(directory) = gcc.path {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                let joined = std::env::join_paths([directory].into_iter().chain(std::env::split_paths(&path)))
+                    .map_err(|error| format!("PATH: {error}"))?;
+                environment.push(("PATH", PathBuf::from(joined)));
+            }
+
+            return Ok(Toolchain {
+                kind: Kind::Gcc,
+                target: Target::host(),
+                c_compiler: vec![gcc.c_compiler],
+                cpp_compiler: vec![gcc.cpp_compiler],
+                archiver: vec![gcc.archiver],
+                environment,
             });
         }
 
         if name != "zig" {
-            return Err(format!("toolchain '{name}' is none of \"auto\", \"system\" and \"zig\""));
+            return Err(format!("toolchain '{name}' is none of \"auto\", \"system\", \"zig\" and \"gcc\""));
         }
 
         let zig = install_zig()?.display().to_string();
 
         return Ok(Toolchain {
-            zig: true,
+            kind: Kind::Zig,
             target: Target::host(),
             c_compiler: vec![zig.clone(), "cc".to_string()],
             cpp_compiler: vec![zig.clone(), "c++".to_string()],
             archiver: vec![zig, "ar".to_string()],
             environment: vec![("ZIG_GLOBAL_CACHE_DIR", system::cache_dir("zig"))],
-            ndk: None,
         });
+    }
+
+    /// Windows with the C library and the linker of MinGW, like zig builds for it: libraries are lib<name>.a,
+    /// a .def file exports what a DLL has
+    pub fn mingw(&self) -> bool {
+        return self.target.os == OperatingSystem::Windows && matches!(self.kind, Kind::Zig | Kind::Gcc);
+    }
+
+    /// Windows with the C library and the linker of Visual Studio: the clang of the system there
+    pub fn msvc(&self) -> bool {
+        return self.target.os == OperatingSystem::Windows && self.kind == Kind::System;
+    }
+
+    /// What its C++ links with. Those of the system are what CC names: clang takes libc++ on macOS and
+    /// libstdc++ on Linux, a GCC there libstdc++ everywhere.
+    pub fn abi(&self) -> Abi {
+        let gcc = self.kind == Kind::System && is_gcc(&self.version(&self.c_compiler));
+        return abi_of(&self.kind, self.target.os, gcc);
     }
 
     /// The compilers of a module for the target the script is evaluated for. "auto": those of the system for
@@ -84,14 +167,14 @@ impl Toolchain {
 
         // the NDK builds for Android, with the lowest min_sdk of the apps that pack the library
         if target.os == OperatingSystem::Android {
-            if name == "zig" {
-                return Err(format!("zig builds for no Android, \"auto\" takes the NDK for {}", target.name()));
+            if name == "zig" || name == "gcc" {
+                return Err(format!("{name} builds for no Android, \"auto\" takes the NDK for {}", target.name()));
             }
             return super::android::toolchain(target, android.unwrap_or(&super::android::default_settings()));
         }
 
-        if name == "system" {
-            return Err(format!("toolchain = \"system\" builds for this machine, \"auto\" or \"zig\" for {}", target.name()));
+        if name == "system" || name == "gcc" {
+            return Err(format!("toolchain = \"{name}\" builds for this machine, \"auto\" or \"zig\" for {}", target.name()));
         }
 
         let triple = target.zig_triple().ok_or_else(|| format!("zig builds for no {}", target.name()))?;
@@ -109,12 +192,11 @@ impl Toolchain {
     /// `release` with UBSan, whose runtime it links only for -fsanitize=undefined when the link is not its own
     /// debug build.
     pub fn c_compiler_for_tools(&self, release: bool) -> super::CCompiler {
-        let cpp_runtime: &[&str] = match (self.zig, self.ndk.is_some(), self.target.os) {
-            (true, ..) => &["-lc++"],
-            (_, true, _) => &["-lc++_static", "-lc++abi"],
-            (_, _, OperatingSystem::MacOs) => &["-lc++"],
-            (_, _, OperatingSystem::Linux) => &["-lstdc++"],
-            _ => &[],
+        let cpp_runtime: &[&str] = match (&self.kind, self.abi()) {
+            (Kind::Ndk(_), _) => &["-lc++_static", "-lc++abi"],
+            (_, Abi::LibCxx | Abi::MinGwLibCxx) => &["-lc++"],
+            (_, Abi::LibStdCxx | Abi::MinGwLibStdCxx) => &["-lstdc++"],
+            (_, Abi::Msvc) => &[],
         };
 
         return super::CCompiler {
@@ -124,18 +206,50 @@ impl Toolchain {
                 .map(|(variable, value)| (variable.to_string(), value.clone()))
                 .collect(),
             cpp_runtime: cpp_runtime.iter().map(|flag| flag.to_string()).collect(),
-            link_flags: match self.zig && !release {
+            link_flags: match self.kind == Kind::Zig && !release {
                 true => vec!["-fsanitize=undefined".to_string()],
                 false => vec![],
             },
         };
     }
 
-    /// A toolchain file of CMake for zig, for vcpkg and build_cmake: CMake takes a compiler as one program, so
-    /// scripts start zig cc, zig c++, zig ar and zig ranlib, for another target with -target. In the cache,
-    /// one directory for this machine and one per target.
+    /// A toolchain file of CMake for zig and GCC, for vcpkg and build_cmake. CMake takes a compiler as one
+    /// program, so scripts start zig cc, zig c++, zig ar and zig ranlib, for another target with -target: in the
+    /// cache, one directory for this machine and one per target. GCC has programs of its own, its file lies
+    /// with them.
     pub fn cmake_toolchain_file(&self) -> Result<PathBuf, String> {
-        if !self.zig || cfg!(windows) {
+        if self.kind == Kind::Gcc {
+            let program = |words: &[String]| words[0].replace('\\', "/");
+            let archiver = program(&self.archiver);
+            // the ports go into shared libraries too, like those for the JVM
+            let mut content = format!(
+                "set(CMAKE_POSITION_INDEPENDENT_CODE ON)\nset(CMAKE_C_COMPILER \"{}\")\nset(CMAKE_CXX_COMPILER \"{}\")\n\
+                 set(CMAKE_AR \"{archiver}\" CACHE FILEPATH \"\" FORCE)\nset(CMAKE_RANLIB \"{}\" CACHE FILEPATH \"\" FORCE)\n",
+                program(&self.c_compiler),
+                program(&self.cpp_compiler),
+                archiver.replace("gcc-ar", "gcc-ranlib"),
+            );
+
+            // vcpkg names the system MinGW, which CMake does not know, windres compiles the resources of programs
+            if self.target.os == OperatingSystem::Windows {
+                content.push_str(&format!(
+                    "set(CMAKE_SYSTEM_NAME Windows CACHE STRING \"\" FORCE)\nset(CMAKE_SYSTEM_PROCESSOR {} CACHE STRING \"\")\n\
+                     set(CMAKE_RC_COMPILER \"{}\" CACHE FILEPATH \"\")\n",
+                    self.target.arch.name(),
+                    archiver.replace("gcc-ar", "windres"),
+                ));
+            }
+
+            let prefix = Path::new(&self.c_compiler[0])
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| format!("{} lies in no installation of GCC", self.c_compiler[0]))?;
+            let file = prefix.join("toolchain.cmake");
+            system::write_file_if_changed(&file, &content)?;
+            return Ok(file);
+        }
+
+        if self.kind != Kind::Zig || cfg!(windows) {
             return Err("CMake and vcpkg take zig only on macOS and Linux, its scripts are of sh".to_string());
         }
 
@@ -232,6 +346,25 @@ impl Toolchain {
                     .unwrap_or_default();
             })
             .clone();
+    }
+}
+
+/// Of what a compiler says to --version: GCC names no clang, nothing when it does not start
+fn is_gcc(version: &str) -> bool {
+    return !version.is_empty() && !version.contains("clang");
+}
+
+fn abi_of(kind: &Kind, os: OperatingSystem, gcc: bool) -> Abi {
+    match (kind, os) {
+        (Kind::Zig, OperatingSystem::Windows) => return Abi::MinGwLibCxx,
+        (Kind::Zig | Kind::Ndk(_), _) => return Abi::LibCxx,
+        (Kind::Gcc, OperatingSystem::Windows) => return Abi::MinGwLibStdCxx,
+        (Kind::Gcc, _) => return Abi::LibStdCxx,
+        (Kind::System, OperatingSystem::Windows) if gcc => return Abi::MinGwLibStdCxx,
+        (Kind::System, OperatingSystem::Windows) => return Abi::Msvc,
+        (Kind::System, _) if gcc => return Abi::LibStdCxx,
+        (Kind::System, OperatingSystem::Linux) => return Abi::LibStdCxx,
+        (Kind::System, _) => return Abi::LibCxx,
     }
 }
 
@@ -394,7 +527,7 @@ mod tests {
     fn the_toolchain_follows_the_target() {
         // "auto" on this machine: the compilers of the system, like "system"
         let auto = Toolchain::for_target("auto", None, None).unwrap();
-        assert!(!auto.zig);
+        assert_eq!(auto.kind, super::Kind::System);
         assert_eq!(auto.target, Target::host());
 
         // those of the system build for this machine alone, the NDK builds for Android
@@ -404,6 +537,61 @@ mod tests {
 
         let error = Toolchain::for_target("zig", Target::named("android-aarch64"), None).err().unwrap();
         assert!(error.contains("NDK"), "{error}");
+
+        // the GCC build-script keeps builds for this machine
+        let error = Toolchain::for_target("gcc", Some(other), None).err().unwrap();
+        assert!(error.contains("toolchain = \"gcc\" builds for this machine"), "{error}");
+    }
+
+    #[test]
+    fn the_standard_libraries_follow_the_compilers() {
+        use super::{Abi, Kind, abi_of, is_gcc};
+        use crate::common::target::OperatingSystem::{Linux, MacOs, Windows};
+
+        assert!(is_gcc("gcc (Homebrew GCC 16.2.0) 16.2.0"));
+        assert!(!is_gcc("Apple clang version 16.0.0 (clang-1600.0.26.6)"));
+        // a compiler that does not start says nothing: the default of the system
+        assert!(!is_gcc(""));
+
+        assert_eq!(abi_of(&Kind::System, MacOs, false), Abi::LibCxx);
+        assert_eq!(abi_of(&Kind::System, MacOs, true), Abi::LibStdCxx);
+        assert_eq!(abi_of(&Kind::System, Linux, false), Abi::LibStdCxx);
+        assert_eq!(abi_of(&Kind::System, Windows, false), Abi::Msvc);
+        assert_eq!(abi_of(&Kind::System, Windows, true), Abi::MinGwLibStdCxx);
+        assert_eq!(abi_of(&Kind::Zig, Linux, false), Abi::LibCxx);
+        assert_eq!(abi_of(&Kind::Zig, Windows, false), Abi::MinGwLibCxx);
+        assert_eq!(abi_of(&Kind::Gcc, MacOs, false), Abi::LibStdCxx);
+        assert_eq!(abi_of(&Kind::Gcc, Windows, false), Abi::MinGwLibStdCxx);
+
+        // C libraries differ on Windows alone
+        assert!(Abi::LibCxx.links_c_of(Abi::LibStdCxx));
+        assert!(Abi::MinGwLibCxx.links_c_of(Abi::MinGwLibStdCxx));
+        assert!(!Abi::Msvc.links_c_of(Abi::MinGwLibStdCxx));
+    }
+
+    #[test]
+    fn cmake_takes_the_programs_of_gcc_as_they_are() {
+        use crate::common::system;
+        use crate::common::test_support::ScratchDir;
+
+        let directory = ScratchDir::new("gcc-cmake");
+        let tool = |name: &str| vec![directory.join("bin").join(name).display().to_string()];
+        let gcc = Toolchain {
+            kind: super::Kind::Gcc,
+            target: Target::host(),
+            c_compiler: tool("gcc-16"),
+            cpp_compiler: tool("g++-16"),
+            archiver: tool("gcc-ar-16"),
+            environment: vec![],
+        };
+
+        let file = gcc.cmake_toolchain_file().unwrap();
+        assert_eq!(file, directory.join("toolchain.cmake"));
+
+        let content = system::read_file(&file).unwrap();
+        let bin = directory.join("bin").display().to_string().replace('\\', "/");
+        assert!(content.contains(&format!("set(CMAKE_CXX_COMPILER \"{bin}/g++-16\")")), "{content}");
+        assert!(content.contains(&format!("set(CMAKE_RANLIB \"{bin}/gcc-ranlib-16\" CACHE FILEPATH \"\" FORCE)")), "{content}");
     }
 
     #[cfg(unix)]

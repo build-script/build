@@ -1,0 +1,82 @@
+{
+  "linux-64": {
+    "specs": [
+      "gxx_impl_linux-64=16.2.0",
+      "sysroot_linux-64=2.28"
+    ],
+    "packages": [
+      "https://conda.anaconda.org/conda-forge/noarch/libstdcxx-devel_linux-64-16.2.0-h86e191b_107.conda#sha256:ebbad84bdebd8a9964020d74dcce0f211f1431878c66326f6115dcb59e4c3469",
+      "https://conda.anaconda.org/conda-forge/noarch/libgcc-devel_linux-64-16.2.0-he3ce08f_107.conda#sha256:f1e7465f6b53f89b325e441c30ad7b19407b051eca556b6d0386ec05513b8e76",
+      "https://conda.anaconda.org/conda-forge/noarch/kernel-headers_linux-64-4.18.0-he073ed8_9.conda#sha256:41557eeadf641de6aeae49486cef30d02a6912d8da98585d687894afd65b356a",
+      "https://conda.anaconda.org/conda-forge/noarch/tzdata-2026e-h5d301ff_0.conda#sha256:2b7ca858879f183ce2dcc65b300f48a0133d5430550f35b23d80d405a0788dbf",
+      "https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.28-h4ee821c_9.conda#sha256:c47299fe37aebb0fcf674b3be588e67e4afb86225be4b0d452c7eb75c086b851",
+      "https://conda.anaconda.org/conda-forge/linux-64/libgomp-16.2.0-he0feb66_7.conda#sha256:92a0bb350c7be6a4eedcb4e111c60aefd176018e6b1c009a6e025dbe9bbcd758",
+      "https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda#sha256:eb8a0db0aa570124f7d2a93d7c7f596e3390df5e047818d873baad32985fc736",
+      "https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda#sha256:1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9",
+      "https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_7.conda#sha256:47d682b9f6d6ec9eb1a6e6c3e75ea6273e899e78fb7fc59f81d39745009fbc60",
+      "https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_7.conda#sha256:e031634c3a928f9594eba868bc46ef5230d6571a364a0c63215b06c4563bfcea",
+      "https://conda.anaconda.org/conda-forge/linux-64/ld_impl_linux-64-2.46.1-default_hbd61a6d_103.conda#sha256:901649b1edbe841fd4ee7e2d491a05184ed540eb01cdae506872f344babc1d28",
+      "https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-16.2.0-h934c35e_7.conda#sha256:fa7018298629fc429971fffd6ecba3d27a7b02e4e890d6a93ea01ffebe8cb745",
+      "https://conda.anaconda.org/conda-forge/linux-64/binutils_impl_linux-64-2.46.1-default_hfdba357_103.conda#sha256:98f9ddc6dc5d56a824b7eaea5bab6ad4bb47642288fc70d6b1b4024ac39d5595",
+      "https://conda.anaconda.org/conda-forge/linux-64/libsanitizer-16.2.0-h3048135_7.conda#sha256:e383569c331239308a8663facb76208fc0e141131ff3d17c1c2e50f34716a5a9",
+      "https://conda.anaconda.org/conda-forge/linux-64/gcc_impl_linux-64-16.2.0-h9891192_7.conda#sha256:14acaa661e4c4ef6c65606612b8b08f8f079c6a9e6da3ffcb77056685c675651",
+      "https://conda.anaconda.org/conda-forge/linux-64/gxx_impl_linux-64-16.2.0-h0d273dc_7.conda#sha256:f873532a86ce9073a7255dec909472c2a271a57db938f383b630a3caa0b47709"
+    ]
+  },
+  "linux-aarch64": {
+    "specs": [
+      "gxx_impl_linux-aarch64=16.2.0",
+      "sysroot_linux-aarch64=2.28"
+    ],
+    "packages": [
+      "https://conda.anaconda.org/conda-forge/noarch/libstdcxx-devel_linux-aarch64-16.2.0-h082e5f6_107.conda#sha256:c46e0efb196a24e9192f160c124f8a1d927c7d191595a1dc993f30dc93a52497",
+      "https://conda.anaconda.org/conda-forge/noarch/libgcc-devel_linux-aarch64-16.2.0-hc0c2482_107.conda#sha256:3a0fc46d9ffe0bc98e825bfcc0409564435e74ae0ac094b484a89a296ed777ee",
+      "https://conda.anaconda.org/conda-forge/noarch/kernel-headers_linux-aarch64-4.18.0-h05a177a_9.conda#sha256:5d224bf4df9bac24e69de41897c53756108c5271a0e5d2d2f66fd4e2fbc1d84b",
+      "https://conda.anaconda.org/conda-forge/noarch/tzdata-2026e-h5d301ff_0.conda#sha256:2b7ca858879f183ce2dcc65b300f48a0133d5430550f35b23d80d405a0788dbf",
+      "https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-aarch64-2.28-h585391f_9.conda#sha256:1bd2db6b2e451247bab103e4a0128cf6c7595dd72cb26d70f7fadd9edd1d1bc3",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/libgomp-16.2.0-h8acb6b2_7.conda#sha256:4406fd67c5beeb99b9372f9bf07aa3e40ca141e337eceebac3ff64aa72799494",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/libzlib-1.3.2-hdc9db2a_3.conda#sha256:76efa6cc9d7e6f5ee3bbca0939f64054af2bdfb3c3632531f8e633cf6c2ea41e",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda#sha256:a2527b1d81792a0ccd2c05850960df119c2b6d8f5fdec97f2db7d25dc23b1068",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/zstd-1.5.7-h9d15635_7.conda#sha256:427fd14bcb3b8659796fecc682716617409350fb5a98e5b7b47558a10d1a2fc7",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/libgcc-16.2.0-h205dda4_7.conda#sha256:eae7a3449d5a3b5351c5427137c076cc3fc826645c7bfc42dc10772b783826f1",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/ld_impl_linux-aarch64-2.46.1-default_h1979696_103.conda#sha256:516808982ad26ebdc4a9d8f71ee86ea55d0bc95382b7bca80620e0ac220971f3",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/libstdcxx-16.2.0-hef695bb_7.conda#sha256:b241a3acfa9cdb1359112864a1241225533c92642de3000d52ae65ef5d3a9786",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/binutils_impl_linux-aarch64-2.46.1-default_h5f4c503_103.conda#sha256:1827893f9d6aa13794196b1820b8003bfff0105774a323a61026a16cec6dc66d",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/libsanitizer-16.2.0-h73cac2c_7.conda#sha256:915f80d14bd9daf2357a5261443fd06e222f829aeef56fb6865ec7fcb1de9bdf",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/gcc_impl_linux-aarch64-16.2.0-h5425ead_7.conda#sha256:eaf481958a862ed63c66baa572753f3c3e2cd6e690fd5abd1cc3088fdde4a323",
+      "https://conda.anaconda.org/conda-forge/linux-aarch64/gxx_impl_linux-aarch64-16.2.0-h1e3c31f_7.conda#sha256:0a865dc69ecb1f4ac092878840723d8208ce4b8837f79d53b8b2f0e737cf057d"
+    ]
+  },
+  "win-64": {
+    "specs": [
+      "gxx_impl_win-64=16.2.0",
+      "m2w64-sysroot_win-64"
+    ],
+    "packages": [
+      "https://conda.anaconda.org/conda-forge/noarch/mingw-w64-ucrt-x86_64-windows-default-manifest-6.4-he206cdd_7.conda#sha256:5b0df4e0ba8487ffd59f60c34c5dbb9e001ecd2c5d2c66ba88eada40bfa3ecb8",
+      "https://conda.anaconda.org/conda-forge/noarch/tzdata-2026e-h5d301ff_0.conda#sha256:2b7ca858879f183ce2dcc65b300f48a0133d5430550f35b23d80d405a0788dbf",
+      "https://conda.anaconda.org/conda-forge/win-64/libwinpthread-12.0.0.r688.g6b2176247.1-h57928b3_0.conda#sha256:bab5558663cb0e964988b859abd69d0f2380b6ea9f140495ab543e51af13635d",
+      "https://conda.anaconda.org/conda-forge/win-64/m2-conda-epoch-20261029-0_x86_64.conda#sha256:10e83837e3dd4b9da952d892b976a5dd8d67d97217942f441a43d053e815c1d7",
+      "https://conda.anaconda.org/conda-forge/win-64/ucrt-10.0.26100.0-h57928b3_0.conda#sha256:3005729dce6f3d3f5ec91dfc49fc75a0095f9cd23bab49efb899657297ac91a5",
+      "https://conda.anaconda.org/conda-forge/win-64/libgomp-16.2.0-h8ee18e1_7.conda#sha256:4b8a747f047d069ccd2a6cf2f4fdbc6b0c0e4dcd840998d1fe607b8c234e707b",
+      "https://conda.anaconda.org/conda-forge/win-64/vcomp14-14.52.37029-h54d7a3b_45.conda#sha256:8307d1893da5f6b56bac3c8068e775c08875f3569a97ab9219d33eb3c4015d36",
+      "https://conda.anaconda.org/conda-forge/win-64/_openmp_mutex-4.5-20_gnu.conda#sha256:8a1cee28bd0ee7451ada1cd50b64720e57e17ff994fc62dd8329bef570d382e4",
+      "https://conda.anaconda.org/conda-forge/win-64/vc14_runtime-14.52.37029-hfcedb63_45.conda#sha256:fc56758530ae98573f0caf9a1270a4e2c77f3c53a2662bac5a6ccd0998f5c94b",
+      "https://conda.anaconda.org/conda-forge/win-64/libgcc-16.2.0-h110b43a_7.conda#sha256:59feb6d16cba13a70f22dae70a44670eb2cc45e652e9a34a014814c2ca871132",
+      "https://conda.anaconda.org/conda-forge/win-64/vc-14.5-h17caf24_45.conda#sha256:e83597d881e95543a990396fb619a622c722f05e1e3c3371d248c74950659233",
+      "https://conda.anaconda.org/conda-forge/win-64/libstdcxx-16.2.0-hae5796f_7.conda#sha256:5984f81dcb289446fb3cdb0117c0680bded57eaa98da193f705400ec94fc71ae",
+      "https://conda.anaconda.org/conda-forge/win-64/libzlib-1.3.2-hfd05255_3.conda#sha256:0629c2cc0404d3bb29d6baa7b4ba62da80797015e86de050db81ea5a07050527",
+      "https://conda.anaconda.org/conda-forge/win-64/zstd-1.5.7-h534d264_7.conda#sha256:ca7daae4f218a11fab82cc2857f0ea518ec3f46acec60490485347a4c22c6b3e",
+      "https://conda.anaconda.org/conda-forge/win-64/ld_impl_win-64-2.46.1-default_hfd38196_103.conda#sha256:4d84eaf3073ccc3935777e73d5508770c370d62279c1af261118cc91c5d55b73",
+      "https://conda.anaconda.org/conda-forge/noarch/mingw-w64-ucrt-x86_64-headers-git-12.0.0.r4.gg4f2fc60ca-hd8ed1ab_10.conda#sha256:1add86481f35163215e7076e6f06f22aa9f1f9345a5fff5cb07bc846c13fbec7",
+      "https://conda.anaconda.org/conda-forge/noarch/libgcc-devel_win-64-16.2.0-h254a5e0_107.conda#sha256:ff9a753514d9632ce9ab55e6872c875d15fea24514b999c9078df0151d6a26db",
+      "https://conda.anaconda.org/conda-forge/noarch/libstdcxx-devel_win-64-16.2.0-h230208c_107.conda#sha256:1345b0c9187a7900370e2078b3568b6444d1c8de241f5d5a97e110fdc2a5f14a",
+      "https://conda.anaconda.org/conda-forge/noarch/mingw-w64-ucrt-x86_64-crt-git-12.0.0.r4.gg4f2fc60ca-hd8ed1ab_10.conda#sha256:de3e42149b498c16bfb485b7729f4ca0fe392be576a2a10ff702d661799b1df3",
+      "https://conda.anaconda.org/conda-forge/noarch/mingw-w64-ucrt-x86_64-winpthreads-git-12.0.0.r4.gg4f2fc60ca-hd8ed1ab_10.conda#sha256:828abb111286940473c4c665fc8ab300d28920f5af83b32295e8bf2256a8f342",
+      "https://conda.anaconda.org/conda-forge/noarch/m2w64-sysroot_win-64-12.0.0.r4.gg4f2fc60ca-hd8ed1ab_10.conda#sha256:fb0ffe6b3c25189038c29abbd1fac2522d87fe2775a09e5f5088e5542dc3309b",
+      "https://conda.anaconda.org/conda-forge/win-64/binutils_impl_win-64-2.46.1-default_ha84baeb_103.conda#sha256:4f165824588d2600d202efc14727a5360f75508134a58b12943104f4731c696f",
+      "https://conda.anaconda.org/conda-forge/win-64/gcc_impl_win-64-16.2.0-h94e87e1_7.conda#sha256:795d89968b7e67745360ff57ebc84dcae51dac2cbd4b4861be2523dbab97b71c",
+      "https://conda.anaconda.org/conda-forge/win-64/gxx_impl_win-64-16.2.0-hdbe55fc_7.conda#sha256:a9ee571df9ca3ec7ac8ec85916a12615e7c5ab0740d17f930abfb8730528935c"
+    ]
+  }
+}
