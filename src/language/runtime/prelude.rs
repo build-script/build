@@ -1,5 +1,5 @@
 // What every script has without `use`: print, type, env, git, the target and the machine, files, patterns,
-// joining and replacing text, the time, list, build_command and tool
+// joining and replacing text, the C libraries among modules, the time, list, build_command and tool
 use std::path::Path;
 
 use super::*;
@@ -242,6 +242,21 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                 let path: String = args.get("path")?;
                 let content: String = args.get("content")?;
                 return Ok(Value::List(vec![path.into(), content.into()]));
+            },
+        ),
+        builtin(
+            "c_libraries",
+            FunctionParameters::new()
+                .required("modules", Type::list(Type::Module))
+                .returns(Type::list(Type::Module)),
+            // those of build_c, build_cpp, build_cmake and system_library: a function of a plugin builds with them
+            // the way their language does, like cgo for Go
+            |_, args| {
+                let modules: Vec<Value> = args.get("modules")?;
+                let libraries = modules.into_iter()
+                    .filter(|value| matches!(value, Value::Module(module) if crate::native::LIBRARY_FUNCTIONS.contains(&module.function)))
+                    .collect();
+                return Ok(Value::List(libraries));
             },
         ),
         builtin(

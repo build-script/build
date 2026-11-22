@@ -44,6 +44,9 @@ pub const PLATFORMS: &[Platform] = &[
     },
 ];
 
+/// What builds the libraries of C and C++ a module of another language can link, see c_libraries
+pub const LIBRARY_FUNCTIONS: &[&str] = &["build_c", "build_cpp", "build_cmake", "system_library"];
+
 /// The sources and tests of a module that names no other
 const DEFAULT_SOURCES: &str = "src/**";
 const DEFAULT_TEST_SOURCES: &str = "test/**";
