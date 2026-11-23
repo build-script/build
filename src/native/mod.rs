@@ -156,6 +156,7 @@ fn library_builtins() -> Vec<(&'static str, Value)> {
     return vec![
         builtin("build_cmake", cmake::build_cmake_signature(), cmake::build_cmake),
         builtin("system_library", cmake::system_library_signature(), cmake::system_library),
+        builtin("prebuilt_library", cmake::prebuilt_library_signature(), cmake::prebuilt_library),
     ];
 }
 
