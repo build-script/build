@@ -250,6 +250,7 @@ fn library_module(
             header_dirs: vec![],
             abi: toolchain.as_ref().map(Toolchain::abi),
             runtime_libraries: vec![],
+            environment: vec![],
         }),
         tests: vec![],
     }));

@@ -90,6 +90,9 @@ pub struct NativeOutput {
     /// the shared libraries of its ports and of those of the modules it depends on, which what links it loads:
     /// those vcpkg builds only that way, like the Vulkan loader
     pub runtime_libraries: Vec<PathBuf>,
+    /// what the programs linking it need in their environment when they run, like the validation layers of
+    /// Vulkan: of a prebuilt library its own, of others those of what they depend on
+    pub environment: Vec<(String, String)>,
 }
 
 /// The C compiler of a library, for commands that compile and link against it with one of their own, like cgo
@@ -125,6 +128,8 @@ struct TestSetup<'a> {
     /// after those of the framework, then those after `build test --`
     arguments: Vec<String>,
     timeout: Duration,
+    /// of the libraries it and its tests link, like VK_ADD_LAYER_PATH
+    environment: Vec<(String, String)>,
 }
 
 /// A dependency list: vcpkg ports and modules of the script
@@ -536,6 +541,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             programs: args.get("test_programs")?,
             arguments: [args.get("test_arguments")?, context.test_arguments.clone()].concat(),
             timeout: Duration::from_secs(timeout as u64),
+            environment: joined_environment(&linked_modules),
         };
 
         let outcome = unit_tests(&test_compilation, &compilation, library, test_cpp, link_flags, &setup)
@@ -555,6 +561,8 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
         ModuleKind::StaticLibrary => link_flags.insert(0, linked.display().to_string()),
     }
 
+    let environment = joined_environment(&BuiltModule::transitive(&dependencies.modules));
+
     return Ok(Value::from(Arc::new(BuiltModule {
         name,
         directory,
@@ -571,6 +579,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             header_dirs: public_header_dirs,
             abi: (kind == ModuleKind::StaticLibrary).then(|| toolchain.abi()),
             runtime_libraries,
+            environment,
         }),
         tests,
     })));
@@ -670,6 +679,30 @@ fn update_compile_commands(file: &Path, own_objects: &Path, commands: Vec<serde_
     return system::write_file(file, &text);
 }
 
+/// The environment of the libraries, a variable two of them name joined like the PATH: VK_ADD_LAYER_PATH of the
+/// layers of two SDKs
+fn joined_environment(modules: &[Arc<BuiltModule>]) -> Vec<(String, String)> {
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let mut joined: Vec<(String, String)> = vec![];
+
+    for module in modules {
+        let ModuleOutput::Native(output) = &module.output else { continue };
+
+        for (variable, value) in &output.environment {
+            match joined.iter_mut().find(|(known, _)| known == variable) {
+                Some((_, known)) if known.split(separator).any(|part| part == value) => {}
+                Some((_, known)) => {
+                    known.push_str(separator);
+                    known.push_str(value);
+                }
+                None => joined.push((variable.clone(), value.clone())),
+            }
+        }
+    }
+
+    return joined;
+}
+
 /// Next to its own, unless they are there already: modules in one directory share build/lib and build/bin. A link
 /// stays a link, like libvulkan.1.dylib to libvulkan.1.4.357.dylib.
 fn copy_shared_libraries(libraries: &[PathBuf], shared_dir: &Path) -> Result<(), String> {
@@ -702,7 +735,10 @@ pub fn launch(module: &BuiltModule, output: &NativeOutput, args: &[String], runn
     let program = output.program.as_ref()
         .ok_or(format!("{} is a library, only programs can be run", module.name))?;
 
-    return system::run_interactive(runner.command(program, &module.directory).args(args));
+    let mut process = runner.command(program, &module.directory);
+    process.args(args)
+        .envs(output.environment.iter().map(|(variable, value)| (variable, value)));
+    return system::run_interactive(&mut process);
 }
 
 impl Dependencies {
@@ -855,6 +891,7 @@ fn test_program(
     let mut fingerprint = InputFingerprint::in_build_dir(build_dir, &format!("tests/{program}"));
     fingerprint.add(link_flags);
     fingerprint.add(&setup.arguments);
+    fingerprint.add(&setup.environment);
     fingerprint.add_files(objects)?;
 
     if fingerprint.is_up_to_date(&[&executable])? {
@@ -885,7 +922,8 @@ fn test_program(
         None => program.to_string(),
     };
 
-    command.args(&setup.arguments);
+    command.args(&setup.arguments)
+        .envs(setup.environment.iter().map(|(variable, value)| (variable, value)));
 
     let run = TestRun::new(runner, &command, reports_dir, fingerprint).with_timeout(setup.timeout);
     return Ok(ModuleTests::Run(Box::new(run)));
@@ -992,6 +1030,29 @@ mod tests {
         assert_eq!(system::read_file(&shared_dir.join("libvulkan.1.dylib")).unwrap(), "loader");
     }
 
+    #[test]
+    fn programs_run_with_the_environment_of_their_libraries_joined_like_the_path() {
+        let with_environment = |name: &str, environment: &[(&str, &str)]| {
+            let mut module = Arc::into_inner(library(name, false, None, vec![])).unwrap();
+            if let ModuleOutput::Native(output) = &mut module.output {
+                output.environment = environment.iter().map(|(variable, value)| (variable.to_string(), value.to_string())).collect();
+            }
+            return Arc::new(module);
+        };
+        let separator = if cfg!(windows) { ";" } else { ":" };
+
+        let layers = with_environment("vulkan-runtime", &[("VK_ADD_LAYER_PATH", "/sdk/layers"), ("VK_DRIVER_FILES", "/sdk/icd.json")]);
+        let more = with_environment("more-layers", &[("VK_ADD_LAYER_PATH", "/other/layers"), ("VK_ADD_LAYER_PATH", "/sdk/layers")]);
+
+        assert_eq!(
+            joined_environment(&[layers, more]),
+            [
+                ("VK_ADD_LAYER_PATH".to_string(), format!("/sdk/layers{separator}/other/layers")),
+                ("VK_DRIVER_FILES".to_string(), "/sdk/icd.json".to_string()),
+            ]
+        );
+    }
+
     fn library(name: &str, cpp: bool, abi: Option<Abi>, modules: Vec<Arc<BuiltModule>>) -> Arc<BuiltModule> {
         return Arc::new(BuiltModule {
             name: name.to_string(),
@@ -1009,6 +1070,7 @@ mod tests {
                 header_dirs: vec![],
                 abi,
                 runtime_libraries: vec![],
+                environment: vec![],
             }),
             tests: vec![],
         });
