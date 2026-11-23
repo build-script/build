@@ -87,6 +87,9 @@ pub struct NativeOutput {
     /// of a library what links it takes in: the standard libraries its code needs. None for programs, for
     /// shared libraries, which have theirs inside, and for headers, which compile with what includes them.
     pub abi: Option<Abi>,
+    /// the shared libraries of its ports and of those of the modules it depends on, which what links it loads:
+    /// those vcpkg builds only that way, like the Vulkan loader
+    pub runtime_libraries: Vec<PathBuf>,
 }
 
 /// The C compiler of a library, for commands that compile and link against it with one of their own, like cgo
@@ -168,7 +171,7 @@ fn signature(language: Language) -> FunctionSignature {
         // jni.h of the JDK
         .with_default("jni", Type::Bool, false)
         // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those.
-        // "gcc": the GCC build-script keeps, for this machine, with C++26 reflection: flags = list("-freflection")
+        // "gcc": the GCC build-script keeps, the same on every machine, for this machine alone
         .with_default("toolchain", Type::Union(["auto", "system", "zig", "gcc"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
         // the targets it is built for, like list("linux-aarch64", "windows-x86_64"), each into build/<target>/:
         // this machine without them, and the targets of the modules depending on it
@@ -428,12 +431,23 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
 
     // the shared libraries it loads lie next to its own in build/lib, on Windows next to the programs in
     // build/bin, and are found relative to the program or library: build/ runs wherever it is copied
-    let shared_libraries: Vec<PathBuf> = BuiltModule::transitive(&[dependencies.modules.clone(), test_dependencies.modules.clone()].concat())
-        .iter()
+    let linked_modules = BuiltModule::transitive(&[dependencies.modules.clone(), test_dependencies.modules.clone()].concat());
+    let mut runtime_libraries: Vec<PathBuf> = linked_modules.iter()
+        .flat_map(|module| match &module.output {
+            ModuleOutput::Native(output) => output.runtime_libraries.clone(),
+            _ => vec![],
+        })
+        .chain(installed.as_ref().map(|installed| installed.shared_libraries(release)).unwrap_or_default())
+        .collect();
+    let mut seen = HashSet::new();
+    runtime_libraries.retain(|library| seen.insert(library.clone()));
+
+    let shared_libraries: Vec<PathBuf> = linked_modules.iter()
         .filter_map(|module| match &module.output {
             ModuleOutput::Native(output) => output.shared_library.clone(),
             _ => None,
         })
+        .chain(runtime_libraries.iter().cloned())
         .collect();
     let program_rpath = match target.rpath_origin() {
         Some(origin) if shared || !shared_libraries.is_empty() => vec![format!("-Wl,-rpath,{origin}/../lib")],
@@ -556,6 +570,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             c_compiler: Some(toolchain.c_compiler_for_tools(release)),
             header_dirs: public_header_dirs,
             abi: (kind == ModuleKind::StaticLibrary).then(|| toolchain.abi()),
+            runtime_libraries,
         }),
         tests,
     })));
@@ -655,12 +670,24 @@ fn update_compile_commands(file: &Path, own_objects: &Path, commands: Vec<serde_
     return system::write_file(file, &text);
 }
 
-/// Next to its own, unless they are there already: modules in one directory share build/lib and build/bin
+/// Next to its own, unless they are there already: modules in one directory share build/lib and build/bin. A link
+/// stays a link, like libvulkan.1.dylib to libvulkan.1.4.357.dylib.
 fn copy_shared_libraries(libraries: &[PathBuf], shared_dir: &Path) -> Result<(), String> {
     let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
 
     for library in libraries {
         let copy = shared_dir.join(library.file_name().unwrap_or_default());
+
+        #[cfg(unix)]
+        if let Ok(target) = fs::read_link(library) {
+            if fs::read_link(&copy).ok().as_ref() != Some(&target) {
+                system::create_dir(shared_dir)?;
+                let _ = fs::remove_file(&copy);
+                std::os::unix::fs::symlink(&target, &copy)
+                    .map_err(|error| format!("could not link {} to {}: {error}", copy.display(), target.display()))?;
+            }
+            continue;
+        }
 
         if copy != *library && modified(&copy) < modified(library) {
             system::copy_file(library, &copy)?;
@@ -946,6 +973,25 @@ mod tests {
         assert!(!defines_main(&without));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn shared_libraries_are_copied_next_to_the_programs_and_links_stay_links() {
+        let directory = ScratchDir::new("copied-shared-libraries");
+        let lib = directory.join("vcpkg/lib");
+        system::write_file(&lib.join("libvulkan.1.4.357.dylib"), "loader").unwrap();
+        std::os::unix::fs::symlink("libvulkan.1.4.357.dylib", lib.join("libvulkan.1.dylib")).unwrap();
+
+        let shared_dir = directory.join("build/lib");
+        let libraries = [lib.join("libvulkan.1.4.357.dylib"), lib.join("libvulkan.1.dylib")];
+        copy_shared_libraries(&libraries, &shared_dir).unwrap();
+        // once more: nothing changed, nothing to do
+        copy_shared_libraries(&libraries, &shared_dir).unwrap();
+
+        assert_eq!(system::read_file(&shared_dir.join("libvulkan.1.4.357.dylib")).unwrap(), "loader");
+        assert_eq!(fs::read_link(shared_dir.join("libvulkan.1.dylib")).unwrap(), Path::new("libvulkan.1.4.357.dylib"));
+        assert_eq!(system::read_file(&shared_dir.join("libvulkan.1.dylib")).unwrap(), "loader");
+    }
+
     fn library(name: &str, cpp: bool, abi: Option<Abi>, modules: Vec<Arc<BuiltModule>>) -> Arc<BuiltModule> {
         return Arc::new(BuiltModule {
             name: name.to_string(),
@@ -962,6 +1008,7 @@ mod tests {
                 c_compiler: None,
                 header_dirs: vec![],
                 abi,
+                runtime_libraries: vec![],
             }),
             tests: vec![],
         });

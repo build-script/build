@@ -249,6 +249,7 @@ fn library_module(
             // installed with it, like the many of LLVM: what depends on it builds again with its artifact
             header_dirs: vec![],
             abi: toolchain.as_ref().map(Toolchain::abi),
+            runtime_libraries: vec![],
         }),
         tests: vec![],
     }));

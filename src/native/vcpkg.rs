@@ -1,6 +1,6 @@
 // Libraries of C and C++ modules from vcpkg: build-script installs vcpkg at a release, which pins every
 // port to one version. Their flags come from their .pc files, of ports without one from their files.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -337,8 +337,19 @@ impl Installed {
         let mut link_flags = vec![];
         let lib_dir = self.lib_dir(release);
 
-        for port in ports {
-            let files = self.files_of(port_and_features(port).0);
+        let mut ports: Vec<String> = ports.iter()
+            .map(|port| port_and_features(port).0.to_string())
+            .collect();
+        let mut seen = HashSet::new();
+
+        while !ports.is_empty() {
+            let port = ports.remove(0);
+
+            if !seen.insert(port.clone()) {
+                continue;
+            }
+
+            let files = self.files_of(&port);
 
             let packages: Vec<String> = files.iter()
                 .filter_map(|file| file.strip_prefix(&format!("{lib_dir}/pkgconfig/"))?.strip_suffix(".pc"))
@@ -352,8 +363,16 @@ impl Installed {
 
             if chosen.is_empty() {
                 let extension = if self.msvc { ".lib" } else { ".a" };
-                let libraries = files.iter().filter(|file| file.starts_with(&lib_dir) && file.ends_with(extension));
-                link_flags.extend(libraries.map(|file| self.root.join(file).display().to_string()));
+                let libraries: Vec<&String> = files.iter()
+                    .filter(|file| file.starts_with(&lib_dir) && file.ends_with(extension))
+                    .collect();
+
+                // a port of nothing but others, like vulkan of vulkan-headers and vulkan-loader: theirs
+                if libraries.is_empty() {
+                    ports.extend(self.dependencies_of(&port));
+                }
+
+                link_flags.extend(libraries.iter().map(|file| self.root.join(file).display().to_string()));
                 continue;
             }
 
@@ -375,6 +394,32 @@ impl Installed {
         return format!("{}/{}", self.triplet, if release || self.msvc { "lib" } else { "debug/lib" });
     }
 
+    /// The shared libraries of its ports, which the programs linking them load: those vcpkg builds only that
+    /// way, like the Vulkan loader. Of debug builds those of debug/, on Windows the DLLs in bin.
+    pub fn shared_libraries(&self, release: bool) -> Vec<PathBuf> {
+        let debug = !release && !self.msvc;
+        let mut libraries = vec![];
+
+        for name in ["bin", "lib"] {
+            let directory = self.root.join(&self.triplet).join(if debug { format!("debug/{name}") } else { name.to_string() });
+            let Ok(entries) = fs::read_dir(&directory) else { continue };
+            let mut found: Vec<PathBuf> = entries.flatten()
+                .map(|entry| entry.path())
+                .filter(|path| is_shared_library(path))
+                .collect();
+            found.sort();
+            libraries.extend(found);
+        }
+
+        return libraries;
+    }
+
+    /// The ports the port depends on, as vcpkg wrote them into its status: without features and host triplets
+    fn dependencies_of(&self, port: &str) -> Vec<String> {
+        let status = fs::read_to_string(self.root.join("vcpkg/status")).unwrap_or_default();
+        return dependencies_in_status(&status, port, &self.triplet);
+    }
+
     /// The files vcpkg installed for the port, relative to the install root
     fn files_of(&self, port: &str) -> Vec<String> {
         let list = system::files_with_extension(&[self.root.join("vcpkg/info")], "list")
@@ -391,6 +436,41 @@ impl Installed {
             .map(|text| text.lines().map(str::to_string).collect())
             .unwrap_or_default();
     }
+}
+
+/// libvulkan.1.dylib, libvulkan.so.1, vulkan-1.dll: a library programs load when they start
+fn is_shared_library(path: &Path) -> bool {
+    let name = path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    return name.ends_with(".dll") || name.ends_with(".dylib") || name.ends_with(".so") || name.contains(".so.");
+}
+
+/// Of the paragraphs of vcpkg's status the Depends of the port for the triplet, its features' too:
+/// "vulkan-headers, vcpkg-cmake:arm64-osx, fmt[core](linux)" are vulkan-headers, vcpkg-cmake and fmt
+fn dependencies_in_status(status: &str, port: &str, triplet: &str) -> Vec<String> {
+    let mut dependencies = vec![];
+
+    for paragraph in status.split("\n\n") {
+        let field = |name: &str| paragraph.lines().find_map(|line| line.strip_prefix(&format!("{name}: ")));
+
+        if field("Package") != Some(port) || field("Architecture") != Some(triplet) {
+            continue;
+        }
+
+        for dependency in field("Depends").unwrap_or_default().split(',') {
+            let name = dependency.trim()
+                .split(['[', ':', '(', ' '])
+                .next()
+                .unwrap_or_default();
+
+            if !name.is_empty() && !dependencies.iter().any(|known: &String| known == name) {
+                dependencies.push(name.to_string());
+            }
+        }
+    }
+
+    return dependencies;
 }
 
 /// Cflags and libs of the packages and of what they require, in link order. Ports of MSVC have its flags.
@@ -555,6 +635,31 @@ mod tests {
         ] {
             assert!(content.contains(line), "{line} is missing in\n{content}");
         }
+    }
+
+    #[test]
+    fn ports_of_nothing_but_others_take_theirs_and_their_shared_libraries_are_found() {
+        let status = "Package: vulkan\nVersion: 2023-12-17\nDepends: vcpkg-cmake, vulkan-headers, vulkan-loader\nArchitecture: arm64-osx\n\n\
+                      Package: vulkan\nVersion: 2023-12-17\nDepends: vulkan-loader\nArchitecture: x64-linux\n\n\
+                      Package: app\nFeature: tools\nDepends: fmt[core](linux), vcpkg-cmake:arm64-osx, zlib\nArchitecture: arm64-osx\n";
+        assert_eq!(dependencies_in_status(status, "vulkan", "arm64-osx"), ["vcpkg-cmake", "vulkan-headers", "vulkan-loader"]);
+        assert_eq!(dependencies_in_status(status, "app", "arm64-osx"), ["fmt", "vcpkg-cmake", "zlib"]);
+        assert!(dependencies_in_status(status, "zlib", "arm64-osx").is_empty());
+
+        // debug builds take those of debug/, the DLLs of Windows are in bin
+        let directory = ScratchDir::new("port-shared-libraries");
+        for file in ["arm64-osx/lib/libvulkan.1.dylib", "arm64-osx/lib/libfmt.a", "arm64-osx/debug/lib/libvulkan.1.dylib", "arm64-osx/lib/libz.so.1", "arm64-osx/bin/vulkan-1.dll", "arm64-osx/bin/glslc"] {
+            system::write_file(&directory.join(file), "").unwrap();
+        }
+        let installed = Installed { root: directory.to_path_buf(), triplet: "arm64-osx".to_string(), msvc: false, of_the_machine: true };
+        let names = |release: bool| -> Vec<String> {
+            installed.shared_libraries(release)
+                .iter()
+                .map(|library| library.strip_prefix(&*directory).unwrap().to_string_lossy().replace('\\', "/"))
+                .collect()
+        };
+        assert_eq!(names(true), ["arm64-osx/bin/vulkan-1.dll", "arm64-osx/lib/libvulkan.1.dylib", "arm64-osx/lib/libz.so.1"]);
+        assert_eq!(names(false), ["arm64-osx/debug/lib/libvulkan.1.dylib"]);
     }
 
     #[test]
