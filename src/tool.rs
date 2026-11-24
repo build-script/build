@@ -1,7 +1,9 @@
 // tool: a program downloaded once per version, checked against its SHA-256 and project.lock, for plugins
 // that bring the tools of their language
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 
 use crate::common::settings::Settings;
@@ -25,6 +27,12 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .required("url", Type::String)
             .with_default("sha256", Type::String, "")
             .with_default("sha256_url", Type::String, "")
+            // an installer instead of an archive, run once with {archive}, the download or what an archive of it
+            // holds, and {directory}, where the tool goes: like an SDK installed without asking
+            .strings("install")
+            // the URL of its license: the first download asks for it once, build config license.<name> accepted
+            // without a terminal
+            .with_default("license", Type::String, "")
             .returns(Type::String),
         |_, args| {
             let tool = ToolArchive {
@@ -33,6 +41,8 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
                 url: args.get("url")?,
                 sha256: args.get("sha256")?,
                 sha256_url: args.get("sha256_url")?,
+                install: args.get("install")?,
+                license: args.get("license")?,
             };
 
             let directory = match installed_elsewhere(&tool.name)? {
@@ -53,6 +63,10 @@ pub struct ToolArchive {
     pub sha256: String,
     /// a file with the SHA-256, or with lines of a SHA-256 and a file name like SHASUMS256.txt
     pub sha256_url: String,
+    /// the installer and its arguments, empty for an archive
+    pub install: Vec<String>,
+    /// the URL of its license, empty for none to accept
+    pub license: String,
 }
 
 /// The directory of the tool below `tools_dir`, installed unless it is there. Its archive has to match
@@ -80,12 +94,19 @@ pub fn install(tool: &ToolArchive, tools_dir: &Path, mirrors: &[(String, String)
             return Ok(target.clone());
         }
 
+        if !tool.license.is_empty() {
+            accept_license(tool, &mut Settings::load()?, |question| match std::io::stdin().is_terminal() {
+                true => system::prompt(question).map(Some),
+                false => Ok(None),
+            })?;
+        }
+
         let expected = expected_sha256(tool, &key, &archive_name, mirrors)?;
         let url = mirrored(&tool.url, mirrors);
         let archive = target.with_file_name(format!("{}-{archive_name}", target.file_name().unwrap_or_default().to_string_lossy()));
         let mut actual = String::new();
 
-        system::install_archive_checked(&url, &archive, &target, |file| {
+        let verify = |file: &Path| {
             let sha256 = system::sha(file, 256)?;
 
             if let Some(expected) = &expected && *expected != sha256 {
@@ -95,11 +116,84 @@ pub fn install(tool: &ToolArchive, tools_dir: &Path, mirrors: &[(String, String)
             lock::check_sha256(&key, &sha256)?;
             actual = sha256;
             return Ok(());
-        })?;
+        };
+
+        match tool.install.is_empty() {
+            true => system::install_archive_checked(&url, &archive, &target, verify)?,
+            false => run_installer(tool, &url, &archive, &target, verify)?,
+        }
 
         system::write_file(&target.join(MARKER), &format!("{} sha256={actual}\n", tool.url))?;
         return Ok(target.clone());
     });
+}
+
+/// Downloads the installer, unpacks it when it is an archive and runs it into `target`. What it downloaded and
+/// unpacked goes, the installer may not leave `target` empty.
+fn run_installer(
+    tool: &ToolArchive,
+    url: &str,
+    download: &Path,
+    target: &Path,
+    verify: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    if !system::download_checked(url, download, true, None, verify)? {
+        return Err(format!("{url} is not available"));
+    }
+
+    let name = download.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let unpacked = PathBuf::from(format!("{}.installer", target.display()));
+    let installer = match [".zip", ".tar", ".tar.gz", ".tgz", ".tar.xz"].iter().any(|extension| name.ends_with(extension)) {
+        true => {
+            system::remove_dir(&unpacked)?;
+            system::extract(download, &unpacked)?;
+            unpacked.clone()
+        }
+        false => download.to_path_buf(),
+    };
+
+    // installers want a directory of their own that is not there yet
+    system::remove_dir(target)?;
+    let (installer_text, target_text) = (installer.display().to_string(), target.display().to_string());
+    let words: Vec<String> = tool.install.iter()
+        .map(|word| word.replace("{archive}", &installer_text).replace("{directory}", &target_text))
+        .collect();
+
+    system::log_tool(&tool.name, &format!("Installing {} {}", tool.name, tool.version));
+    let mut command = Command::new(&words[0]);
+    command.args(&words[1..]).current_dir(download.parent().unwrap_or(Path::new(".")));
+    let ran = system::run_command_quietly(&mut command, &format!("the installer of {}", tool.name));
+
+    let _ = std::fs::remove_file(download);
+    system::remove_dir(&unpacked)?;
+    ran?;
+
+    if system::files_below(&[target.to_path_buf()]).is_empty() {
+        return Err(format!("the installer of {} installed nothing into {}", tool.name, target.display()));
+    }
+
+    return Ok(());
+}
+
+/// Before the first download of a tool with a license: the person accepts it once, the settings keep it. `ask`
+/// is None without a terminal: then the error says how to accept it.
+fn accept_license(tool: &ToolArchive, settings: &mut Settings, ask: impl FnOnce(&str) -> Result<Option<String>, String>) -> Result<(), String> {
+    let key = format!("{}{}", project::LICENSE, tool.name);
+
+    if settings.get(&key) == Some(project::ACCEPTED) {
+        return Ok(());
+    }
+
+    let question = format!("{} {} comes under the license at {}. Accept it? (y/N): ", tool.name, tool.version, tool.license);
+
+    match ask(&question)?.as_deref() {
+        Some("y" | "yes") => return settings.set(&key, project::ACCEPTED),
+        Some(_) => return Err(format!("{} is not installed: its license at {} is not accepted", tool.name, tool.license)),
+        None => return Err(format!("{} comes under the license at {}: read it, then build config {key} {}", tool.name, tool.license, project::ACCEPTED)),
+    }
 }
 
 /// The SHA-256 of the archive of an installed tool, None when it is not installed from `url`
@@ -260,6 +354,8 @@ mod tests {
             url: format!("{server}/dl/hello-1.0.tar"),
             sha256: sha256.to_string(),
             sha256_url: sha256_url.to_string(),
+            install: vec![],
+            license: String::new(),
         };
 
         lock::open(&directory.join("project.build"), false).unwrap();
@@ -294,6 +390,73 @@ mod tests {
 
         assert!(install(&ToolArchive { name: "../x".to_string(), ..tool("", "") }, &tools, &[]).is_err());
         lock::close();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installers_run_once_into_the_directory_of_the_tool() {
+        let _turn = lock::TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let directory = ScratchDir::new("tool-installer");
+        // like the installer of an SDK: it writes what it installs below --root
+        let installer = "#!/bin/sh\nmkdir -p \"$1/bin\" && echo glslc > \"$1/bin/glslc\"\n";
+        let lazy = "#!/bin/sh\nexit 0\n";
+        let server = serve_files(vec![
+            ("/sdk/vulkansdk-1.0.run".to_string(), installer.to_string()),
+            ("/sdk/lazy-1.0.run".to_string(), lazy.to_string()),
+        ]);
+        let tool = |file: &str| ToolArchive {
+            name: "vulkan-sdk".to_string(),
+            version: "1.0".to_string(),
+            url: format!("{server}/sdk/{file}"),
+            sha256: String::new(),
+            sha256_url: String::new(),
+            install: ["sh", "{archive}", "{directory}"].map(String::from).to_vec(),
+            license: String::new(),
+        };
+        let tools = directory.join("tools");
+        lock::open(&directory.join("project.build"), false).unwrap();
+
+        let installed = install(&tool("vulkansdk-1.0.run"), &tools, &[]).unwrap();
+        assert_eq!(system::read_file(&installed.join("bin/glslc")).unwrap(), "glslc\n");
+        assert!(lock::locked_sha256("tool:vulkan-sdk/1.0/vulkansdk-1.0.run").is_some());
+        // the download went, the marker stays: installed once
+        assert_eq!(system::files_below(&[tools.join("vulkan-sdk")]).len(), 2);
+        assert_eq!(install(&tool("vulkansdk-1.0.run"), &tools, &[]).unwrap(), installed);
+
+        let error = install(&tool("lazy-1.0.run"), &tools, &[]).unwrap_err();
+        assert!(error.starts_with("the installer of vulkan-sdk installed nothing into "), "{error}");
+        lock::close();
+    }
+
+    #[test]
+    fn a_license_is_accepted_once_and_without_a_terminal_by_build_config() {
+        let directory = ScratchDir::new("tool-license");
+        let mut settings = Settings::load_from(directory.join("settings")).unwrap();
+        let tool = ToolArchive {
+            name: "vulkan-sdk".to_string(),
+            version: "1.4".to_string(),
+            url: String::new(),
+            sha256: String::new(),
+            sha256_url: String::new(),
+            install: vec![],
+            license: "https://vulkan.lunarg.com/license".to_string(),
+        };
+
+        let error = accept_license(&tool, &mut settings, |_| Ok(None)).unwrap_err();
+        assert_eq!(error, "vulkan-sdk comes under the license at https://vulkan.lunarg.com/license: read it, then build config license.vulkan-sdk accepted");
+
+        let error = accept_license(&tool, &mut settings, |_| Ok(Some("n".to_string()))).unwrap_err();
+        assert!(error.contains("is not accepted"), "{error}");
+
+        accept_license(&tool, &mut settings, |question| {
+            assert!(question.starts_with("vulkan-sdk 1.4 comes under the license at https://vulkan.lunarg.com/license"), "{question}");
+            return Ok(Some("y".to_string()));
+        })
+        .unwrap();
+
+        // kept: not asked again
+        let mut again = Settings::load_from(directory.join("settings")).unwrap();
+        accept_license(&tool, &mut again, |_| panic!("asked again")).unwrap();
     }
 
     #[test]
