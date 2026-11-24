@@ -784,6 +784,11 @@ fn scripts_ask_for_their_target_and_for_the_machine() {
     // build/<target>/ beside build/, and the name of the machine is the machine
     assert_eq!(runtime.context.build_dir(std::path::Path::new("app")), PathBuf::from("app/build").join(other.name()));
     assert_eq!(Runtime::new(".").with_target(Some(host)).context.target, None);
+
+    // build --release, which plugins ask for
+    let mode = "mode = if release() { \"release\" } else { \"debug\" }";
+    assert_eq!(string(&run(mode).unwrap(), "mode"), "debug");
+    assert_eq!(string(&run_in(Runtime::new(".").with_release(true), mode).unwrap(), "mode"), "release");
 }
 
 /// A module that finished building with the given name
