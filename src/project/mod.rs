@@ -53,6 +53,10 @@ pub struct NewModule {
 /// mirror.<URL> = <URL>: tools whose download URL starts with the first come from the second
 pub const MIRROR: &str = "mirror.";
 
+/// license.<tool> = accepted: the person accepted the license of a tool, like an SDK, before its first download
+pub const LICENSE: &str = "license.";
+pub const ACCEPTED: &str = "accepted";
+
 pub const SETTINGS: &[(&str, &str)] = &[
     (
         DOMAIN,
@@ -605,6 +609,8 @@ pub fn checked_setting(name: &str, value: &str) -> Result<String, String> {
 
             return Ok(value.trim().to_string());
         }
+        name if name.starts_with(LICENSE) && value == ACCEPTED => return Ok(value.to_string()),
+        name if name.starts_with(LICENSE) => return Err(format!("{name} can only be {ACCEPTED}, unset it to be asked again")),
         REMEMBER_DOMAIN if value == "never" => return Ok(value.to_string()),
         REMEMBER_DOMAIN => {
             return Err(format!(
@@ -718,6 +724,10 @@ mod tests {
         assert!(checked_setting("runner.linux-arm64", "qemu-aarch64").unwrap_err().starts_with("linux-arm64 is no target, did you mean linux-aarch64?"));
         assert!(checked_setting("runner.windows-x86_64", "  ").unwrap_err().starts_with("runner.windows-x86_64 takes what starts the programs of windows-x86_64"));
         assert!(checked_setting("runner.windows-x86_64", "'wine").is_err());
+
+        // a license is accepted or unset, nothing else
+        assert_eq!(checked_setting("license.vulkan-sdk", "accepted"), Ok("accepted".to_string()));
+        assert!(checked_setting("license.vulkan-sdk", "yes").unwrap_err().contains("can only be accepted"));
         assert_eq!(variable_name("my-lib"), "my_lib");
         // a module named like a builtin must not shadow it
         assert_eq!(variable_name("list"), "list_module");

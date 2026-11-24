@@ -79,6 +79,12 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                 return Ok(checkout.display().to_string().into());
             },
         ),
+        // build --release: plugins leave out what only debug builds need, like the validation layers of Vulkan
+        builtin(
+            "release",
+            FunctionParameters::new().returns(Type::Bool),
+            |context, _| Ok(Value::Bool(context.release)),
+        ),
         // of the target the script is built for: the machine, or another system
         builtin(
             "target",

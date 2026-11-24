@@ -643,11 +643,11 @@ fn main() {
                 .map(|(name, _)| *name)
                 .collect();
 
-            // config alone shows them all, config --unset asks which; mirrors and runners have names of their own
+            // config alone shows them all, config --unset asks which; mirrors, runners and licenses have names of
+            // their own
             let setting = match (setting, unset) {
                 (None, false) => None,
-                (Some(mirror), _) if mirror.starts_with(project::MIRROR) => Some(mirror.clone()),
-                (Some(runner), _) if runner.starts_with(RUNNER) => Some(runner.clone()),
+                (Some(named), _) if [project::MIRROR, RUNNER, project::LICENSE].iter().any(|prefix| named.starts_with(prefix)) => Some(named.clone()),
                 _ => Some(argument("config", setting.as_deref(), "setting", &settings)),
             };
 
@@ -970,10 +970,14 @@ fn config(setting: Option<&str>, value: Option<&str>, unset: bool) -> Result<(),
             println!("  {RUNNER}<target> is not set (what starts the programs of a target this machine does not run itself)");
         }
 
+        for (tool, accepted) in settings.with_prefix(project::LICENSE) {
+            println!("  {}{tool} = {accepted}", project::LICENSE);
+        }
+
         return Ok(());
     };
 
-    let named = setting.starts_with(project::MIRROR) || setting.starts_with(RUNNER);
+    let named = [project::MIRROR, RUNNER, project::LICENSE].iter().any(|prefix| setting.starts_with(prefix));
     if !project::SETTINGS.iter().any(|(name, _)| *name == setting) && !named {
         // the same message as for a value
         return project::checked_setting(setting, "").map(|_| ());

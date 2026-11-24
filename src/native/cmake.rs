@@ -1,6 +1,7 @@
 // Libraries outside vcpkg: build_cmake configures, builds and installs CMake projects with the CMake and
-// Ninja of vcpkg, system_library takes an installed one, like the LLVM of Homebrew. The modules depending
-// on them get the headers and the libraries, or what a tool like llvm-config names.
+// Ninja of vcpkg, system_library takes an installed one, like the LLVM of Homebrew, prebuilt_library the files
+// of an SDK a plugin installed. The modules depending on them get the headers and the libraries, or what a tool
+// like llvm-config names.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -31,6 +32,100 @@ pub fn build_cmake_signature() -> FunctionSignature {
         // the targets it is built for besides those of the modules depending on it, each with zig
         .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
         .returns(Type::Module);
+}
+
+pub fn prebuilt_library_signature() -> FunctionSignature {
+    return FunctionParameters::new()
+        .required("name", Type::String)
+        // relative to the module or absolute, like those of an SDK tool() installed
+        .strings("include_dirs")
+        // "NAME" or "NAME=value"
+        .strings("defines")
+        // libraries by their path, -l and -L, frameworks
+        .strings("link_flags")
+        // what programs linking it load when they start: copied next to them
+        .strings("shared_libraries")
+        // NAME=value for the programs linking it when they run, like VK_ADD_LAYER_PATH
+        .strings("environment")
+        // C++ is in it: what links it links with the C++ compiler
+        .with_default("cpp", Type::Bool, false)
+        .with_default("directory", Type::String, ".")
+        .returns(Type::Module);
+}
+
+/// A library of files that exist already, like those of an SDK: nothing to build, what depends on it gets its
+/// headers, links its libraries and runs with its environment. Its stamp changes with what it names.
+pub fn prebuilt_library(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+    let name: String = args.get("name")?;
+    let directory = context.project_dir.join(args.get::<String>("directory")?);
+    let output = prebuilt_output(
+        &name,
+        &directory,
+        &args.get::<Vec<String>>("include_dirs")?,
+        &args.get::<Vec<String>>("defines")?,
+        args.get("link_flags")?,
+        &args.get::<Vec<String>>("shared_libraries")?,
+        &args.get::<Vec<String>>("environment")?,
+        args.get("cpp")?,
+    )?;
+
+    let stamp = context.build_dir(&directory).join("prebuilt").join(&name);
+    system::write_file_if_changed(&stamp, &format!("{output:?}"))?;
+
+    return Ok(Value::from(Arc::new(BuiltModule {
+        name,
+        directory,
+        artifact: stamp,
+        modules: vec![],
+        output: ModuleOutput::Native(output),
+        tests: vec![],
+    })));
+}
+
+/// What a prebuilt library gives the modules depending on it, its directories and libraries checked
+fn prebuilt_output(
+    name: &str,
+    directory: &Path,
+    include_dirs: &[String],
+    defines: &[String],
+    link_flags: Vec<String>,
+    shared_libraries: &[String],
+    environment: &[String],
+    cpp: bool,
+) -> Result<NativeOutput, String> {
+    let existing = |path: &String| -> Result<PathBuf, String> {
+        let path = directory.join(path);
+        return match path.exists() {
+            true => Ok(path),
+            false => Err(format!("{name}: {} does not exist", path.display())),
+        };
+    };
+
+    let include_dirs = include_dirs.iter().map(existing).collect::<Result<Vec<_>, _>>()?;
+    let mut compile_flags: Vec<String> = include_dirs.iter().map(|dir| format!("-I{}", dir.display())).collect();
+    compile_flags.extend(defines.iter().map(|define| format!("-D{define}")));
+
+    let environment = environment.iter()
+        .map(|entry| match entry.split_once('=') {
+            Some((variable, value)) if !variable.is_empty() => Ok((variable.to_string(), value.to_string())),
+            _ => Err(format!("{name}: environment takes NAME=value, not {entry}")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    return Ok(NativeOutput {
+        compile_flags,
+        link_flags,
+        program: None,
+        tools_dir: None,
+        shared_library: None,
+        cpp,
+        c_compiler: None,
+        // the headers of an SDK change with its version, which its paths name
+        header_dirs: vec![],
+        abi: None,
+        runtime_libraries: shared_libraries.iter().map(existing).collect::<Result<Vec<_>, _>>()?,
+        environment,
+    });
 }
 
 pub fn system_library_signature() -> FunctionSignature {
@@ -249,6 +344,8 @@ fn library_module(
             // installed with it, like the many of LLVM: what depends on it builds again with its artifact
             header_dirs: vec![],
             abi: toolchain.as_ref().map(Toolchain::abi),
+            runtime_libraries: vec![],
+            environment: vec![],
         }),
         tests: vec![],
     }));
@@ -287,5 +384,45 @@ mod tests {
         assert_eq!(flags_from(&command, None).unwrap(), ["-I/llvm/include", "-fno-rtti"]);
         assert!(system::find_program("echo").is_some());
         assert!(flags_from(&[], None).unwrap().is_empty());
+    }
+}
+
+// on every system, those above need echo
+#[cfg(test)]
+mod prebuilt_tests {
+    use crate::common::system;
+    use crate::common::test_support::ScratchDir;
+
+    use super::prebuilt_output;
+
+    #[test]
+    fn a_prebuilt_library_names_files_that_exist_and_its_environment() {
+        let directory = ScratchDir::new("prebuilt-library");
+        system::write_file(&directory.join("sdk/include/vulkan/vulkan.h"), "").unwrap();
+        system::write_file(&directory.join("sdk/lib/libVkLayer_khronos_validation.dylib"), "").unwrap();
+        let strings = |items: &[&str]| -> Vec<String> { items.iter().map(|item| item.to_string()).collect() };
+
+        let output = prebuilt_output(
+            "vulkan-runtime",
+            &directory,
+            &strings(&["sdk/include"]),
+            &strings(&["VK_NO_PROTOTYPES"]),
+            strings(&["-lvulkan"]),
+            &strings(&["sdk/lib/libVkLayer_khronos_validation.dylib"]),
+            &strings(&["VK_ADD_LAYER_PATH=/sdk/share/vulkan/explicit_layer.d"]),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(output.compile_flags, [format!("-I{}", directory.join("sdk/include").display()), "-DVK_NO_PROTOTYPES".to_string()]);
+        assert_eq!(output.link_flags, ["-lvulkan"]);
+        assert_eq!(output.runtime_libraries, [directory.join("sdk/lib/libVkLayer_khronos_validation.dylib")]);
+        assert_eq!(output.environment, [("VK_ADD_LAYER_PATH".to_string(), "/sdk/share/vulkan/explicit_layer.d".to_string())]);
+
+        // a path of another version of the SDK, an environment without a value
+        let error = prebuilt_output("vulkan", &directory, &strings(&["sdk/1.4/include"]), &[], vec![], &[], &[], false).unwrap_err();
+        assert!(error.starts_with("vulkan: ") && error.ends_with("does not exist"), "{error}");
+        let error = prebuilt_output("vulkan", &directory, &[], &[], vec![], &[], &strings(&["VK_ADD_LAYER_PATH"]), false).unwrap_err();
+        assert_eq!(error, "vulkan: environment takes NAME=value, not VK_ADD_LAYER_PATH");
     }
 }
