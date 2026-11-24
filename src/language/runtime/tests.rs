@@ -1005,6 +1005,40 @@ fn commands_write_their_files_and_take_only_listed_libraries() {
     assert!(errors[0].contains("the files of a command are the same for every target"), "{errors:?}");
 }
 
+/// Like a shader compiler: a command per input file, only those that changed run again
+#[cfg(unix)]
+#[test]
+fn commands_run_once_for_every_input_and_again_for_those_that_changed() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command-per-input");
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |name: &str| project.join(name);
+    system::write_file(&file("shaders/a.vert"), "a").unwrap();
+    system::write_file(&file("shaders/b.frag"), "b").unwrap();
+
+    let script = "build_command(\"shaders\", list(\"sh\", \"-c\", \"cat $0 > $1; echo $0 >> runs.log\", \"{input}\", \"{output}/{input_name}.h\"), \
+                  inputs = list(\"shaders/*.vert\", \"shaders/*.frag\"), outputs = list(\"{output}/{input_name}.h\"), per_input = true)";
+    let runs = || system::read_file(&file("runs.log")).unwrap_or_default().lines().count();
+    let output = |name: &str| system::read_file(&file(&format!("build/commands/shaders/{name}"))).ok();
+
+    build_in(&directory, script, TestSelection::None).unwrap();
+    assert_eq!((runs(), output("a.vert.h"), output("b.frag.h")), (2, Some("a".to_string()), Some("b".to_string())));
+
+    build_in(&directory, script, TestSelection::None).unwrap();
+    assert_eq!(runs(), 2, "nothing changed");
+
+    // one changed, one is gone: only the changed runs, what the other left goes
+    system::write_file(&file("shaders/b.frag"), "b2").unwrap();
+    std::fs::remove_file(file("shaders/a.vert")).unwrap();
+    build_in(&directory, script, TestSelection::None).unwrap();
+    assert_eq!((runs(), output("a.vert.h"), output("b.frag.h")), (3, None, Some("b2".to_string())));
+
+    let with_files = "build_command(\"each\", list(\"true\"), files = list(file(\"f\", \"\")), per_input = true)";
+    let error = build_in(&directory, with_files, TestSelection::None).unwrap_err();
+    assert!(error.contains("runs once for every input, files and direct_libraries are for a command that runs once"), "{error}");
+}
+
 /// What a command that compiles against a C library of the script needs of it, the way cgo takes it
 #[cfg(unix)]
 #[test]

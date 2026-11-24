@@ -72,6 +72,9 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .with_default("test", command_line(), Value::List(vec![]))
             .with_default("test_timeout", Type::Int, Value::Int(0))
             .with_default("always", Type::Bool, false)
+            // once for every file of inputs, which {input} and {input_name} name in the command and the outputs,
+            // like a shader to SPIR-V: only those that changed run again
+            .with_default("per_input", Type::Bool, false)
             .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
             // what file(path, content) gives: written below the directory before the command, like the go.mod
             // of the libraries the script lists
@@ -120,36 +123,10 @@ fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value
     let target = context.target.map_or("this machine".to_string(), |target| target.name());
     claim_files(&spec, &target)?;
 
-    let mut fingerprint = InputFingerprint::in_build_dir(&spec.build_dir, &format!("commands/{}", spec.name));
-    fingerprint.add((&spec.command, &spec.outputs, &spec.environment, &spec.environment_inputs, &spec.path));
-    fingerprint.add((&spec.files, &spec.libraries, &spec.direct_libraries));
-    fingerprint.add_files(&spec.inputs)?;
-    fingerprint.add_files(&spec.module_files)?;
-
-    let artifact = spec.outputs
-        .first()
-        .cloned()
-        .unwrap_or_else(|| spec.output_dir.clone());
-    let outputs: Vec<&Path> = spec.outputs
-        .iter()
-        .map(PathBuf::as_path)
-        .collect();
-
-    // the files it writes are next to the sources, where an editor may change what the command made of them
-    let kept_outputs = spec.build_dir
-        .join(up_to_date::FINGERPRINTS_DIR)
-        .join(format!("commands/{}.outputs", spec.name));
-    let outputs_changed = !spec.files.is_empty() && !outputs_as_left(&kept_outputs, &spec.outputs);
-
-    if always || outputs_changed || !fingerprint.reports_up_to_date(&spec.name, &outputs)? {
-        spec.run()?;
-
-        if !spec.files.is_empty() {
-            system::write_file(&kept_outputs, &format!("{:016x}", up_to_date::files_hash(&spec.outputs)?))?;
-        }
-
-        fingerprint.store_done(&spec.name, &artifact)?;
-    }
+    let (artifact, outputs) = match args.get("per_input")? {
+        true => (spec.output_dir.clone(), spec.run_per_input(always)?),
+        false => (spec.outputs.first().cloned().unwrap_or_else(|| spec.output_dir.clone()), spec.run_once(always)?),
+    };
 
     let run = command_line(args.get("run")?, &spec.output_dir)?;
     let test = command_line(args.get("test")?, &spec.output_dir)?;
@@ -170,7 +147,7 @@ fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value
         modules: vec![],
         output: ModuleOutput::Command(CommandOutput {
             output_dir: spec.output_dir,
-            outputs: spec.outputs,
+            outputs,
             run,
             environment: spec.environment,
             path: spec.path,
@@ -253,6 +230,103 @@ impl CommandSpec {
         return Ok(process);
     }
 
+    /// Unless nothing it depends on changed since it ran. Its outputs.
+    fn run_once(&self, always: bool) -> Result<Vec<PathBuf>, String> {
+        let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}", self.name));
+        fingerprint.add((&self.command, &self.outputs, &self.environment, &self.environment_inputs, &self.path));
+        fingerprint.add((&self.files, &self.libraries, &self.direct_libraries));
+        fingerprint.add_files(&self.inputs)?;
+        fingerprint.add_files(&self.module_files)?;
+
+        let artifact = self.outputs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.output_dir.clone());
+        let outputs: Vec<&Path> = self.outputs
+            .iter()
+            .map(PathBuf::as_path)
+            .collect();
+
+        // the files it writes are next to the sources, where an editor may change what the command made of them
+        let kept_outputs = self.build_dir
+            .join(up_to_date::FINGERPRINTS_DIR)
+            .join(format!("commands/{}.outputs", self.name));
+        let outputs_changed = !self.files.is_empty() && !outputs_as_left(&kept_outputs, &self.outputs);
+
+        if always || outputs_changed || !fingerprint.reports_up_to_date(&self.name, &outputs)? {
+            self.run()?;
+
+            if !self.files.is_empty() {
+                system::write_file(&kept_outputs, &format!("{:016x}", up_to_date::files_hash(&self.outputs)?))?;
+            }
+
+            fingerprint.store_done(&self.name, &artifact)?;
+        }
+
+        return Ok(self.outputs.clone());
+    }
+
+    /// Once for every input with {input} and {input_name}, each only when it or what the command depends on
+    /// changed. What a removed input left in {output} goes. Its outputs, those of every input.
+    fn run_per_input(&self, always: bool) -> Result<Vec<PathBuf>, String> {
+        if !self.files.is_empty() || !self.direct_libraries.is_empty() {
+            return Err(format!("{} runs once for every input, files and direct_libraries are for a command that runs once", self.name));
+        }
+
+        system::create_dir(&self.output_dir)?;
+        let mut all_outputs = vec![];
+        let mut ran = 0;
+
+        for input in &self.inputs {
+            let input_name = input.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let (command, outputs) = for_input(&self.command, &self.outputs, input);
+
+            // of its own, by where it is below the directory
+            let relative = system::relative_with_slashes(&self.directory, input).replace(['/', ':'], "_");
+            let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}/{relative}", self.name));
+            fingerprint.add((&command, &outputs, &self.environment, &self.environment_inputs, &self.path));
+            fingerprint.add_files(std::slice::from_ref(input))?;
+            fingerprint.add_files(&self.module_files)?;
+
+            let expected: Vec<&Path> = outputs.iter().map(PathBuf::as_path).collect();
+
+            if always || !fingerprint.is_up_to_date(&expected)? {
+                let what = what(&command);
+                system::log(&self.name, &format!("Running {what} for {input_name}"));
+                let mut process = self.process(&command[0], &command[1..])?;
+                system::run_command_in_one_piece(&mut process, &what)?;
+
+                if let Some(missing) = outputs.iter().find(|output| !output.exists()) {
+                    return Err(format!("{what} did not write {} for {input_name}", system::relative_with_slashes(&self.directory, missing)));
+                }
+
+                fingerprint.store()?;
+                ran += 1;
+            }
+
+            all_outputs.extend(outputs);
+        }
+
+        // only when it names what it writes: else nothing in {output} is known to be left over
+        if !self.outputs.is_empty() {
+            for file in system::files_below(std::slice::from_ref(&self.output_dir)) {
+                if !all_outputs.contains(&file) {
+                    let _ = std::fs::remove_file(&file);
+                }
+            }
+        }
+
+        match ran {
+            0 => system::log(&self.name, "Up to date"),
+            _ => system::log(&self.name, &format!("Done: {ran} of {} input(s)", self.inputs.len())),
+        }
+
+        return Ok(all_outputs);
+    }
+
     /// Into a fresh {output}: what a renamed source left there is gone. The files first, the libraries the
     /// command took once it ran.
     fn run(&self) -> Result<(), String> {
@@ -319,6 +393,21 @@ impl CommandSpec {
 
         return Ok(ModuleTests::Run(Box::new(run)));
     }
+}
+
+/// The command and the outputs for one input: {input} its path, {input_name} its name like triangle.vert
+fn for_input(command: &[String], outputs: &[PathBuf], input: &Path) -> (Vec<String>, Vec<PathBuf>) {
+    let path = input.display().to_string();
+    let name = input.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let fill = |text: &str| text.replace("{input_name}", &name).replace("{input}", &path);
+
+    return (
+        command.iter().map(|argument| fill(argument)).collect(),
+        outputs.iter().map(|output| PathBuf::from(fill(&output.display().to_string()))).collect(),
+    );
 }
 
 /// Where a command runs and writes: its name, directory, build/ and {output}
