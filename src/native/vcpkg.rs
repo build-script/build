@@ -72,9 +72,11 @@ pub fn install(
         .collect();
     let manifest = serde_json::json!({ "dependencies": dependencies }).to_string();
     let manifest_file = manifest_dir.join("vcpkg.json");
+    // the manifest of the last install that succeeded: vcpkg.json is written before it, also for one that fails
+    let installed_manifest = manifest_dir.join("installed.json");
 
     // vcpkg takes a second even when nothing changed
-    let unchanged = fs::read_to_string(&manifest_file).is_ok_and(|existing| existing == manifest);
+    let unchanged = fs::read_to_string(&installed_manifest).is_ok_and(|existing| existing == manifest);
 
     if unchanged && installed.root.is_dir() {
         return Ok(Some(installed));
@@ -83,6 +85,7 @@ pub fn install(
     let vcpkg = install_vcpkg()?;
     let tools = vcpkg.join("build-script");
     system::write_file(&manifest_file, &manifest)?;
+    let _ = fs::remove_file(&installed_manifest);
 
     // vcpkg wants its caches to exist
     for cache in ["archives", "downloads", "registries"] {
@@ -128,6 +131,7 @@ pub fn install(
         return system::run_command_quietly(&mut command, "vcpkg install");
     })?;
 
+    system::write_file(&installed_manifest, &manifest)?;
     return Ok(Some(installed));
 }
 
@@ -321,6 +325,7 @@ set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
     if target.os == OperatingSystem::MacOs && toolchain.kind == Kind::Zig {
         content.push_str(&format!("set(VCPKG_OSX_ARCHITECTURES {})\n", if target.arch == Architecture::Aarch64 { "arm64" } else { "x86_64" }));
     }
+
 
     let triplets = tools.join("triplets").join(triplet);
     system::write_file_if_changed(&triplets.join(format!("{triplet}.cmake")), &content)?;
