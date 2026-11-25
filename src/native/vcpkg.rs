@@ -326,6 +326,7 @@ set(VCPKG_ENV_PASSTHROUGH ZIG_GLOBAL_CACHE_DIR)
         content.push_str(&format!("set(VCPKG_OSX_ARCHITECTURES {})\n", if target.arch == Architecture::Aarch64 { "arm64" } else { "x86_64" }));
     }
 
+    content.push_str(port_options(&toolchain.kind));
 
     let triplets = tools.join("triplets").join(triplet);
     system::write_file_if_changed(&triplets.join(format!("{triplet}.cmake")), &content)?;
@@ -440,6 +441,16 @@ impl Installed {
         return list.and_then(|list| fs::read_to_string(list).ok())
             .map(|text| text.lines().map(str::to_string).collect())
             .unwrap_or_default();
+    }
+}
+
+/// What some ports need of a triplet of a toolchain. The loader of Vulkan reads what -S writes as assembly when vcpkg
+/// names the system, zig writes an object for -c -S: without its assembly it forwards no unknown functions of devices,
+/// which no program of the core API calls.
+fn port_options(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::Zig => return "if(PORT STREQUAL \"vulkan-loader\")\n    list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS -DUSE_GAS=OFF)\nendif()\n",
+        _ => return "",
     }
 }
 
@@ -665,6 +676,12 @@ mod tests {
         };
         assert_eq!(names(true), ["arm64-osx/bin/vulkan-1.dll", "arm64-osx/lib/libvulkan.1.dylib", "arm64-osx/lib/libz.so.1"]);
         assert_eq!(names(false), ["arm64-osx/debug/lib/libvulkan.1.dylib"]);
+    }
+
+    #[test]
+    fn zig_builds_the_loader_of_vulkan_without_its_assembly() {
+        assert_eq!(port_options(&Kind::Zig), "if(PORT STREQUAL \"vulkan-loader\")\n    list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS -DUSE_GAS=OFF)\nendif()\n");
+        assert_eq!(port_options(&Kind::Gcc), "");
     }
 
     #[test]
