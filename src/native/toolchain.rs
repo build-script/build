@@ -230,12 +230,13 @@ impl Toolchain {
                 archiver.replace("gcc-ar", "gcc-ranlib"),
             );
 
+            // vcpkg names the system, then CMake leaves the processor to the toolchain: the loader of Vulkan asks for it
+            content.push_str(&format!("set(CMAKE_SYSTEM_PROCESSOR {})\n", cmake_processor(self.target)));
+
             // vcpkg names the system MinGW, which CMake does not know, windres compiles the resources of programs
             if self.target.os == OperatingSystem::Windows {
                 content.push_str(&format!(
-                    "set(CMAKE_SYSTEM_NAME Windows CACHE STRING \"\" FORCE)\nset(CMAKE_SYSTEM_PROCESSOR {} CACHE STRING \"\")\n\
-                     set(CMAKE_RC_COMPILER \"{}\" CACHE FILEPATH \"\")\n",
-                    self.target.arch.name(),
+                    "set(CMAKE_SYSTEM_NAME Windows CACHE STRING \"\" FORCE)\nset(CMAKE_RC_COMPILER \"{}\" CACHE FILEPATH \"\")\n",
                     archiver.replace("gcc-ar", "windres"),
                 ));
             }
@@ -279,6 +280,9 @@ impl Toolchain {
             content.push_str(&format!("set(CMAKE_RC_COMPILER \"{}\")\n", tool("windres")));
         }
 
+        // vcpkg names the system also for this machine, then CMake leaves the processor to the toolchain
+        content.push_str(&format!("set(CMAKE_SYSTEM_PROCESSOR {})\n", cmake_processor(self.target)));
+
         // another system than the machine: CMake builds for it and runs nothing it built
         if foreign {
             let system = match self.target.os {
@@ -287,10 +291,7 @@ impl Toolchain {
                 OperatingSystem::Windows => "Windows",
                 OperatingSystem::Android => "Android",
             };
-            content.push_str(&format!(
-                "set(CMAKE_SYSTEM_NAME {system})\nset(CMAKE_SYSTEM_PROCESSOR {})\nset(CMAKE_CROSSCOMPILING TRUE)\n",
-                self.target.arch.name()
-            ));
+            content.push_str(&format!("set(CMAKE_SYSTEM_NAME {system})\nset(CMAKE_CROSSCOMPILING TRUE)\n"));
         }
 
         let file = dir.join("toolchain.cmake");
@@ -346,6 +347,14 @@ impl Toolchain {
                     .unwrap_or_default();
             })
             .clone();
+    }
+}
+
+/// How CMake names the processor of a target when it finds it itself: arm64 on macOS, aarch64 elsewhere
+fn cmake_processor(target: Target) -> &'static str {
+    match (target.os, target.arch) {
+        (OperatingSystem::MacOs, Architecture::Aarch64) => return "arm64",
+        _ => return target.arch.name(),
     }
 }
 
@@ -592,6 +601,10 @@ mod tests {
         let bin = directory.join("bin").display().to_string().replace('\\', "/");
         assert!(content.contains(&format!("set(CMAKE_CXX_COMPILER \"{bin}/g++-16\")")), "{content}");
         assert!(content.contains(&format!("set(CMAKE_RANLIB \"{bin}/gcc-ranlib-16\" CACHE FILEPATH \"\" FORCE)")), "{content}");
+        // vcpkg names the system, CMake then finds no processor itself
+        assert!(content.contains(&format!("set(CMAKE_SYSTEM_PROCESSOR {})", super::cmake_processor(Target::host()))), "{content}");
+        assert_eq!(super::cmake_processor(Target::named("macos-aarch64").unwrap()), "arm64");
+        assert_eq!(super::cmake_processor(Target::named("linux-aarch64").unwrap()), "aarch64");
     }
 
     #[cfg(unix)]
