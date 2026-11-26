@@ -467,7 +467,7 @@ impl RecordedCommand {
 
 /// The inputs of a depfile, `output: input input ...`: \ escapes spaces in names and ends continued
 /// lines, $$ is a $. Paths of Windows keep their \, the : of their drive is followed by none.
-fn depfile_inputs(depfile: &str) -> Vec<String> {
+pub fn depfile_inputs(depfile: &str) -> Vec<String> {
     let inputs = depfile.split_once(": ")
         .map(|(_, inputs)| inputs)
         .unwrap_or("");

@@ -1039,6 +1039,19 @@ fn commands_run_once_for_every_input_and_again_for_those_that_changed() {
     build_in(&directory, script, TestSelection::None).unwrap();
     assert_eq!((runs(), output("a.vert.h"), output("b.frag.h")), (3, None, Some("b2".to_string())));
 
+    // like glslc -MD: what a shader includes is in its depfile, a change of it builds that shader again
+    system::write_file(&file("shaders/lib.glsl"), "1").unwrap();
+    let with_depfile = "build_command(\"included\", list(\"sh\", \"-c\", \"cat $0 > $1; echo \\\"$1: $0 shaders/lib.glsl\\\" > $2; echo $0 >> included.log\", \
+                        \"{input}\", \"{output}/{input_name}.h\", \"{output}/{input_name}.d\"), inputs = list(\"shaders/*.frag\"), \
+                        outputs = list(\"{output}/{input_name}.h\"), depfile = \"{output}/{input_name}.d\", per_input = true)";
+    let included = || system::read_file(&file("included.log")).unwrap_or_default().lines().count();
+    build_in(&directory, with_depfile, TestSelection::None).unwrap();
+    build_in(&directory, with_depfile, TestSelection::None).unwrap();
+    assert_eq!(included(), 1, "nothing it includes changed");
+    system::write_file(&file("shaders/lib.glsl"), "2").unwrap();
+    build_in(&directory, with_depfile, TestSelection::None).unwrap();
+    assert_eq!(included(), 2, "what it includes changed");
+
     let with_files = "build_command(\"each\", list(\"true\"), files = list(file(\"f\", \"\")), per_input = true)";
     let error = build_in(&directory, with_files, TestSelection::None).unwrap_err();
     assert!(error.contains("runs once for every input, files and direct_libraries are for a command that runs once"), "{error}");

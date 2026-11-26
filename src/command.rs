@@ -75,6 +75,9 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             // once for every file of inputs, which {input} and {input_name} name in the command and the outputs,
             // like a shader to SPIR-V: only those that changed run again
             .with_default("per_input", Type::Bool, false)
+            // where the command writes the files it read besides its inputs, like -MD -MF of glslc for the files a
+            // shader includes, with {input_name} once for every input: they count like inputs from then on
+            .with_default("depfile", Type::String, "")
             .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
             // what file(path, content) gives: written below the directory before the command, like the go.mod
             // of the libraries the script lists
@@ -113,6 +116,8 @@ struct CommandSpec {
     module_files: Vec<PathBuf>,
     /// written before the command: below the directory, with their content
     files: Vec<(PathBuf, String)>,
+    /// {output} replaced, {input_name} and {input} not yet: empty without one
+    depfile: String,
     libraries: Vec<String>,
     direct_libraries: Vec<String>,
 }
@@ -199,6 +204,7 @@ impl CommandSpec {
         }
 
         let direct_libraries = command_line(args.get("direct_libraries")?, &output_dir)?;
+        let depfile = with_output(&args.get::<String>("depfile")?, &output_dir);
 
         module_values.extend(dependencies);
         let mut module_files = module_files(&module_values)?;
@@ -217,6 +223,7 @@ impl CommandSpec {
             path,
             module_files,
             files,
+            depfile,
             libraries: args.get("libraries")?,
             direct_libraries,
         });
@@ -232,11 +239,16 @@ impl CommandSpec {
 
     /// Unless nothing it depends on changed since it ran. Its outputs.
     fn run_once(&self, always: bool) -> Result<Vec<PathBuf>, String> {
-        let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}", self.name));
-        fingerprint.add((&self.command, &self.outputs, &self.environment, &self.environment_inputs, &self.path));
-        fingerprint.add((&self.files, &self.libraries, &self.direct_libraries));
-        fingerprint.add_files(&self.inputs)?;
-        fingerprint.add_files(&self.module_files)?;
+        // with what its depfile names: before the run what the last run read, after it what this one read
+        let fingerprint = || -> Result<InputFingerprint, String> {
+            let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}", self.name));
+            fingerprint.add((&self.command, &self.outputs, &self.environment, &self.environment_inputs, &self.path));
+            fingerprint.add((&self.files, &self.libraries, &self.direct_libraries));
+            fingerprint.add_files(&self.inputs)?;
+            fingerprint.add_files(&self.module_files)?;
+            fingerprint.add_files(&self.included(&self.depfile))?;
+            return Ok(fingerprint);
+        };
 
         let artifact = self.outputs
             .first()
@@ -253,14 +265,14 @@ impl CommandSpec {
             .join(format!("commands/{}.outputs", self.name));
         let outputs_changed = !self.files.is_empty() && !outputs_as_left(&kept_outputs, &self.outputs);
 
-        if always || outputs_changed || !fingerprint.reports_up_to_date(&self.name, &outputs)? {
+        if always || outputs_changed || !fingerprint()?.reports_up_to_date(&self.name, &outputs)? {
             self.run()?;
 
             if !self.files.is_empty() {
                 system::write_file(&kept_outputs, &format!("{:016x}", up_to_date::files_hash(&self.outputs)?))?;
             }
 
-            fingerprint.store_done(&self.name, &artifact)?;
+            fingerprint()?.store_done(&self.name, &artifact)?;
         }
 
         return Ok(self.outputs.clone());
@@ -275,6 +287,8 @@ impl CommandSpec {
 
         system::create_dir(&self.output_dir)?;
         let mut all_outputs = vec![];
+        // with the depfiles, which the next build reads
+        let mut kept = vec![];
         let mut ran = 0;
 
         for input in &self.inputs {
@@ -284,16 +298,22 @@ impl CommandSpec {
                 .to_string();
             let (command, outputs) = for_input(&self.command, &self.outputs, input);
 
-            // of its own, by where it is below the directory
+            // of its own, by where it is below the directory, with what its depfile names: before the run what the
+            // last run read, after it what this one read
             let relative = system::relative_with_slashes(&self.directory, input).replace(['/', ':'], "_");
-            let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}/{relative}", self.name));
-            fingerprint.add((&command, &outputs, &self.environment, &self.environment_inputs, &self.path));
-            fingerprint.add_files(std::slice::from_ref(input))?;
-            fingerprint.add_files(&self.module_files)?;
+            let depfile = for_input(&[self.depfile.clone()], &[], input).0.remove(0);
+            let fingerprint = || -> Result<InputFingerprint, String> {
+                let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}/{relative}", self.name));
+                fingerprint.add((&command, &outputs, &self.environment, &self.environment_inputs, &self.path));
+                fingerprint.add_files(std::slice::from_ref(input))?;
+                fingerprint.add_files(&self.module_files)?;
+                fingerprint.add_files(&self.included(&depfile))?;
+                return Ok(fingerprint);
+            };
 
             let expected: Vec<&Path> = outputs.iter().map(PathBuf::as_path).collect();
 
-            if always || !fingerprint.is_up_to_date(&expected)? {
+            if always || !fingerprint()?.is_up_to_date(&expected)? {
                 let what = what(&command);
                 system::log(&self.name, &format!("Running {what} for {input_name}"));
                 let mut process = self.process(&command[0], &command[1..])?;
@@ -303,17 +323,21 @@ impl CommandSpec {
                     return Err(format!("{what} did not write {} for {input_name}", system::relative_with_slashes(&self.directory, missing)));
                 }
 
-                fingerprint.store()?;
+                fingerprint()?.store()?;
                 ran += 1;
             }
 
+            kept.extend(outputs.iter().cloned());
+            if !depfile.is_empty() {
+                kept.push(self.directory.join(&depfile));
+            }
             all_outputs.extend(outputs);
         }
 
         // only when it names what it writes: else nothing in {output} is known to be left over
         if !self.outputs.is_empty() {
             for file in system::files_below(std::slice::from_ref(&self.output_dir)) {
-                if !all_outputs.contains(&file) {
+                if !kept.contains(&file) {
                     let _ = std::fs::remove_file(&file);
                 }
             }
@@ -325,6 +349,21 @@ impl CommandSpec {
         }
 
         return Ok(all_outputs);
+    }
+
+    /// What the depfile of the last run names that still exists, relative to the directory: nothing before the
+    /// first run, which has to happen anyway
+    fn included(&self, depfile: &str) -> Vec<PathBuf> {
+        if depfile.is_empty() {
+            return vec![];
+        }
+
+        let text = std::fs::read_to_string(self.directory.join(depfile)).unwrap_or_default();
+        return crate::native::depfile_inputs(&text)
+            .into_iter()
+            .map(|file| self.directory.join(file))
+            .filter(|file| file.is_file())
+            .collect();
     }
 
     /// Into a fresh {output}: what a renamed source left there is gone. The files first, the libraries the
