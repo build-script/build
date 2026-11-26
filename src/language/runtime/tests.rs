@@ -1057,6 +1057,38 @@ fn commands_run_once_for_every_input_and_again_for_those_that_changed() {
     assert!(error.contains("runs once for every input, files and direct_libraries are for a command that runs once"), "{error}");
 }
 
+/// Like the chain of shaders: a command takes what another wrote as its inputs, embed_files makes headers of it
+#[cfg(unix)]
+#[test]
+fn commands_take_what_others_wrote_and_files_are_embedded() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("build-command-chain");
+    let project = system::canonical_path(&directory).unwrap();
+    let file = |name: &str| project.join(name);
+    system::write_file(&file("shaders/a.comp"), "a").unwrap();
+    system::write_file(&file("data/logo.bin"), "xy").unwrap();
+
+    let script = "compiled = build_command(\"compile\", list(\"sh\", \"-c\", \"mkdir -p build/spirv; printf abcd > build/spirv/$(basename $0).spv\", \"{input}\"), \
+                  inputs = list(\"shaders/*.comp\"), outputs = list(\"build/spirv/{input_name}.spv\"), per_input = true)\n\
+                  checked = build_command(\"check\", list(\"sh\", \"-c\", \"echo $0 >> checked.log\", \"{input}\"), \
+                  inputs = list(\"build/spirv/*.spv\"), dependencies = list(compiled), per_input = true)\n\
+                  embedded = embed_files(\"embedded\", list(compiled, \"data/*.bin\"), words = false)\n\
+                  flags = prefixed(\"-D\", list(\"A=1\", \"B\"))";
+
+    let built = build_in(&directory, script, TestSelection::None).unwrap();
+    assert_eq!(system::read_file(&file("checked.log")).unwrap().lines().count(), 1, "what compile wrote is the input of check at once");
+
+    let embedded = built.iter().find(|module| module.name == "embedded").unwrap();
+    let ModuleOutput::Command(output) = &embedded.output else { panic!("embed_files makes headers like a command") };
+    let names: Vec<String> = output.outputs.iter().map(|header| header.file_name().unwrap().to_string_lossy().to_string()).collect();
+    assert_eq!(names, ["a.comp.spv.h", "logo.bin.h"]);
+    assert!(system::read_file(&output.outputs[1]).unwrap().contains("logo_bin[] = {\n    0x78, 0x79,\n};"));
+
+    let runtime = run(script.lines().last().unwrap()).unwrap();
+    assert_eq!(runtime.scope.lock().unwrap().get("flags").map(|value| format!("{value:?}")), Some(format!("{:?}", Value::string_list(&["-DA=1", "-DB"]))));
+}
+
 /// What a command that compiles against a C library of the script needs of it, the way cgo takes it
 #[cfg(unix)]
 #[test]

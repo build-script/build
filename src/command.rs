@@ -95,7 +95,122 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .placed(Placement::UnlessUnchanged)
             .running_on_host("command"),
         build_command,
+    ), builtin(
+        "embed_files",
+        FunctionParameters::new()
+            .required("name", Type::String)
+            // globs relative to the directory, or modules of commands whose outputs it embeds, like SPIR-V
+            .required("files", command_line())
+            // as words of 32 bits, like SPIR-V: arrays of uint32_t, else of bytes
+            .with_default("words", Type::Bool, false)
+            .with_default("directory", Type::String, ".")
+            .returns(Type::Module)
+            .placed(Placement::UnlessUnchanged)
+            .running_on_host("files"),
+        embed_files,
     )];
+}
+
+/// Every file as a header of its own in {output}, <file>.h with an array named after the file and its size: a program
+/// includes it and reads no file when it runs. A header is written when it changed, those of files that went go too.
+fn embed_files(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+    let Place { name, directory, output_dir, .. } = Place::of(context, args)?;
+    let words: bool = args.get("words")?;
+    let mut files = vec![];
+    let mut patterns = vec![];
+
+    for value in args.get::<Vec<Value>>("files")? {
+        match value {
+            Value::String(pattern) => patterns.push(pattern),
+            Value::Module(module) => {
+                let module = module.wait()
+                    .map_err(|_| format!("{} it embeds failed", module.function))?;
+
+                match &module.output {
+                    ModuleOutput::Command(output) => files.extend(output.outputs.iter().cloned()),
+                    _ => files.push(module.artifact.clone()),
+                }
+            }
+            other => return Err(format!("internal error: embed_files of {}", other.type_of())),
+        }
+    }
+
+    files.extend(system::files_matching(&directory, &patterns, &[]));
+    system::create_dir(&output_dir)?;
+    let mut headers: Vec<PathBuf> = vec![];
+
+    for file in &files {
+        let file_name = file.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let header = output_dir.join(format!("{file_name}.h"));
+
+        if headers.contains(&header) {
+            return Err(format!("{name} embeds two files named {file_name}, their headers would be one"));
+        }
+
+        let bytes = std::fs::read(file).map_err(|error| format!("{name}: could not read {}: {error}", file.display()))?;
+        system::write_file_if_changed(&header, &embedded_header(&file_name, &bytes, words).map_err(|error| format!("{name}: {error}"))?)?;
+        headers.push(header);
+    }
+
+    for file in system::files_below(std::slice::from_ref(&output_dir)) {
+        if !headers.contains(&file) {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+
+    return Ok(Value::from(Arc::new(BuiltModule {
+        name,
+        directory,
+        artifact: output_dir.clone(),
+        modules: vec![],
+        output: ModuleOutput::Command(CommandOutput {
+            output_dir,
+            outputs: headers,
+            run: vec![],
+            environment: vec![],
+            path: vec![],
+        }),
+        tests: vec![],
+    })));
+}
+
+/// The C and C++ header of a file: its bytes, or its words of 32 bits in the order of the little-endian machines that
+/// write and read them, like SPIR-V. double.comp.spv is double_comp_spv and double_comp_spv_size, in bytes.
+fn embedded_header(file_name: &str, bytes: &[u8], words: bool) -> Result<String, String> {
+    let mut identifier: String = file_name.chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect();
+
+    if identifier.starts_with(|character: char| character.is_ascii_digit()) {
+        identifier.insert(0, '_');
+    }
+
+    if words && bytes.len() % 4 != 0 {
+        return Err(format!("{file_name} has {} bytes, which are no words of 4", bytes.len()));
+    }
+
+    let (kind, values, per_line): (&str, Vec<String>, usize) = match words {
+        true => ("uint32_t", bytes.chunks(4).map(|word| format!("0x{:08x}", u32::from_le_bytes([word[0], word[1], word[2], word[3]]))).collect(), 8),
+        false => ("unsigned char", bytes.iter().map(|byte| format!("0x{byte:02x}")).collect(), 12),
+    };
+
+    // an empty array is no C
+    let lines = match values.is_empty() {
+        true => "    0,".to_string(),
+        false => values.chunks(per_line)
+            .map(|line| format!("    {},", line.join(", ")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+
+    return Ok(format!(
+        "// Embedded by build-script from {file_name}, changes here are lost\n#pragma once\n\n#include <stddef.h>\n#include <stdint.h>\n\n\
+         static const {kind} {identifier}[] = {{\n{lines}\n}};\nstatic const size_t {identifier}_size = {};\n",
+        bytes.len()
+    ));
 }
 
 /// What the arguments say, with the placeholders replaced and the modules by their files
@@ -971,6 +1086,22 @@ mod tests {
 
     fn line(arguments: &[&str]) -> Vec<String> {
         return arguments.iter().map(|argument| argument.to_string()).collect();
+    }
+
+    #[test]
+    fn files_are_embedded_as_bytes_or_as_the_words_of_spir_v() {
+        let words = embedded_header("double.comp.spv", &[0x03, 0x02, 0x23, 0x07, 0x00, 0x06, 0x01, 0x00], true).unwrap();
+        assert!(words.contains("static const uint32_t double_comp_spv[] = {\n    0x07230203, 0x00010600,\n};"), "{words}");
+        assert!(words.contains("static const size_t double_comp_spv_size = 8;"), "{words}");
+
+        let bytes = embedded_header("1font.ttf", b"ab", false).unwrap();
+        assert!(bytes.contains("static const unsigned char _1font_ttf[] = {\n    0x61, 0x62,\n};"), "{bytes}");
+
+        // an empty file is an array of one zero, its size 0
+        let empty = embedded_header("empty", b"", false).unwrap();
+        assert!(empty.contains("empty[] = {\n    0,\n};") && empty.contains("empty_size = 0;"), "{empty}");
+
+        assert_eq!(embedded_header("odd.spv", b"abc", true).unwrap_err(), "odd.spv has 3 bytes, which are no words of 4");
     }
 
     #[test]

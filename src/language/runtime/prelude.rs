@@ -79,6 +79,20 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                 return Ok(checkout.display().to_string().into());
             },
         ),
+        // every item with the prefix before it: prefixed("-D", defines) of a plugin gives -DNAME=value
+        builtin(
+            "prefixed",
+            FunctionParameters::new()
+                .required("prefix", Type::String)
+                .required("items", Type::list(Type::String))
+                .returns(Type::list(Type::String)),
+            |_, args| {
+                let prefix: String = args.get("prefix")?;
+                let items: Vec<String> = args.get("items")?;
+                let prefixed: Vec<String> = items.iter().map(|item| format!("{prefix}{item}")).collect();
+                return Ok(Value::string_list(&prefixed.iter().map(String::as_str).collect::<Vec<_>>()));
+            },
+        ),
         // build --release: plugins leave out what only debug builds need, like the validation layers of Vulkan
         builtin(
             "release",
