@@ -191,6 +191,12 @@ impl CommandSpec {
 
         let path = path(args, &directory, &output_dir)?;
 
+        // once they are built: what the modules it depends on write may be among its inputs, like the SPIR-V a
+        // validation takes
+        module_values.extend(dependencies);
+        let mut module_files = module_files(&module_values)?;
+        module_files.extend(c_libraries.headers);
+
         let inputs = system::files_matching(&directory, &args.get::<Vec<String>>("inputs")?, &args.get::<Vec<String>>("exclude")?);
 
         let mut files = vec![];
@@ -205,10 +211,6 @@ impl CommandSpec {
 
         let direct_libraries = command_line(args.get("direct_libraries")?, &output_dir)?;
         let depfile = with_output(&args.get::<String>("depfile")?, &output_dir);
-
-        module_values.extend(dependencies);
-        let mut module_files = module_files(&module_values)?;
-        module_files.extend(c_libraries.headers);
 
         return Ok(CommandSpec {
             name,
@@ -314,6 +316,7 @@ impl CommandSpec {
             let expected: Vec<&Path> = outputs.iter().map(PathBuf::as_path).collect();
 
             if always || !fingerprint()?.is_up_to_date(&expected)? {
+                create_output_dirs(&outputs)?;
                 let what = what(&command);
                 system::log(&self.name, &format!("Running {what} for {input_name}"));
                 let mut process = self.process(&command[0], &command[1..])?;
@@ -371,6 +374,7 @@ impl CommandSpec {
     fn run(&self) -> Result<(), String> {
         let what = what(&self.command);
         system::recreate_dir(&self.output_dir)?;
+        create_output_dirs(&self.outputs)?;
 
         for (path, content) in &self.files {
             system::write_file(path, content)?;
@@ -432,6 +436,17 @@ impl CommandSpec {
 
         return Ok(ModuleTests::Run(Box::new(run)));
     }
+}
+
+/// Where the outputs go, before the command: compilers like glslc write a file, but no directory for it
+fn create_output_dirs(outputs: &[PathBuf]) -> Result<(), String> {
+    for output in outputs {
+        if let Some(parent) = output.parent() {
+            system::create_dir(parent)?;
+        }
+    }
+
+    return Ok(());
 }
 
 /// The command and the outputs for one input: {input} its path, {input_name} its name like triangle.vert
