@@ -31,6 +31,7 @@ use compile::{Compilation, Language};
 use crate::common::target::OperatingSystem;
 use toolchain::{Abi, Toolchain};
 
+pub use compile::depfile_inputs;
 pub use vcpkg::checked_port;
 
 /// `use c` and `use cpp`, both with build_cmake and system_library

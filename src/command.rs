@@ -75,6 +75,9 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             // once for every file of inputs, which {input} and {input_name} name in the command and the outputs,
             // like a shader to SPIR-V: only those that changed run again
             .with_default("per_input", Type::Bool, false)
+            // where the command writes the files it read besides its inputs, like -MD -MF of glslc for the files a
+            // shader includes, with {input_name} once for every input: they count like inputs from then on
+            .with_default("depfile", Type::String, "")
             .with_default("targets", Type::list(Type::target()), Value::List(vec![]))
             // what file(path, content) gives: written below the directory before the command, like the go.mod
             // of the libraries the script lists
@@ -92,7 +95,122 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .placed(Placement::UnlessUnchanged)
             .running_on_host("command"),
         build_command,
+    ), builtin(
+        "embed_files",
+        FunctionParameters::new()
+            .required("name", Type::String)
+            // globs relative to the directory, or modules of commands whose outputs it embeds, like SPIR-V
+            .required("files", command_line())
+            // as words of 32 bits, like SPIR-V: arrays of uint32_t, else of bytes
+            .with_default("words", Type::Bool, false)
+            .with_default("directory", Type::String, ".")
+            .returns(Type::Module)
+            .placed(Placement::UnlessUnchanged)
+            .running_on_host("files"),
+        embed_files,
     )];
+}
+
+/// Every file as a header of its own in {output}, <file>.h with an array named after the file and its size: a program
+/// includes it and reads no file when it runs. A header is written when it changed, those of files that went go too.
+fn embed_files(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
+    let Place { name, directory, output_dir, .. } = Place::of(context, args)?;
+    let words: bool = args.get("words")?;
+    let mut files = vec![];
+    let mut patterns = vec![];
+
+    for value in args.get::<Vec<Value>>("files")? {
+        match value {
+            Value::String(pattern) => patterns.push(pattern),
+            Value::Module(module) => {
+                let module = module.wait()
+                    .map_err(|_| format!("{} it embeds failed", module.function))?;
+
+                match &module.output {
+                    ModuleOutput::Command(output) => files.extend(output.outputs.iter().cloned()),
+                    _ => files.push(module.artifact.clone()),
+                }
+            }
+            other => return Err(format!("internal error: embed_files of {}", other.type_of())),
+        }
+    }
+
+    files.extend(system::files_matching(&directory, &patterns, &[]));
+    system::create_dir(&output_dir)?;
+    let mut headers: Vec<PathBuf> = vec![];
+
+    for file in &files {
+        let file_name = file.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let header = output_dir.join(format!("{file_name}.h"));
+
+        if headers.contains(&header) {
+            return Err(format!("{name} embeds two files named {file_name}, their headers would be one"));
+        }
+
+        let bytes = std::fs::read(file).map_err(|error| format!("{name}: could not read {}: {error}", file.display()))?;
+        system::write_file_if_changed(&header, &embedded_header(&file_name, &bytes, words).map_err(|error| format!("{name}: {error}"))?)?;
+        headers.push(header);
+    }
+
+    for file in system::files_below(std::slice::from_ref(&output_dir)) {
+        if !headers.contains(&file) {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+
+    return Ok(Value::from(Arc::new(BuiltModule {
+        name,
+        directory,
+        artifact: output_dir.clone(),
+        modules: vec![],
+        output: ModuleOutput::Command(CommandOutput {
+            output_dir,
+            outputs: headers,
+            run: vec![],
+            environment: vec![],
+            path: vec![],
+        }),
+        tests: vec![],
+    })));
+}
+
+/// The C and C++ header of a file: its bytes, or its words of 32 bits in the order of the little-endian machines that
+/// write and read them, like SPIR-V. double.comp.spv is double_comp_spv and double_comp_spv_size, in bytes.
+fn embedded_header(file_name: &str, bytes: &[u8], words: bool) -> Result<String, String> {
+    let mut identifier: String = file_name.chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect();
+
+    if identifier.starts_with(|character: char| character.is_ascii_digit()) {
+        identifier.insert(0, '_');
+    }
+
+    if words && bytes.len() % 4 != 0 {
+        return Err(format!("{file_name} has {} bytes, which are no words of 4", bytes.len()));
+    }
+
+    let (kind, values, per_line): (&str, Vec<String>, usize) = match words {
+        true => ("uint32_t", bytes.chunks(4).map(|word| format!("0x{:08x}", u32::from_le_bytes([word[0], word[1], word[2], word[3]]))).collect(), 8),
+        false => ("unsigned char", bytes.iter().map(|byte| format!("0x{byte:02x}")).collect(), 12),
+    };
+
+    // an empty array is no C
+    let lines = match values.is_empty() {
+        true => "    0,".to_string(),
+        false => values.chunks(per_line)
+            .map(|line| format!("    {},", line.join(", ")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+
+    return Ok(format!(
+        "// Embedded by build-script from {file_name}, changes here are lost\n#pragma once\n\n#include <stddef.h>\n#include <stdint.h>\n\n\
+         static const {kind} {identifier}[] = {{\n{lines}\n}};\nstatic const size_t {identifier}_size = {};\n",
+        bytes.len()
+    ));
 }
 
 /// What the arguments say, with the placeholders replaced and the modules by their files
@@ -113,6 +231,8 @@ struct CommandSpec {
     module_files: Vec<PathBuf>,
     /// written before the command: below the directory, with their content
     files: Vec<(PathBuf, String)>,
+    /// {output} replaced, {input_name} and {input} not yet: empty without one
+    depfile: String,
     libraries: Vec<String>,
     direct_libraries: Vec<String>,
 }
@@ -186,6 +306,12 @@ impl CommandSpec {
 
         let path = path(args, &directory, &output_dir)?;
 
+        // once they are built: what the modules it depends on write may be among its inputs, like the SPIR-V a
+        // validation takes
+        module_values.extend(dependencies);
+        let mut module_files = module_files(&module_values)?;
+        module_files.extend(c_libraries.headers);
+
         let inputs = system::files_matching(&directory, &args.get::<Vec<String>>("inputs")?, &args.get::<Vec<String>>("exclude")?);
 
         let mut files = vec![];
@@ -199,10 +325,7 @@ impl CommandSpec {
         }
 
         let direct_libraries = command_line(args.get("direct_libraries")?, &output_dir)?;
-
-        module_values.extend(dependencies);
-        let mut module_files = module_files(&module_values)?;
-        module_files.extend(c_libraries.headers);
+        let depfile = with_output(&args.get::<String>("depfile")?, &output_dir);
 
         return Ok(CommandSpec {
             name,
@@ -217,6 +340,7 @@ impl CommandSpec {
             path,
             module_files,
             files,
+            depfile,
             libraries: args.get("libraries")?,
             direct_libraries,
         });
@@ -232,11 +356,16 @@ impl CommandSpec {
 
     /// Unless nothing it depends on changed since it ran. Its outputs.
     fn run_once(&self, always: bool) -> Result<Vec<PathBuf>, String> {
-        let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}", self.name));
-        fingerprint.add((&self.command, &self.outputs, &self.environment, &self.environment_inputs, &self.path));
-        fingerprint.add((&self.files, &self.libraries, &self.direct_libraries));
-        fingerprint.add_files(&self.inputs)?;
-        fingerprint.add_files(&self.module_files)?;
+        // with what its depfile names: before the run what the last run read, after it what this one read
+        let fingerprint = || -> Result<InputFingerprint, String> {
+            let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}", self.name));
+            fingerprint.add((&self.command, &self.outputs, &self.environment, &self.environment_inputs, &self.path));
+            fingerprint.add((&self.files, &self.libraries, &self.direct_libraries));
+            fingerprint.add_files(&self.inputs)?;
+            fingerprint.add_files(&self.module_files)?;
+            fingerprint.add_files(&self.included(&self.depfile))?;
+            return Ok(fingerprint);
+        };
 
         let artifact = self.outputs
             .first()
@@ -253,14 +382,14 @@ impl CommandSpec {
             .join(format!("commands/{}.outputs", self.name));
         let outputs_changed = !self.files.is_empty() && !outputs_as_left(&kept_outputs, &self.outputs);
 
-        if always || outputs_changed || !fingerprint.reports_up_to_date(&self.name, &outputs)? {
+        if always || outputs_changed || !fingerprint()?.reports_up_to_date(&self.name, &outputs)? {
             self.run()?;
 
             if !self.files.is_empty() {
                 system::write_file(&kept_outputs, &format!("{:016x}", up_to_date::files_hash(&self.outputs)?))?;
             }
 
-            fingerprint.store_done(&self.name, &artifact)?;
+            fingerprint()?.store_done(&self.name, &artifact)?;
         }
 
         return Ok(self.outputs.clone());
@@ -275,6 +404,8 @@ impl CommandSpec {
 
         system::create_dir(&self.output_dir)?;
         let mut all_outputs = vec![];
+        // with the depfiles, which the next build reads
+        let mut kept = vec![];
         let mut ran = 0;
 
         for input in &self.inputs {
@@ -284,16 +415,23 @@ impl CommandSpec {
                 .to_string();
             let (command, outputs) = for_input(&self.command, &self.outputs, input);
 
-            // of its own, by where it is below the directory
+            // of its own, by where it is below the directory, with what its depfile names: before the run what the
+            // last run read, after it what this one read
             let relative = system::relative_with_slashes(&self.directory, input).replace(['/', ':'], "_");
-            let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}/{relative}", self.name));
-            fingerprint.add((&command, &outputs, &self.environment, &self.environment_inputs, &self.path));
-            fingerprint.add_files(std::slice::from_ref(input))?;
-            fingerprint.add_files(&self.module_files)?;
+            let depfile = for_input(&[self.depfile.clone()], &[], input).0.remove(0);
+            let fingerprint = || -> Result<InputFingerprint, String> {
+                let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}/{relative}", self.name));
+                fingerprint.add((&command, &outputs, &self.environment, &self.environment_inputs, &self.path));
+                fingerprint.add_files(std::slice::from_ref(input))?;
+                fingerprint.add_files(&self.module_files)?;
+                fingerprint.add_files(&self.included(&depfile))?;
+                return Ok(fingerprint);
+            };
 
             let expected: Vec<&Path> = outputs.iter().map(PathBuf::as_path).collect();
 
-            if always || !fingerprint.is_up_to_date(&expected)? {
+            if always || !fingerprint()?.is_up_to_date(&expected)? {
+                create_output_dirs(&outputs)?;
                 let what = what(&command);
                 system::log(&self.name, &format!("Running {what} for {input_name}"));
                 let mut process = self.process(&command[0], &command[1..])?;
@@ -303,17 +441,21 @@ impl CommandSpec {
                     return Err(format!("{what} did not write {} for {input_name}", system::relative_with_slashes(&self.directory, missing)));
                 }
 
-                fingerprint.store()?;
+                fingerprint()?.store()?;
                 ran += 1;
             }
 
+            kept.extend(outputs.iter().cloned());
+            if !depfile.is_empty() {
+                kept.push(self.directory.join(&depfile));
+            }
             all_outputs.extend(outputs);
         }
 
         // only when it names what it writes: else nothing in {output} is known to be left over
         if !self.outputs.is_empty() {
             for file in system::files_below(std::slice::from_ref(&self.output_dir)) {
-                if !all_outputs.contains(&file) {
+                if !kept.contains(&file) {
                     let _ = std::fs::remove_file(&file);
                 }
             }
@@ -327,11 +469,27 @@ impl CommandSpec {
         return Ok(all_outputs);
     }
 
+    /// What the depfile of the last run names that still exists, relative to the directory: nothing before the
+    /// first run, which has to happen anyway
+    fn included(&self, depfile: &str) -> Vec<PathBuf> {
+        if depfile.is_empty() {
+            return vec![];
+        }
+
+        let text = std::fs::read_to_string(self.directory.join(depfile)).unwrap_or_default();
+        return crate::native::depfile_inputs(&text)
+            .into_iter()
+            .map(|file| self.directory.join(file))
+            .filter(|file| file.is_file())
+            .collect();
+    }
+
     /// Into a fresh {output}: what a renamed source left there is gone. The files first, the libraries the
     /// command took once it ran.
     fn run(&self) -> Result<(), String> {
         let what = what(&self.command);
         system::recreate_dir(&self.output_dir)?;
+        create_output_dirs(&self.outputs)?;
 
         for (path, content) in &self.files {
             system::write_file(path, content)?;
@@ -393,6 +551,17 @@ impl CommandSpec {
 
         return Ok(ModuleTests::Run(Box::new(run)));
     }
+}
+
+/// Where the outputs go, before the command: compilers like glslc write a file, but no directory for it
+fn create_output_dirs(outputs: &[PathBuf]) -> Result<(), String> {
+    for output in outputs {
+        if let Some(parent) = output.parent() {
+            system::create_dir(parent)?;
+        }
+    }
+
+    return Ok(());
 }
 
 /// The command and the outputs for one input: {input} its path, {input_name} its name like triangle.vert
@@ -917,6 +1086,22 @@ mod tests {
 
     fn line(arguments: &[&str]) -> Vec<String> {
         return arguments.iter().map(|argument| argument.to_string()).collect();
+    }
+
+    #[test]
+    fn files_are_embedded_as_bytes_or_as_the_words_of_spir_v() {
+        let words = embedded_header("double.comp.spv", &[0x03, 0x02, 0x23, 0x07, 0x00, 0x06, 0x01, 0x00], true).unwrap();
+        assert!(words.contains("static const uint32_t double_comp_spv[] = {\n    0x07230203, 0x00010600,\n};"), "{words}");
+        assert!(words.contains("static const size_t double_comp_spv_size = 8;"), "{words}");
+
+        let bytes = embedded_header("1font.ttf", b"ab", false).unwrap();
+        assert!(bytes.contains("static const unsigned char _1font_ttf[] = {\n    0x61, 0x62,\n};"), "{bytes}");
+
+        // an empty file is an array of one zero, its size 0
+        let empty = embedded_header("empty", b"", false).unwrap();
+        assert!(empty.contains("empty[] = {\n    0,\n};") && empty.contains("empty_size = 0;"), "{empty}");
+
+        assert_eq!(embedded_header("odd.spv", b"abc", true).unwrap_err(), "odd.spv has 3 bytes, which are no words of 4");
     }
 
     #[test]
