@@ -1734,4 +1734,15 @@ fn bundles_give_each_language_its_part_and_their_modules_to_all() {
 
     let ModuleOutput::Command(program) = &built("program").output else { panic!("a command") };
     assert_eq!(program.runtime.environment, [("VK_LAYER".to_string(), "on".to_string())], "what the program runs with");
+
+    // the same call again, like vulkan() of two programs, is the same module; another call of the name is an error
+    let plugin = "use c\nmake = fn() -> module { bundle(\"vk\", modules = list(prebuilt_library(\"vk-runtime\", environment = list(\"A=1\")))) }\n";
+    system::write_file(&project.join("vk.build"), plugin).unwrap();
+    let twice = "use \"./vk.build\"\nfirst = make()\nsecond = make()";
+    let runtime = run_in(Runtime::new(&project), twice).unwrap();
+    let (Value::Module(first), Value::Module(second)) = (variable(&runtime, "first"), variable(&runtime, "second")) else { panic!("modules") };
+    assert!(Arc::ptr_eq(&first, &second));
+
+    let error = run_in(Runtime::new(&project), &format!("{twice}\nthird = bundle(\"vk\", ports = list(\"zlib\"))")).map(|_| ()).unwrap_err();
+    assert!(matches!(error.variant, RuntimeErrorType::DuplicateModule { ref name, .. } if name == "vk"), "{error}");
 }

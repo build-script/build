@@ -1106,6 +1106,13 @@ impl Runtime {
                 .cloned();
             // the name says which module run, test and the evaluations for other targets mean
             let module_name: String = args.get("name").unwrap_or_default();
+
+            // the same call of a function of a plugin again is the same module, like vulkan() of two programs: the
+            // function makes its modules each time it is called. The script calling a module twice is a mistake.
+            if called_from.is_some() && let Some(earlier) = self.same_call(name, &module_name, &args) {
+                return Ok(Value::Module(earlier));
+            }
+
             self.claim_module_name(&module_name, called_from.as_ref().map(|(_, call)| *call).unwrap_or(span), span)?;
 
             let targets: Vec<String> = match signature.parameters.fixed.iter().any(|param| param.name == "targets") {
@@ -1417,18 +1424,32 @@ impl Runtime {
         let machine = self.host_modules.iter().find(|module| module.name == name && module.function == function)?;
         let theirs = machine.arguments.as_ref()?;
 
+        return Self::same_arguments(theirs, args).then(|| machine.clone());
+    }
+
+    /// The module of this evaluation an earlier call with the same function, name and arguments made
+    fn same_call(&self, function: &str, name: &str, args: &Arguments) -> Option<Arc<PendingModule>> {
+        if name.is_empty() {
+            return None;
+        }
+
+        let earlier = self.built.iter().find(|module| module.name == name && module.function == function)?;
+        let theirs = earlier.arguments.as_ref()?;
+
+        return Self::same_arguments(theirs, args).then(|| earlier.clone());
+    }
+
+    fn same_arguments(theirs: &Arguments, args: &Arguments) -> bool {
         let same = |left: &Option<Value>, right: &Option<Value>| match (left, right) {
             (Some(left), Some(right)) => Self::values_equal(left, right).unwrap_or(false),
             (None, None) => true,
             _ => false,
         };
 
-        let unchanged = theirs.values.len() == args.values.len()
+        return theirs.values.len() == args.values.len()
             && theirs.values.iter().zip(&args.values).all(|((_, left), (_, right))| same(left, right))
             && theirs.rest.len() == args.rest.len()
             && theirs.rest.iter().zip(&args.rest).all(|(left, right)| Self::values_equal(left, right).unwrap_or(false));
-
-        return unchanged.then(|| machine.clone());
     }
 
     /// A module the build function builds on a thread of its own once the module is requested: after the
