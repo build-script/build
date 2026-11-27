@@ -206,10 +206,7 @@ impl Toolchain {
                 .map(|(variable, value)| (variable.to_string(), value.clone()))
                 .collect(),
             cpp_runtime: cpp_runtime.iter().map(|flag| flag.to_string()).collect(),
-            link_flags: match self.kind == Kind::Zig && !release {
-                true => vec!["-fsanitize=undefined".to_string()],
-                false => vec![],
-            },
+            link_flags: tools_link_flags(&self.kind, self.target.os, release),
         };
     }
 
@@ -527,6 +524,19 @@ pub fn write_executable(file: &Path, script: &str) -> Result<(), String> {
     return Ok(());
 }
 
+/// What a tool links the libraries of a toolchain with: the runtime of UBSan zig checks debug builds with, and like
+/// every program the libraries of Windows, which GLFW and the like need
+fn tools_link_flags(kind: &Kind, os: OperatingSystem, release: bool) -> Vec<String> {
+    let mut flags = vec![];
+
+    if *kind == Kind::Zig && !release {
+        flags.push("-fsanitize=undefined".to_string());
+    }
+
+    flags.extend(os.system_libraries().iter().map(|library| format!("-l{library}")));
+    return flags;
+}
+
 #[cfg(test)]
 mod tests {
     use super::Toolchain;
@@ -571,6 +581,11 @@ mod tests {
         assert_eq!(abi_of(&Kind::Zig, Windows, false), Abi::MinGwLibCxx);
         assert_eq!(abi_of(&Kind::Gcc, MacOs, false), Abi::LibStdCxx);
         assert_eq!(abi_of(&Kind::Gcc, Windows, false), Abi::MinGwLibStdCxx);
+
+        // tools like cgo link what every program links
+        assert_eq!(super::tools_link_flags(&Kind::Zig, Linux, false), ["-fsanitize=undefined"]);
+        assert!(super::tools_link_flags(&Kind::System, MacOs, true).is_empty());
+        assert!(super::tools_link_flags(&Kind::System, Windows, true).contains(&"-luser32".to_string()));
 
         // C libraries differ on Windows alone
         assert!(Abi::LibCxx.links_c_of(Abi::LibStdCxx));
