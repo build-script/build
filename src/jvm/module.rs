@@ -273,6 +273,23 @@ pub fn module_directory(context: &BuildScriptContext, args: &Arguments) -> Resul
     return Ok(directory);
 }
 
+/// What commands wrote besides jars and sources goes into the jar like a resource, like the SPIR-V of shaders: at
+/// its path below the directory of the command, so a program loads it with getResource("/double.comp.spv")
+fn with_command_resources(mut resources: JavaResources, commands: &[Arc<BuiltModule>]) -> JavaResources {
+    for command in commands {
+        let ModuleOutput::Command(output) = &command.output else { continue };
+
+        for file in output.outputs.iter().filter(|file| !is_source(file, &["jar", "java", "kt"])) {
+            let path = file.strip_prefix(&output.output_dir)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| PathBuf::from(file.file_name().unwrap_or_default()));
+            resources.files.push((path, file.clone()));
+        }
+    }
+
+    return resources;
+}
+
 /// The jars commands wrote
 fn command_jars(commands: &[Arc<BuiltModule>]) -> Vec<PathBuf> {
     return commands.iter()
@@ -421,6 +438,8 @@ impl ModuleBuildInputs {
                 _ => None,
             }));
 
+        let dependencies_commands = dependencies.commands.clone();
+
         return Ok(ModuleBuildInputs {
             name: args.get("name")?,
             sources,
@@ -449,7 +468,7 @@ impl ModuleBuildInputs {
             } else {
                 SymbolProcessors::none()
             },
-            resources: JavaResources::read(args, &directory)?,
+            resources: with_command_resources(JavaResources::read(args, &directory)?, &dependencies_commands),
             jdk: Jdk::resolve(
                 &args.get::<String>("jdk")?,
                 jdk::DEFAULT_JDK_DISTRIBUTION,
@@ -1087,6 +1106,7 @@ mod tests {
 
 #[cfg(test)]
 mod runtime_tests {
+    use crate::command::{CommandOutput, Runtime};
     use crate::native::NativeOutput;
 
     use super::*;
@@ -1151,5 +1171,31 @@ mod runtime_tests {
         // what has to be linked is no library of the JVM
         let static_library = native("static", &[], &[], &["libstatic.a"]);
         assert!(Dependencies::default().add_module(static_library).is_err());
+    }
+
+    #[test]
+    fn what_commands_wrote_besides_jars_and_sources_goes_into_the_jar() {
+        let command = |name: &str, outputs: &[&str]| module(name, ModuleOutput::Command(CommandOutput {
+            output_dir: PathBuf::from(format!("build/commands/{name}")),
+            outputs: outputs.iter().map(PathBuf::from).collect(),
+            run: vec![],
+            environment: vec![],
+            path: vec![],
+            runtime: Runtime::default(),
+        }), vec![]);
+
+        let shaders = command("shaders", &["build/shaders/app/double.comp.spv", "build/shaders/app/triangle.vert.spv"]);
+        let generated = command("generated", &["build/commands/generated/com/example/Generated.kt", "build/commands/generated/data/table.bin", "build/commands/generated/lib.jar"]);
+
+        let resources = with_command_resources(JavaResources::default(), &[shaders, generated]);
+        let files: Vec<(String, String)> = resources.files.iter()
+            .map(|(path, source)| (path.display().to_string().replace('\\', "/"), source.display().to_string().replace('\\', "/")))
+            .collect();
+
+        assert_eq!(files, [
+            ("double.comp.spv".to_string(), "build/shaders/app/double.comp.spv".to_string()),
+            ("triangle.vert.spv".to_string(), "build/shaders/app/triangle.vert.spv".to_string()),
+            ("data/table.bin".to_string(), "build/commands/generated/data/table.bin".to_string()),
+        ]);
     }
 }
