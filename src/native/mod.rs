@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::bundle;
 use crate::common::runner::Runner;
 use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
@@ -749,19 +750,23 @@ impl Dependencies {
 
         for value in args.get::<Vec<Value>>(name)? {
             match value {
-                Value::String(port) => dependencies.ports.push(port),
+                Value::String(port) => dependencies.add_port(port),
                 Value::Module(module) => {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
 
-                    match module.output {
-                        ModuleOutput::Native(_) => dependencies.modules.push(module),
-                        // never in modules: what links through them only knows C and C++ modules
-                        ModuleOutput::Command(_) => dependencies.commands.push(module),
-                        ModuleOutput::Jvm(_) => {
-                            let name = &module.name;
-                            return Err(format!("{name} is no C or C++ module, build_cpp depends on those"));
-                        }
+                    // a bundle gives its ports and the modules it holds
+                    let Some(unpacked) = bundle::unpacked(&module) else {
+                        dependencies.add_module(module)?;
+                        continue;
+                    };
+
+                    for port in unpacked.parts.ports {
+                        dependencies.add_port(port);
+                    }
+
+                    for module in unpacked.modules {
+                        dependencies.add_module(module)?;
                     }
                 }
                 other => return Err(format!("internal error: dependency of type {}", other.type_of())),
@@ -769,6 +774,27 @@ impl Dependencies {
         }
 
         return Ok(dependencies);
+    }
+
+    /// once, a bundle may name what the list names as well
+    fn add_port(&mut self, port: String) {
+        if !self.ports.contains(&port) {
+            self.ports.push(port);
+        }
+    }
+
+    fn add_module(&mut self, module: Arc<BuiltModule>) -> Result<(), String> {
+        match &module.output {
+            ModuleOutput::Native(_) => self.modules.push(module),
+            // never in modules: what links through them only knows C and C++ modules
+            ModuleOutput::Command(_) => self.commands.push(module),
+            ModuleOutput::Jvm(_) | ModuleOutput::Bundle(_) => {
+                let name = &module.name;
+                return Err(format!("{name} is no C or C++ module, build_cpp depends on those"));
+            }
+        }
+
+        return Ok(());
     }
 
     /// -I of the directories of the commands, and the sources of the language they wrote

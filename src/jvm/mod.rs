@@ -167,6 +167,7 @@ impl BuiltModule {
             // the JVM builds take no other modules, see Dependencies::read
             ModuleOutput::Native(_) => unreachable!("{} is a C or C++ module", self.name),
             ModuleOutput::Command(_) => unreachable!("{} is a command", self.name),
+            ModuleOutput::Bundle(_) => unreachable!("{} is a bundle", self.name),
         }
     }
 }

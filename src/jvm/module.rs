@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::bundle;
 use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
 use crate::language::runtime::{
@@ -666,27 +667,23 @@ impl Dependencies {
 
         for value in args.get::<Vec<Value>>(name)? {
             match value {
-                Value::String(notation) => match DependencyNotation::parse(&notation)? {
-                    DependencyNotation::Library(coordinate) => {
-                        let coordinate = with_kotlin_version(coordinate, kotlin_version);
-                        dependencies.libraries.push(coordinate)
-                    }
-                    DependencyNotation::Platform(coordinate) => {
-                        dependencies.platforms.push(coordinate)
-                    }
-                },
+                Value::String(notation) => dependencies.add_notation(&notation, kotlin_version)?,
                 Value::Module(module) => {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
 
-                    match &module.output {
-                        ModuleOutput::Jvm(_) => dependencies.modules.push(module),
-                        ModuleOutput::Native(output) if output.shared_library.is_some() => dependencies.native.push(module),
-                        ModuleOutput::Native(_) => {
-                            return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
-                        }
-                        // never in modules: the JVM builds take the jvm() of every module there
-                        ModuleOutput::Command(_) => dependencies.commands.push(module),
+                    // a bundle gives its Maven libraries and the modules it holds
+                    let Some(unpacked) = bundle::unpacked(&module) else {
+                        dependencies.add_module(module)?;
+                        continue;
+                    };
+
+                    for notation in &unpacked.parts.maven {
+                        dependencies.add_notation(notation, kotlin_version)?;
+                    }
+
+                    for module in unpacked.modules {
+                        dependencies.add_module(module)?;
                     }
                 }
                 other => {
@@ -699,6 +696,35 @@ impl Dependencies {
         }
 
         return Ok(dependencies);
+    }
+
+    fn add_notation(&mut self, notation: &str, kotlin_version: &str) -> Result<(), String> {
+        match DependencyNotation::parse(notation)? {
+            DependencyNotation::Library(coordinate) => {
+                let coordinate = with_kotlin_version(coordinate, kotlin_version);
+                if !self.libraries.contains(&coordinate) {
+                    self.libraries.push(coordinate);
+                }
+            }
+            DependencyNotation::Platform(coordinate) => self.platforms.push(coordinate),
+        }
+
+        return Ok(());
+    }
+
+    fn add_module(&mut self, module: Arc<BuiltModule>) -> Result<(), String> {
+        match &module.output {
+            ModuleOutput::Jvm(_) => self.modules.push(module),
+            ModuleOutput::Native(output) if output.shared_library.is_some() => self.native.push(module),
+            ModuleOutput::Native(_) => {
+                return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
+            }
+            // never in modules: the JVM builds take the jvm() of every module there
+            ModuleOutput::Command(_) => self.commands.push(module),
+            ModuleOutput::Bundle(_) => unreachable!("bundles are unpacked"),
+        }
+
+        return Ok(());
     }
 
     pub fn is_empty(&self) -> bool {

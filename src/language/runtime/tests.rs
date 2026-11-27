@@ -1688,3 +1688,44 @@ fn errors_in_plugins_name_the_script_and_the_plugin() {
     let (_, result) = plugin_runtime(&directory, "use \"./plugins/bad.build\"");
     assert!(result.unwrap_err().starts_with("plugins/bad.build:2:1: expected an expression"));
 }
+
+/// A bundle is what a library is in every language: bundled() hands its parts to the functions of plugins, a C
+/// module takes its modules
+#[cfg(unix)]
+#[test]
+fn bundles_give_each_language_its_part_and_their_modules_to_all() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("bundle");
+    let project = system::canonical_path(&directory).unwrap();
+    let script = "use c\n\
+        runtime = prebuilt_library(\"vk-runtime\", environment = list(\"VK_LAYER=on\"))\n\
+        inner = bundle(\"inner\", ports = list(\"vulkan-headers\"), go = list(\"example.com/vk@v1\"))\n\
+        vk = bundle(\"vk\", ports = list(\"vulkan-loader\", \"vulkan-headers\"), maven = list(\"org.lwjgl:lwjgl:3.4.3\"), \
+            go = list(\"example.com/vk@v1\", \"example.com/glfw@v2\"), modules = list(runtime, inner))\n\
+        generated = build_command(\"generated\", list(\"true\"))\n\
+        ports = bundled(list(\"glfw3\", vk, generated), \"ports\")\n\
+        maven = bundled(list(\"glfw3\", vk), \"maven\")\n\
+        go = bundled(list(vk), \"go\")\n\
+        modules = bundled_modules(list(vk, generated))\n\
+        headers = build_c(\"headers\", list(vk))";
+
+    let runtime = run_in(Runtime::new(&project), script).unwrap();
+    let strings = |name: &str| format!("{:?}", variable(&runtime, name));
+    assert_eq!(strings("ports"), format!("{:?}", Value::string_list(&["glfw3", "vulkan-loader", "vulkan-headers"])));
+    assert_eq!(strings("maven"), format!("{:?}", Value::string_list(&["org.lwjgl:lwjgl:3.4.3"])));
+    assert_eq!(strings("go"), format!("{:?}", Value::string_list(&["example.com/vk@v1", "example.com/glfw@v2"])));
+
+    let Value::List(modules) = variable(&runtime, "modules") else { panic!("bundled_modules gives a list") };
+    let names: Vec<String> = modules.iter()
+        .map(|module| match module {
+            Value::Module(module) => module.wait().unwrap().name.clone(),
+            other => panic!("{other:?} is no module"),
+        })
+        .collect();
+    assert_eq!(names, ["vk-runtime", "generated"], "the modules of the bundle instead of it");
+
+    let built = |name: &str| runtime.module_named(name).unwrap().wait().unwrap();
+    let ModuleOutput::Native(headers) = &built("headers").output else { panic!("build_c makes a C module") };
+    assert_eq!(headers.environment, [("VK_LAYER".to_string(), "on".to_string())], "a C module takes the modules of a bundle");
+}

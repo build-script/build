@@ -674,10 +674,21 @@ impl CLibraries {
         let mut cpp_runtime = None;
         let mut compiler_link_flags = vec![];
 
+        let mut expanded = vec![];
+
         for value in dependencies {
             let Value::Module(module) = value else { continue };
             let module = module.wait()
                 .map_err(|_| format!("{} it uses failed", module.function))?;
+
+            // of a bundle the modules it holds: its ports a function of a plugin gives to a build_c with bundled()
+            match crate::bundle::unpacked(&module) {
+                Some(unpacked) => expanded.extend(unpacked.modules),
+                None => expanded.push(module),
+            }
+        }
+
+        for module in expanded {
             let ModuleOutput::Native(output) = &module.output else { continue };
 
             libraries.compile_flags.extend(output.compile_flags.iter().cloned());
@@ -1055,7 +1066,7 @@ fn module_command(module: &BuiltModule) -> Vec<String> {
             }
         }
         ModuleOutput::Command(output) if !output.run.is_empty() => return output.run.clone(),
-        ModuleOutput::Command(_) => {}
+        ModuleOutput::Command(_) | ModuleOutput::Bundle(_) => {}
     }
 
     return vec![artifact];

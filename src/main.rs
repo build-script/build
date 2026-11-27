@@ -1,3 +1,4 @@
+mod bundle;
 mod command;
 mod common;
 mod jvm;
