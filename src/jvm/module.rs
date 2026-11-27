@@ -653,6 +653,8 @@ impl ModuleBuildInputs {
                 android,
                 launch,
                 host_library_dirs: self.dependencies.host_library_dirs(),
+                environment: self.dependencies.environment(),
+                jvm_flags: self.dependencies.jvm_flags(),
             }),
             tests,
         });
@@ -716,6 +718,9 @@ impl Dependencies {
         match &module.output {
             ModuleOutput::Jvm(_) => self.modules.push(module),
             ModuleOutput::Native(output) if output.shared_library.is_some() => self.native.push(module),
+            // nothing to link, like a prebuilt_library with only what programs need when they run: its environment
+            // and the flags of the JVM
+            ModuleOutput::Native(output) if output.link_flags.is_empty() && output.program.is_none() => self.native.push(module),
             ModuleOutput::Native(_) => {
                 return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
             }
@@ -748,6 +753,42 @@ impl Dependencies {
         dirs.retain(|dir| seen.insert(dir.clone()));
 
         return dirs;
+    }
+
+    /// What programs and tests have in their environment: that of the JVM modules and the C and C++ libraries
+    /// below, like the validation layers of Vulkan
+    pub fn environment(&self) -> Vec<(String, String)> {
+        let natives = BuiltModule::transitive(&self.native);
+        let of_modules = self.modules.iter().flat_map(|module| &module.jvm().environment);
+        let of_natives = natives.iter()
+            .filter_map(|module| match &module.output {
+                ModuleOutput::Native(output) => Some(&output.environment),
+                _ => None,
+            })
+            .flatten();
+
+        return crate::native::joined(of_modules.chain(of_natives));
+    }
+
+    /// The flags of the JVM of programs and tests: those of the JVM modules and the C and C++ libraries below,
+    /// each once
+    pub fn jvm_flags(&self) -> Vec<String> {
+        let natives = BuiltModule::transitive(&self.native);
+        let of_natives = natives.iter()
+            .filter_map(|module| match &module.output {
+                ModuleOutput::Native(output) => Some(&output.jvm_flags),
+                _ => None,
+            })
+            .flatten();
+        let mut flags: Vec<String> = vec![];
+
+        for flag in self.modules.iter().flat_map(|module| &module.jvm().jvm_flags).chain(of_natives) {
+            if !flags.contains(flag) {
+                flags.push(flag.clone());
+            }
+        }
+
+        return flags;
     }
 
     /// For annotation or symbol processors: the Maven artifacts, and the jars
@@ -1041,5 +1082,74 @@ mod tests {
                 .unwrap_err()
                 .contains("known: compose, serialization")
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use crate::native::NativeOutput;
+
+    use super::*;
+
+    fn module(name: &str, output: ModuleOutput, modules: Vec<Arc<BuiltModule>>) -> Arc<BuiltModule> {
+        return Arc::new(BuiltModule {
+            name: name.to_string(),
+            directory: PathBuf::from(name),
+            artifact: PathBuf::from(name),
+            modules,
+            output,
+            tests: vec![],
+        });
+    }
+
+    fn runtime_library(name: &str, environment: &[(&str, &str)], jvm_flags: &[&str]) -> Arc<BuiltModule> {
+        return native(name, environment, jvm_flags, &[]);
+    }
+
+    fn native(name: &str, environment: &[(&str, &str)], jvm_flags: &[&str], link_flags: &[&str]) -> Arc<BuiltModule> {
+        return module(name, ModuleOutput::Native(NativeOutput {
+            compile_flags: vec![],
+            link_flags: link_flags.iter().map(|flag| flag.to_string()).collect(),
+            program: None,
+            tools_dir: None,
+            shared_library: None,
+            cpp: false,
+            c_compiler: None,
+            header_dirs: vec![],
+            abi: None,
+            runtime_libraries: vec![],
+            environment: environment.iter().map(|(variable, value)| (variable.to_string(), value.to_string())).collect(),
+            jvm_flags: jvm_flags.iter().map(|flag| flag.to_string()).collect(),
+        }), vec![]);
+    }
+
+    #[test]
+    fn programs_run_with_the_environment_and_the_flags_of_the_libraries_below() {
+        let vulkan = runtime_library("vulkan-runtime", &[("VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation")], &["-Dorg.lwjgl.vulkan.libname=/sdk/libvulkan.1.dylib"]);
+        let other = runtime_library("other", &[("VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation")], &["-Dorg.lwjgl.vulkan.libname=/sdk/libvulkan.1.dylib", "-Xss4m"]);
+
+        let mut library = Dependencies::default();
+        library.add_module(vulkan).unwrap();
+        let library = module("library", ModuleOutput::Jvm(JvmOutput {
+            classes: None,
+            libraries: vec![],
+            platforms: vec![],
+            android: None,
+            launch: None,
+            host_library_dirs: vec![],
+            environment: library.environment(),
+            jvm_flags: library.jvm_flags(),
+        }), vec![]);
+
+        let mut app = Dependencies::default();
+        app.add_module(library).unwrap();
+        app.add_module(other).unwrap();
+
+        assert_eq!(app.environment(), [("VK_INSTANCE_LAYERS".to_string(), "VK_LAYER_KHRONOS_validation".to_string())], "each value once");
+        assert_eq!(app.jvm_flags(), ["-Dorg.lwjgl.vulkan.libname=/sdk/libvulkan.1.dylib", "-Xss4m"]);
+
+        // what has to be linked is no library of the JVM
+        let static_library = native("static", &[], &[], &["libstatic.a"]);
+        assert!(Dependencies::default().add_module(static_library).is_err());
     }
 }

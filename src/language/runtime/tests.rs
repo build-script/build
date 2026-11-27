@@ -109,6 +109,8 @@ fn library_output() -> ModuleOutput {
         android: None,
         launch: None,
         host_library_dirs: vec![],
+        environment: vec![],
+        jvm_flags: vec![],
     });
 }
 
@@ -1690,7 +1692,7 @@ fn errors_in_plugins_name_the_script_and_the_plugin() {
 }
 
 /// A bundle is what a library is in every language: bundled() hands its parts to the functions of plugins, a C
-/// module takes its modules
+/// module takes its modules, a command runs with what those need
 #[cfg(unix)]
 #[test]
 fn bundles_give_each_language_its_part_and_their_modules_to_all() {
@@ -1699,7 +1701,7 @@ fn bundles_give_each_language_its_part_and_their_modules_to_all() {
     let directory = ScratchDir::new("bundle");
     let project = system::canonical_path(&directory).unwrap();
     let script = "use c\n\
-        runtime = prebuilt_library(\"vk-runtime\", environment = list(\"VK_LAYER=on\"))\n\
+        runtime = prebuilt_library(\"vk-runtime\", environment = list(\"VK_LAYER=on\"), jvm_flags = list(\"-Dvk=1\"))\n\
         inner = bundle(\"inner\", ports = list(\"vulkan-headers\"), go = list(\"example.com/vk@v1\"))\n\
         vk = bundle(\"vk\", ports = list(\"vulkan-loader\", \"vulkan-headers\"), maven = list(\"org.lwjgl:lwjgl:3.4.3\"), \
             go = list(\"example.com/vk@v1\", \"example.com/glfw@v2\"), modules = list(runtime, inner))\n\
@@ -1708,7 +1710,8 @@ fn bundles_give_each_language_its_part_and_their_modules_to_all() {
         maven = bundled(list(\"glfw3\", vk), \"maven\")\n\
         go = bundled(list(vk), \"go\")\n\
         modules = bundled_modules(list(vk, generated))\n\
-        headers = build_c(\"headers\", list(vk))";
+        headers = build_c(\"headers\", list(vk))\n\
+        program = build_command(\"program\", list(\"true\"), dependencies = modules, run = list(\"true\"))";
 
     let runtime = run_in(Runtime::new(&project), script).unwrap();
     let strings = |name: &str| format!("{:?}", variable(&runtime, name));
@@ -1728,4 +1731,7 @@ fn bundles_give_each_language_its_part_and_their_modules_to_all() {
     let built = |name: &str| runtime.module_named(name).unwrap().wait().unwrap();
     let ModuleOutput::Native(headers) = &built("headers").output else { panic!("build_c makes a C module") };
     assert_eq!(headers.environment, [("VK_LAYER".to_string(), "on".to_string())], "a C module takes the modules of a bundle");
+
+    let ModuleOutput::Command(program) = &built("program").output else { panic!("a command") };
+    assert_eq!(program.runtime.environment, [("VK_LAYER".to_string(), "on".to_string())], "what the program runs with");
 }

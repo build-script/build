@@ -48,6 +48,88 @@ pub struct CommandOutput {
     /// for `run` as well
     pub environment: Vec<(String, String)>,
     pub path: Vec<PathBuf>,
+    /// what `run` and the tests need of the C and C++ libraries among the dependencies
+    pub runtime: Runtime,
+}
+
+/// What the C and C++ libraries among the dependencies of a command need when what it built runs, like a program of
+/// cgo: their environment, like the validation layers of Vulkan, and the directories of their shared libraries, like
+/// the Vulkan loader of vcpkg, which programs of other languages do not have next to them
+#[derive(Debug, Default, Hash)]
+pub struct Runtime {
+    pub environment: Vec<(String, String)>,
+    pub library_dirs: Vec<PathBuf>,
+}
+
+/// where the system looks for shared libraries besides its own directories
+const LIBRARY_PATH: &str = if cfg!(target_os = "macos") {
+    "DYLD_LIBRARY_PATH"
+} else if cfg!(windows) {
+    "PATH"
+} else {
+    "LD_LIBRARY_PATH"
+};
+
+impl Runtime {
+    /// Of the modules among the dependencies and those below them, bundles unpacked
+    fn of(dependencies: &[Value]) -> Result<Self, String> {
+        let mut modules = vec![];
+
+        for value in dependencies {
+            let Value::Module(module) = value else { continue };
+            let built = module.wait().map_err(|_| format!("{} it uses failed", module.function))?;
+
+            match crate::bundle::unpacked(&built) {
+                Some(unpacked) => modules.extend(unpacked.modules),
+                None => modules.push(built),
+            }
+        }
+
+        let natives = BuiltModule::transitive(&modules);
+        let mut library_dirs: Vec<PathBuf> = vec![];
+
+        for module in &natives {
+            let ModuleOutput::Native(output) = &module.output else { continue };
+
+            for library in output.runtime_libraries.iter().chain(&output.shared_library) {
+                if let Some(dir) = library.parent().filter(|dir| !library_dirs.iter().any(|known| known == dir)) {
+                    library_dirs.push(dir.to_path_buf());
+                }
+            }
+        }
+
+        return Ok(Runtime {
+            environment: crate::native::joined_environment(&natives),
+            library_dirs,
+        });
+    }
+
+    /// After the environment of the command, which wins: the library directories go in front of those the system
+    /// looks in already
+    fn apply(&self, process: &mut Command) -> Result<(), String> {
+        let set = |process: &Command, variable: &str| {
+            return process.get_envs().find(|(name, _)| *name == variable).map(|(_, value)| value.map(OsString::from));
+        };
+
+        for (variable, value) in &self.environment {
+            if set(process, variable).is_none() {
+                process.env(variable, value);
+            }
+        }
+
+        if self.library_dirs.is_empty() {
+            return Ok(());
+        }
+
+        let current = set(process, LIBRARY_PATH)
+            .unwrap_or_else(|| std::env::var_os(LIBRARY_PATH))
+            .unwrap_or_default();
+        let directories = self.library_dirs.iter().cloned().chain(std::env::split_paths(&current));
+        let joined = std::env::join_paths(directories).map_err(|error| format!("{LIBRARY_PATH}: {error}"))?;
+        process.env(LIBRARY_PATH, joined);
+
+        return Ok(());
+    }
 }
 
 pub fn builtins() -> Vec<(&'static str, Value)> {
@@ -172,6 +254,7 @@ fn embed_files(context: &BuildScriptContext, args: &Arguments) -> Result<Value, 
             run: vec![],
             environment: vec![],
             path: vec![],
+            runtime: Runtime::default(),
         }),
         tests: vec![],
     })));
@@ -235,6 +318,8 @@ struct CommandSpec {
     depfile: String,
     libraries: Vec<String>,
     direct_libraries: Vec<String>,
+    /// for the tests and `run`
+    runtime: Runtime,
 }
 
 fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value, String> {
@@ -271,6 +356,7 @@ fn build_command(context: &BuildScriptContext, args: &Arguments) -> Result<Value
             run,
             environment: spec.environment,
             path: spec.path,
+            runtime: spec.runtime,
         }),
         tests,
     })));
@@ -295,6 +381,7 @@ impl CommandSpec {
         let dependencies = args.get::<Vec<Value>>("dependencies")?;
         let c_libraries = CLibraries::of(&dependencies)?;
         let environment = environment(args, &output_dir, &c_libraries)?;
+        let runtime = Runtime::of(&dependencies)?;
 
         let environment_inputs = args.get::<Vec<String>>("environment_inputs")?
             .into_iter()
@@ -343,6 +430,7 @@ impl CommandSpec {
             depfile,
             libraries: args.get("libraries")?,
             direct_libraries,
+            runtime,
         });
     }
 
@@ -528,7 +616,7 @@ impl CommandSpec {
         test.extend(context.test_arguments.iter().cloned());
 
         let mut fingerprint = InputFingerprint::in_build_dir(&self.build_dir, &format!("commands/{}.tests", self.name));
-        fingerprint.add((&test, &self.environment, &self.environment_inputs, &self.path));
+        fingerprint.add((&test, &self.environment, &self.environment_inputs, &self.path, &self.runtime));
         fingerprint.add_files(&self.inputs)?;
         fingerprint.add_files(&self.module_files)?;
         fingerprint.add_files(&self.outputs)?;
@@ -538,7 +626,8 @@ impl CommandSpec {
             return Ok(ModuleTests::Known(TestOutcome::UpToDate));
         }
 
-        let process = self.process(&test[0], &test[1..])?;
+        let mut process = self.process(&test[0], &test[1..])?;
+        self.runtime.apply(&mut process)?;
         let mut run = TestRun::new(what(&test), &process, reports_dir, fingerprint);
 
         if writes_reports {
@@ -972,6 +1061,7 @@ pub fn launch(module: &BuiltModule, output: &CommandOutput, args: &[String], run
     let mut process = runner.command(Path::new(program), &module.directory);
     process.args(arguments).args(args);
     set_environment(&mut process, &output.environment, &output.path)?;
+    output.runtime.apply(&mut process)?;
 
     return system::run_interactive(&mut process);
 }

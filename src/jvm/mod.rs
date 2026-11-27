@@ -86,6 +86,11 @@ pub struct JvmOutput {
     pub launch: Option<JvmLaunch>,
     /// of the shared C and C++ libraries below, java.library.path of `run` and the tests
     pub host_library_dirs: Vec<PathBuf>,
+    /// what `run` and the tests have in their environment: that of the C and C++ libraries below, like the
+    /// validation layers of Vulkan
+    pub environment: Vec<(String, String)>,
+    /// for the JVM of `run` and the tests, those of the C and C++ libraries below
+    pub jvm_flags: Vec<String>,
 }
 
 /// How `build run` starts a JVM module
@@ -117,6 +122,7 @@ pub fn launch(module: &BuiltModule, output: &JvmOutput, args: &[String]) -> Resu
         }
         Some(JvmLaunch::Jar { java }) => {
             let mut command = Command::new(java);
+            command.args(&output.jvm_flags).envs(output.environment.iter().map(|(variable, value)| (variable, value)));
 
             if !output.host_library_dirs.is_empty() {
                 command.arg(format!("-Djava.library.path={}", jdk::join_classpath(&output.host_library_dirs)?.to_string_lossy()));

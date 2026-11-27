@@ -95,6 +95,9 @@ pub struct NativeOutput {
     /// what the programs linking it need in their environment when they run, like the validation layers of
     /// Vulkan: of a prebuilt library its own, of others those of what they depend on
     pub environment: Vec<(String, String)>,
+    /// of a prebuilt library: what a JVM loading it needs, like -Dorg.lwjgl.vulkan.libname=... to take the Vulkan
+    /// loader. The JVM modules gather those of everything below them.
+    pub jvm_flags: Vec<String>,
 }
 
 /// The C compiler of a library, for commands that compile and link against it with one of their own, like cgo
@@ -583,6 +586,7 @@ fn build_module(context: &BuildScriptContext, args: &Arguments, language: Langua
             abi: (kind == ModuleKind::StaticLibrary).then(|| toolchain.abi()),
             runtime_libraries,
             environment,
+            jvm_flags: vec![],
         }),
         tests,
     })));
@@ -684,22 +688,28 @@ fn update_compile_commands(file: &Path, own_objects: &Path, commands: Vec<serde_
 
 /// The environment of the libraries, a variable two of them name joined like the PATH: VK_ADD_LAYER_PATH of the
 /// layers of two SDKs
-fn joined_environment(modules: &[Arc<BuiltModule>]) -> Vec<(String, String)> {
+pub fn joined_environment(modules: &[Arc<BuiltModule>]) -> Vec<(String, String)> {
+    return joined(modules.iter()
+        .filter_map(|module| match &module.output {
+            ModuleOutput::Native(output) => Some(&output.environment),
+            _ => None,
+        })
+        .flatten());
+}
+
+/// Environments in one: a variable named twice becomes a list like PATH, each value once
+pub fn joined<'a>(entries: impl IntoIterator<Item = &'a (String, String)>) -> Vec<(String, String)> {
     let separator = if cfg!(windows) { ";" } else { ":" };
     let mut joined: Vec<(String, String)> = vec![];
 
-    for module in modules {
-        let ModuleOutput::Native(output) = &module.output else { continue };
-
-        for (variable, value) in &output.environment {
-            match joined.iter_mut().find(|(known, _)| known == variable) {
-                Some((_, known)) if known.split(separator).any(|part| part == value) => {}
-                Some((_, known)) => {
-                    known.push_str(separator);
-                    known.push_str(value);
-                }
-                None => joined.push((variable.clone(), value.clone())),
+    for (variable, value) in entries {
+        match joined.iter_mut().find(|(known, _)| known == variable) {
+            Some((_, known)) if known.split(separator).any(|part| part == value) => {}
+            Some((_, known)) => {
+                known.push_str(separator);
+                known.push_str(value);
             }
+            None => joined.push((variable.clone(), value.clone())),
         }
     }
 
@@ -1099,6 +1109,7 @@ mod tests {
                 abi,
                 runtime_libraries: vec![],
                 environment: vec![],
+                jvm_flags: vec![],
             }),
             tests: vec![],
         });
