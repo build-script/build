@@ -503,7 +503,8 @@ fn help() -> String {
           directory, the downloads stay; --cache removes the downloads and what was
           made of them, the JDKs, SDKs and toolchains stay
   new     creates a project in a new directory: {},
-          or from the template of a plugin: go, go:<template>, someone/repository
+          or from the template of a plugin: go, go:<template>, someone/repository, or
+          from a plugin for a language: cpp:vulkan, cpp:vulkan-<variant>, go:vulkan
   add     adds a module in a directory next to the script and its build call to the
           script: {}, or a plugin like for new
   install adds a Maven library to the dependencies of the module, the newest version
@@ -923,17 +924,23 @@ fn list_plugins() -> Result<(), String> {
     let repository = plugins::official_repository();
     let found = plugins::official_plugins(&repository, &common::system::cache_dir("git"))?;
     let width = found.iter()
-        .map(|(name, ..)| name.len())
+        .map(|plugin| plugin.name.len())
         .max()
         .unwrap_or(0);
 
     println!("Plugins of {repository}, use <name> in a script loads one, new <name> <path> starts a project:");
 
-    for (name, about, templates) in found {
-        println!("  {name:<width$}  {about}");
+    for plugin in found {
+        let name = &plugin.name;
+        println!("  {name:<width$}  {}", plugin.about);
 
-        for (template, about) in templates {
+        for (template, about) in &plugin.templates {
             println!("  {:<width$}    new {name}:{template}  {about}", "");
+        }
+
+        // a language with the plugin, like new cpp:vulkan-glfw
+        for (language, variant, about) in &plugin.extensions {
+            println!("  {:<width$}    new {}  {about}", "", project::extension_kind(language, name, variant));
         }
     }
 

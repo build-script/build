@@ -19,22 +19,33 @@ use crate::language::runtime;
 use crate::native;
 
 pub use install::{DEPENDENCIES, DEPENDENCY_KINDS, install};
-pub use plugin_templates::PluginLookup;
+pub use plugin_templates::{PluginLookup, extension_kind};
 
-use plugin_templates::PluginKind;
 
 /// What a kind of module brings into a project: its files and its build call
 pub struct ModuleTemplate {
     /// what the `use` that brings the build function names: kotlin, a plugin like go or "someone/zig"
     pub use_argument: String,
+    /// what else the script uses for it, like the plugin vulkan for cpp:vulkan
+    pub more_uses: Vec<String>,
     /// what the repositories list needs for the module's dependencies
     pub repositories: &'static [&'static str],
     /// apps come after the libraries in the script, so they can depend on them
     pub is_app: bool,
     /// relative to the module directory, with their content
     pub files: Vec<(String, String)>,
+    /// the modules the build call takes, before it in the script, like its shaders
+    pub helpers: Vec<TemplateCall>,
     pub function: String,
     /// the arguments before the repositories, as the script writes them
+    pub positional: Vec<String>,
+    pub named: Vec<(String, String)>,
+}
+
+/// A call before the build call of a template, its module assigned to a variable the build call names
+pub struct TemplateCall {
+    pub variable: String,
+    pub function: String,
     pub positional: Vec<String>,
     pub named: Vec<(String, String)>,
 }
@@ -133,23 +144,27 @@ pub fn plugin_choices(plugins: &PluginLookup) -> Result<Vec<(String, String)>, S
     return Ok(plugin_template_choices(found));
 }
 
-/// go for the template app of go, go:cli for its others; plugins without templates have none
-fn plugin_template_choices(found: Vec<(String, String, Vec<(String, String)>)>) -> Vec<(String, String)> {
+/// go for the template app of go, go:cli for its others, cpp:vulkan and cpp:vulkan-glfw for the variants of a plugin
+/// extending a language; plugins without templates have none
+fn plugin_template_choices(found: Vec<crate::plugins::OfficialPlugin>) -> Vec<(String, String)> {
     let mut choices = vec![];
+    let described = |about: &str| match about.is_empty() {
+        true => "(plugin)".to_string(),
+        false => format!("{about} (plugin)"),
+    };
 
-    for (plugin, _, templates) in found {
-        for (template, about) in templates {
+    for plugin in found {
+        for (template, about) in &plugin.templates {
             let kind = match template == plugin_templates::DEFAULT_TEMPLATE {
-                true => plugin.clone(),
-                false => format!("{plugin}:{template}"),
+                true => plugin.name.clone(),
+                false => format!("{}:{template}", plugin.name),
             };
 
-            let about = match about.is_empty() {
-                true => "(plugin)".to_string(),
-                false => format!("{about} (plugin)"),
-            };
+            choices.push((kind, described(about)));
+        }
 
-            choices.push((kind, about));
+        for (language, variant, about) in &plugin.extensions {
+            choices.push((plugin_templates::extension_kind(language, &plugin.name, variant), described(about)));
         }
     }
 
@@ -261,7 +276,7 @@ fn new_plugin_project(
 ) -> Result<(), String> {
     lock::open(&path.join("project.build"), false)?;
 
-    let (plugin, template_name, template) = plugin_template(kind, name, package, domain, plugins, &project_kinds())?;
+    let (description, template) = plugin_template(kind, name, package, domain, plugins, &project_kinds())?;
     let module = NewModule {
         name: name.to_string(),
         directory: None,
@@ -289,7 +304,7 @@ fn new_plugin_project(
     }
 
     lock::save()?;
-    println!("Created {kind} project {name} in {} from the template {template_name} of {plugin}", path.display());
+    println!("Created {kind} project {name} in {} from {description}", path.display());
 
     return Ok(());
 }
@@ -307,7 +322,7 @@ fn with_ignored(ignored: &str, more: &str) -> String {
     return lines.iter().map(|line| format!("{line}\n")).collect();
 }
 
-/// The template of the plugin `kind` names, with how `use` names the plugin and the template's name
+/// The template of a plugin `kind` names, or the extension of a language by one, with what it is for the log
 fn plugin_template(
     kind: &str,
     name: &str,
@@ -315,17 +330,29 @@ fn plugin_template(
     domain: impl FnOnce() -> Result<String, String>,
     plugins: &PluginLookup,
     builtin_kinds: &[&str],
-) -> Result<(String, String, ModuleTemplate), String> {
-    let found = PluginKind::parse(kind, &plugins.official)
-        .and_then(|plugin| plugin.template_dir(&plugins.cache).map(|(template_name, directory)| (plugin, template_name, directory)));
-
-    let (plugin, template_name, directory) = found.map_err(|error| {
-        return format!("{kind} is neither a kind of build-script ({}) nor a plugin with templates: {error}", builtin_kinds.join(", "));
+) -> Result<(String, ModuleTemplate), String> {
+    let found = plugin_templates::find_template(kind, plugins, builtin_language).map_err(|error| {
+        return format!("{kind} is neither a kind of build-script ({}) nor a template of a plugin: {error}", builtin_kinds.join(", "));
     })?;
 
-    let template = plugin_templates::module_template(&plugin.use_argument, &template_name, &directory, name, package, domain)?;
+    let template = plugin_templates::module_template(&found, name, package, domain)?;
 
-    return Ok((plugin.use_argument, template_name, template));
+    return Ok((found.description, template));
+}
+
+/// A language of build-script plugins extend, like cpp for cpp:vulkan: the use and the repositories of its programs
+fn builtin_language(language: &str) -> Option<plugin_templates::BuiltinLanguage> {
+    let probe = NewModule {
+        name: "probe".to_string(),
+        directory: None,
+        package: "probe".to_string(),
+        dependencies: vec![],
+    };
+
+    return module_template(&format!("{language}-app"), &probe).map(|template| plugin_templates::BuiltinLanguage {
+        use_argument: template.use_argument,
+        repositories: template.repositories,
+    });
 }
 
 /// A new module in a directory next to the script, its build call in the script. A kind that is none of
@@ -380,7 +407,7 @@ pub fn add_module(
             // the release the project builds with, or the newest that goes into the lock
             lock::open(script_file, false)?;
 
-            let (_, _, template) = plugin_template(kind, &name, package, domain, plugins, &module_kinds())?;
+            let (_, template) = plugin_template(kind, &name, package, domain, plugins, &module_kinds())?;
             let module = NewModule {
                 name: name.clone(),
                 directory: Some(name.clone()),
@@ -996,19 +1023,120 @@ mod tests {
     }
 
     #[test]
+    fn plugins_extend_languages_with_templates_of_their_own() {
+        let _turn = lock::TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = ScratchDir::new("plugin-extends");
+        let repository = root.join("plugins");
+
+        let git = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&repository).args(args).output().unwrap();
+        };
+        let write = |file: &str, content: &str| system::write_file(&repository.join(file), content).unwrap();
+        write("go/plugin.build", "// Go programs\nbuild_go = fn(name: str, directory: str = \".\") -> module { build_command(name, list(\"true\")) }\n");
+        write("go/templates/app/module.build", "// a Go program\nbuild_go(\"{{build.name}}\")\n");
+        write("vulkan/plugin.build", "// Vulkan\nvulkan = fn() -> module { bundle(\"vulkan\") }\n");
+        write(
+            "vulkan/extends/cpp/app/module.build",
+            "// doubles numbers on the GPU\n{{build.identifier}}_shaders = build_shaders(\"{{build.name}}-shaders\", list(\"shaders/*.comp\"))\nbuild_cpp(\"{{build.name}}\", list(vulkan()) + {{build.identifier}}_shaders, program = true)\n",
+        );
+        write("vulkan/extends/cpp/app/shaders/double.comp", "#version 450\n");
+        write(
+            "vulkan/extends/cpp/glfw/module.build",
+            "// a triangle in a window\n{{build.identifier}}_shaders = build_shaders(\"{{build.name}}-shaders\", list(\"shaders/*.vert\"))\nbuild_cpp(\"{{build.name}}\", list(vulkan(), \"glfw3\") + {{build.identifier}}_shaders, program = true)\n",
+        );
+        write("vulkan/extends/kotlin/app/module.build", "build_kotlin(\"{{build.name}}\", list(vulkan()), main_class = \"{{build.package}}.MainKt\")\n");
+        write("vulkan/extends/kotlin/app/src/main/kotlin/{{build.package_dir}}/Main.kt", "package {{build.package}}\n");
+        write("vulkan/extends/go/app/module.build", "use c\n\nbuild_go(\"{{build.name}}\", dependencies = list(vulkan()))\n");
+
+        system::create_dir(&repository).unwrap();
+        git(&["init", "--quiet"]);
+        git(&["add", "."]);
+        git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "plugins"]);
+
+        let plugins = PluginLookup {
+            official: format!("file://{}", repository.display()),
+            cache: root.join("cache"),
+        };
+        let example = || Ok("example.com".to_string());
+        let read = |file: &Path| system::read_file(file).unwrap().replace("\r\n", "\n");
+
+        // the language and the plugin are used, the shaders come before the program
+        let project = root.join("compute");
+        new_project("cpp:vulkan", &project, None, example, &plugins).unwrap();
+        assert_eq!(
+            read(&project.join("project.build")),
+            "use cpp\nuse vulkan\n\ncompute_shaders = build_shaders(\n    \"compute-shaders\",\n    list(\"shaders/*.comp\"),\n)\n\ncompute = build_cpp(\n    \"compute\",\n    list(vulkan()) + compute_shaders,\n    program = true,\n)\n",
+        );
+        assert_eq!(read(&project.join("shaders/double.comp")), "#version 450\n");
+
+        // in a directory of its own each call takes the directory
+        add_module("cpp:vulkan-glfw", "viewer", &project.join("project.build"), None, example, &plugins).unwrap();
+        let script = read(&project.join("project.build"));
+        assert!(script.starts_with("use cpp\nuse vulkan\n\n"), "{script}");
+        assert!(
+            script.ends_with("viewer_shaders = build_shaders(\n    \"viewer-shaders\",\n    list(\"shaders/*.vert\"),\n    directory = \"viewer\",\n)\n\nviewer = build_cpp(\n    \"viewer\",\n    list(vulkan(), \"glfw3\") + viewer_shaders,\n    program = true,\n    directory = \"viewer\",\n)\n"),
+            "{script}"
+        );
+        let error = add_module("cpp:vulkan-glfw", "other", &project.join("project.build"), None, example, &plugins).map(|_| ());
+        assert!(error.is_ok(), "{error:?}");
+        let error = add_module("cpp:vulkan", "viewer_shaders", &project.join("project.build"), None, example, &plugins).unwrap_err();
+        assert!(error.contains("already"), "{error}");
+
+        // a language of the JVM brings its repositories, the sources go below the package
+        let kotlin = root.join("app");
+        new_project("kotlin:vulkan", &kotlin, None, example, &plugins).unwrap();
+        assert_eq!(
+            read(&kotlin.join("project.build")),
+            "use kotlin\nuse vulkan\n\nrepositories = list(maven_central())\n\napp = build_kotlin(\n    \"app\",\n    list(vulkan()),\n    repositories,\n    main_class = \"com.example.app.MainKt\",\n)\n",
+        );
+        assert_eq!(read(&kotlin.join("src/main/kotlin/com/example/app/Main.kt")), "package com.example.app\n");
+
+        // a language of a plugin: its own templates first, then those of plugins extending it, with their uses
+        let go = root.join("gpu");
+        new_project("go:vulkan", &go, None, example, &plugins).unwrap();
+        assert_eq!(read(&go.join("project.build")), "use go\nuse vulkan\nuse c\n\ngpu = build_go(\n    \"gpu\",\n    dependencies = list(vulkan()),\n)\n");
+        new_project("go:app", &root.join("plain"), None, example, &plugins).unwrap();
+        assert_eq!(read(&root.join("plain/project.build")), "use go\n\nplain = build_go(\n    \"plain\",\n)\n");
+
+        let unknown = |kind: &str| new_project(kind, &root.join("unknown"), None, example, &plugins).unwrap_err();
+        let error = unknown("cpp:vulkan-sdl");
+        assert!(error.ends_with("vulkan has no sdl for cpp (cpp:vulkan, cpp:vulkan-glfw)"), "{error}");
+        let error = unknown("java:vulkan");
+        assert!(error.ends_with("vulkan extends no java"), "{error}");
+        let error = unknown("cpp:nothing");
+        assert!(error.ends_with("no plugin nothing extends cpp"), "{error}");
+
+        // the choice of new offers them
+        let choices: Vec<String> = plugin_choices(&plugins).unwrap().into_iter().map(|(kind, _)| kind).collect();
+        assert_eq!(choices, ["go", "cpp:vulkan", "cpp:vulkan-glfw", "go:vulkan", "kotlin:vulkan"]);
+
+        lock::close();
+    }
+
+    #[test]
     fn the_choice_of_kinds_says_what_they_are_and_offers_the_templates_of_plugins() {
         // every kind of build-script has a word on what it is
         for (kind, about) in project_kind_choices().into_iter().chain(module_kind_choices()) {
             assert!(!about.is_empty(), "{kind} has no description");
         }
 
+        let plugin = |name: &str, templates: &[(&str, &str)], extensions: &[(&str, &str, &str)]| crate::plugins::OfficialPlugin {
+            name: name.to_string(),
+            about: String::new(),
+            templates: templates.iter().map(|(template, about)| (template.to_string(), about.to_string())).collect(),
+            extensions: extensions.iter().map(|(language, variant, about)| (language.to_string(), variant.to_string(), about.to_string())).collect(),
+        };
         let found = vec![
-            ("go".to_string(), "Go programs".to_string(), vec![("app".to_string(), "a Go program".to_string()), ("cli".to_string(), String::new())]),
-            ("notes".to_string(), "no templates".to_string(), vec![]),
+            plugin("go", &[("app", "a Go program"), ("cli", "")], &[]),
+            plugin("notes", &[], &[]),
+            plugin("vulkan", &[], &[("cpp", "app", "compute"), ("cpp", "glfw", "a window"), ("go", "app", "")]),
         ];
         assert_eq!(plugin_template_choices(found), [
             ("go".to_string(), "a Go program (plugin)".to_string()),
             ("go:cli".to_string(), "(plugin)".to_string()),
+            ("cpp:vulkan".to_string(), "compute (plugin)".to_string()),
+            ("cpp:vulkan-glfw".to_string(), "a window (plugin)".to_string()),
+            ("go:vulkan".to_string(), "(plugin)".to_string()),
         ]);
 
         // without the official list new goes on with the kinds of build-script

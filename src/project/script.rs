@@ -86,6 +86,18 @@ pub fn with_module(
         return Err(format!("the script already has a variable {variable}"));
     }
 
+    // the modules the build call takes, like its shaders: their variables and names are new as well
+    for helper in &template.helpers {
+        if variables.contains(&helper.variable.as_str()) || helper.variable == variable {
+            return Err(format!("the script already has a variable {}", helper.variable));
+        }
+
+        let name = helper.positional.first().map(|name| name.trim_matches('"'));
+        if let Some(name) = name.filter(|name| module_names.contains(name) || *name == module.name) {
+            return Err(format!("a module named {name} is already in the script"));
+        }
+    }
+
     let module_position = match first_app {
         Some(app) if !template.is_app => Some(start_of_line_with_comments(source, app)),
         _ => None,
@@ -138,8 +150,14 @@ pub fn with_module(
         }
     }
 
-    let needs_use = !uses.iter()
-        .any(|(argument, _)| *argument == template.use_argument);
+    // the language first, then what else the template uses, each once
+    let mut missing_uses: Vec<&String> = vec![];
+    for used in std::iter::once(&template.use_argument).chain(&template.more_uses) {
+        if !uses.iter().any(|(argument, _)| argument == used) && !missing_uses.contains(&used) {
+            missing_uses.push(used);
+        }
+    }
+    let use_lines: String = missing_uses.iter().map(|used| format!("use {used}\n")).collect();
 
     let has_statements = !script.statements.is_empty();
 
@@ -148,8 +166,8 @@ pub fn with_module(
         Some((_, end)) => {
             let mut text = String::new();
 
-            if needs_use {
-                text.push_str(&format!("\nuse {}", template.use_argument));
+            for used in &missing_uses {
+                text.push_str(&format!("\nuse {used}"));
             }
 
             if let Some(repositories) = &new_repositories {
@@ -159,7 +177,7 @@ pub fn with_module(
             edits.push((*end, text));
         }
         None if has_statements => {
-            let mut text = format!("use {}\n", template.use_argument);
+            let mut text = use_lines.clone();
 
             if let Some(repositories) = &new_repositories {
                 text.push_str(&format!("\n{repositories}\n"));
@@ -175,7 +193,7 @@ pub fn with_module(
                 "\n".to_string()
             };
 
-            text.push_str(&format!("use {}\n", template.use_argument));
+            text.push_str(&use_lines);
 
             if let Some(repositories) = &new_repositories {
                 text.push_str(&format!("\n{repositories}\n"));
@@ -185,7 +203,12 @@ pub fn with_module(
         }
     }
 
-    let call = build_call(variable, module, template, repositories_argument.as_deref());
+    let mut calls: Vec<String> = template.helpers.iter()
+        .map(|helper| helper_call(helper, module))
+        .collect();
+    calls.push(build_call(variable, module, template, repositories_argument.as_deref()));
+    let call = calls.join("\n\n");
+
     match module_position {
         Some(position) => edits.push((position, format!("{call}\n\n"))),
         None if !has_statements || source.ends_with('\n') => {
@@ -217,6 +240,21 @@ fn build_call(
     if let Some(directory) = &module.directory {
         lines.push(format!("    directory = \"{directory}\","));
     }
+    lines.push(")".to_string());
+    return lines.join("\n");
+}
+
+/// `variable = function(positional..., named = value..., directory = "...")` of a module the build call takes, in the
+/// directory of the module unless the template names one
+fn helper_call(helper: &super::TemplateCall, module: &NewModule) -> String {
+    let mut lines = vec![format!("{} = {}(", helper.variable, helper.function)];
+    lines.extend(helper.positional.iter().map(|argument| format!("    {argument},")));
+    lines.extend(helper.named.iter().map(|(name, value)| format!("    {name} = {value},")));
+
+    if let Some(directory) = &module.directory && !helper.named.iter().any(|(name, _)| name == "directory") {
+        lines.push(format!("    directory = \"{directory}\","));
+    }
+
     lines.push(")".to_string());
     return lines.join("\n");
 }
@@ -612,9 +650,11 @@ mod tests {
     ) -> ModuleTemplate {
         return ModuleTemplate {
             use_argument: platform.to_string(),
+            more_uses: vec![],
             repositories,
             is_app,
             files: vec![],
+            helpers: vec![],
             function: if platform == "android" {
                 "build_android_library".to_string()
             } else {

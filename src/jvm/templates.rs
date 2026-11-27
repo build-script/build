@@ -187,9 +187,11 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
             };
             ModuleTemplate {
                 use_argument: "kotlin".to_string(),
+                more_uses: vec![],
                 repositories: MAVEN_CENTRAL,
                 is_app: true,
                 files: vec![(format!("src/main/kotlin/{package_dir}/Main.kt"), main)],
+                helpers: vec![],
                 function: "build_kotlin".to_string(),
                 positional: vec![quoted(name), dependencies],
                 named: vec![("main_class".to_string(), quoted(&format!("{package}.MainKt")))],
@@ -197,6 +199,7 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
         }
         "kotlin-library" => ModuleTemplate {
             use_argument: "kotlin".to_string(),
+            more_uses: vec![],
             repositories: MAVEN_CENTRAL,
             is_app: false,
             files: vec![(
@@ -205,12 +208,14 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
                     "package {package}\n\nfun greeting(name: String): String = \"Hello, $name, from {name}\"\n"
                 ),
             )],
+            helpers: vec![],
             function: "build_kotlin".to_string(),
             positional: vec![quoted(name), dependencies],
             named: vec![],
         },
         "java-app" => ModuleTemplate {
             use_argument: "java".to_string(),
+            more_uses: vec![],
             repositories: MAVEN_CENTRAL,
             is_app: true,
             files: vec![(
@@ -219,12 +224,14 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
                     "package {package};\n\npublic class Main {{\n    public static void main(String[] args) {{\n        System.out.println(\"Hello from {name}\");\n    }}\n}}\n"
                 ),
             )],
+            helpers: vec![],
             function: "build_java".to_string(),
             positional: vec![quoted(name), dependencies],
             named: vec![("main_class".to_string(), quoted(&format!("{package}.Main")))],
         },
         "java-library" => ModuleTemplate {
             use_argument: "java".to_string(),
+            more_uses: vec![],
             repositories: MAVEN_CENTRAL,
             is_app: false,
             files: vec![(
@@ -233,12 +240,14 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
                     "package {package};\n\npublic final class Greeting {{\n    private Greeting() {{\n    }}\n\n    public static String greeting(String name) {{\n        return \"Hello, \" + name + \", from {name}\";\n    }}\n}}\n",
                 ),
             )],
+            helpers: vec![],
             function: "build_java".to_string(),
             positional: vec![quoted(name), dependencies],
             named: vec![],
         },
         "android-app" => ModuleTemplate {
             use_argument: "android".to_string(),
+            more_uses: vec![],
             repositories: GOOGLE_AND_MAVEN_CENTRAL,
             is_app: true,
             files: vec![
@@ -257,6 +266,7 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
                     THEME.replace("{package}", package),
                 ),
             ],
+            helpers: vec![],
             function: "build_android".to_string(),
             positional: vec![
                 quoted(name),
@@ -270,6 +280,7 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
         },
         "android-library" => ModuleTemplate {
             use_argument: "android".to_string(),
+            more_uses: vec![],
             repositories: GOOGLE_AND_MAVEN_CENTRAL,
             is_app: false,
             files: vec![(
@@ -278,6 +289,7 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
                     .replace("{package}", package)
                     .replace("{name}", name),
             )],
+            helpers: vec![],
             function: "build_android_library".to_string(),
             positional: vec![
                 quoted(name),
