@@ -109,6 +109,8 @@ fn library_output() -> ModuleOutput {
         android: None,
         launch: None,
         host_library_dirs: vec![],
+        environment: vec![],
+        jvm_flags: vec![],
     });
 }
 
@@ -1687,4 +1689,60 @@ fn errors_in_plugins_name_the_script_and_the_plugin() {
 
     let (_, result) = plugin_runtime(&directory, "use \"./plugins/bad.build\"");
     assert!(result.unwrap_err().starts_with("plugins/bad.build:2:1: expected an expression"));
+}
+
+/// A bundle is what a library is in every language: bundled() hands its parts to the functions of plugins, a C
+/// module takes its modules, a command runs with what those need
+#[cfg(unix)]
+#[test]
+fn bundles_give_each_language_its_part_and_their_modules_to_all() {
+    use crate::common::test_support::ScratchDir;
+
+    let directory = ScratchDir::new("bundle");
+    let project = system::canonical_path(&directory).unwrap();
+    let script = "use c\n\
+        runtime = prebuilt_library(\"vk-runtime\", environment = list(\"VK_LAYER=on\"), jvm_flags = list(\"-Dvk=1\"))\n\
+        inner = bundle(\"inner\", ports = list(\"vulkan-headers\"), go = list(\"example.com/vk@v1\"))\n\
+        vk = bundle(\"vk\", ports = list(\"vulkan-loader\", \"vulkan-headers\"), maven = list(\"org.lwjgl:lwjgl:3.4.3\"), \
+            go = list(\"example.com/vk@v1\", \"example.com/glfw@v2\"), modules = list(runtime, inner))\n\
+        generated = build_command(\"generated\", list(\"true\"))\n\
+        ports = bundled(list(\"glfw3\", vk, generated), \"ports\")\n\
+        maven = bundled(list(\"glfw3\", vk), \"maven\")\n\
+        go = bundled(list(vk), \"go\")\n\
+        modules = bundled_modules(list(vk, generated))\n\
+        headers = build_c(\"headers\", list(vk))\n\
+        program = build_command(\"program\", list(\"true\"), dependencies = modules, run = list(\"true\"))";
+
+    let runtime = run_in(Runtime::new(&project), script).unwrap();
+    let strings = |name: &str| format!("{:?}", variable(&runtime, name));
+    assert_eq!(strings("ports"), format!("{:?}", Value::string_list(&["glfw3", "vulkan-loader", "vulkan-headers"])));
+    assert_eq!(strings("maven"), format!("{:?}", Value::string_list(&["org.lwjgl:lwjgl:3.4.3"])));
+    assert_eq!(strings("go"), format!("{:?}", Value::string_list(&["example.com/vk@v1", "example.com/glfw@v2"])));
+
+    let Value::List(modules) = variable(&runtime, "modules") else { panic!("bundled_modules gives a list") };
+    let names: Vec<String> = modules.iter()
+        .map(|module| match module {
+            Value::Module(module) => module.wait().unwrap().name.clone(),
+            other => panic!("{other:?} is no module"),
+        })
+        .collect();
+    assert_eq!(names, ["vk-runtime", "generated"], "the modules of the bundle instead of it");
+
+    let built = |name: &str| runtime.module_named(name).unwrap().wait().unwrap();
+    let ModuleOutput::Native(headers) = &built("headers").output else { panic!("build_c makes a C module") };
+    assert_eq!(headers.environment, [("VK_LAYER".to_string(), "on".to_string())], "a C module takes the modules of a bundle");
+
+    let ModuleOutput::Command(program) = &built("program").output else { panic!("a command") };
+    assert_eq!(program.runtime.environment, [("VK_LAYER".to_string(), "on".to_string())], "what the program runs with");
+
+    // the same call again, like vulkan() of two programs, is the same module; another call of the name is an error
+    let plugin = "use c\nmake = fn() -> module { bundle(\"vk\", modules = list(prebuilt_library(\"vk-runtime\", environment = list(\"A=1\")))) }\n";
+    system::write_file(&project.join("vk.build"), plugin).unwrap();
+    let twice = "use \"./vk.build\"\nfirst = make()\nsecond = make()";
+    let runtime = run_in(Runtime::new(&project), twice).unwrap();
+    let (Value::Module(first), Value::Module(second)) = (variable(&runtime, "first"), variable(&runtime, "second")) else { panic!("modules") };
+    assert!(Arc::ptr_eq(&first, &second));
+
+    let error = run_in(Runtime::new(&project), &format!("{twice}\nthird = bundle(\"vk\", ports = list(\"zlib\"))")).map(|_| ()).unwrap_err();
+    assert!(matches!(error.variant, RuntimeErrorType::DuplicateModule { ref name, .. } if name == "vk"), "{error}");
 }

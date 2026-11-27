@@ -420,6 +420,8 @@ mod tests {
                 android: None,
                 launch: None,
                 host_library_dirs: vec![],
+                environment: vec![],
+                jvm_flags: vec![],
             }),
             tests: vec![],
         });

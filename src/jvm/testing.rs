@@ -228,10 +228,12 @@ impl UnitTests<'_> {
 
         // the shared C and C++ libraries of the module and of the tests
         let library_dirs = [inputs.dependencies.host_library_dirs(), test_dependencies.host_library_dirs()].concat();
-        let java_options = match library_dirs.is_empty() {
-            true => vec![],
-            false => vec![format!("-Djava.library.path={}", join_classpath(&library_dirs)?.to_string_lossy())],
-        };
+        let mut java_options = [inputs.dependencies.jvm_flags(), test_dependencies.jvm_flags()].concat();
+        java_options.dedup();
+
+        if !library_dirs.is_empty() {
+            java_options.push(format!("-Djava.library.path={}", join_classpath(&library_dirs)?.to_string_lossy()));
+        }
 
         let (mut command, runner) = match test_main_class {
             Some(main_class) => (
@@ -260,8 +262,10 @@ impl UnitTests<'_> {
             }
         };
 
-        // like Gradle, tests run in the module directory
+        // like Gradle, tests run in the module directory, with what the C and C++ libraries below need
         command.current_dir(&inputs.directory);
+        let environment = crate::native::joined(inputs.dependencies.environment().iter().chain(&test_dependencies.environment()));
+        command.envs(environment.iter().map(|(variable, value)| (variable, value)));
 
         return Ok(ModuleTests::Run(Box::new(TestRun::new(
             runner,

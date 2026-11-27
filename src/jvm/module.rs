@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::bundle;
 use crate::common::system;
 use crate::common::up_to_date::InputFingerprint;
 use crate::language::runtime::{
@@ -272,6 +273,23 @@ pub fn module_directory(context: &BuildScriptContext, args: &Arguments) -> Resul
     return Ok(directory);
 }
 
+/// What commands wrote besides jars and sources goes into the jar like a resource, like the SPIR-V of shaders: at
+/// its path below the directory of the command, so a program loads it with getResource("/double.comp.spv")
+fn with_command_resources(mut resources: JavaResources, commands: &[Arc<BuiltModule>]) -> JavaResources {
+    for command in commands {
+        let ModuleOutput::Command(output) = &command.output else { continue };
+
+        for file in output.outputs.iter().filter(|file| !is_source(file, &["jar", "java", "kt"])) {
+            let path = file.strip_prefix(&output.output_dir)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| PathBuf::from(file.file_name().unwrap_or_default()));
+            resources.files.push((path, file.clone()));
+        }
+    }
+
+    return resources;
+}
+
 /// The jars commands wrote
 fn command_jars(commands: &[Arc<BuiltModule>]) -> Vec<PathBuf> {
     return commands.iter()
@@ -420,6 +438,8 @@ impl ModuleBuildInputs {
                 _ => None,
             }));
 
+        let dependencies_commands = dependencies.commands.clone();
+
         return Ok(ModuleBuildInputs {
             name: args.get("name")?,
             sources,
@@ -448,7 +468,7 @@ impl ModuleBuildInputs {
             } else {
                 SymbolProcessors::none()
             },
-            resources: JavaResources::read(args, &directory)?,
+            resources: with_command_resources(JavaResources::read(args, &directory)?, &dependencies_commands),
             jdk: Jdk::resolve(
                 &args.get::<String>("jdk")?,
                 jdk::DEFAULT_JDK_DISTRIBUTION,
@@ -652,6 +672,8 @@ impl ModuleBuildInputs {
                 android,
                 launch,
                 host_library_dirs: self.dependencies.host_library_dirs(),
+                environment: self.dependencies.environment(),
+                jvm_flags: self.dependencies.jvm_flags(),
             }),
             tests,
         });
@@ -666,27 +688,23 @@ impl Dependencies {
 
         for value in args.get::<Vec<Value>>(name)? {
             match value {
-                Value::String(notation) => match DependencyNotation::parse(&notation)? {
-                    DependencyNotation::Library(coordinate) => {
-                        let coordinate = with_kotlin_version(coordinate, kotlin_version);
-                        dependencies.libraries.push(coordinate)
-                    }
-                    DependencyNotation::Platform(coordinate) => {
-                        dependencies.platforms.push(coordinate)
-                    }
-                },
+                Value::String(notation) => dependencies.add_notation(&notation, kotlin_version)?,
                 Value::Module(module) => {
                     let module = module.wait()
                         .map_err(|_| format!("{} it depends on failed", module.function))?;
 
-                    match &module.output {
-                        ModuleOutput::Jvm(_) => dependencies.modules.push(module),
-                        ModuleOutput::Native(output) if output.shared_library.is_some() => dependencies.native.push(module),
-                        ModuleOutput::Native(_) => {
-                            return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
-                        }
-                        // never in modules: the JVM builds take the jvm() of every module there
-                        ModuleOutput::Command(_) => dependencies.commands.push(module),
+                    // a bundle gives its Maven libraries and the modules it holds
+                    let Some(unpacked) = bundle::unpacked(&module) else {
+                        dependencies.add_module(module)?;
+                        continue;
+                    };
+
+                    for notation in &unpacked.parts.maven {
+                        dependencies.add_notation(notation, kotlin_version)?;
+                    }
+
+                    for module in unpacked.modules {
+                        dependencies.add_module(module)?;
                     }
                 }
                 other => {
@@ -699,6 +717,38 @@ impl Dependencies {
         }
 
         return Ok(dependencies);
+    }
+
+    fn add_notation(&mut self, notation: &str, kotlin_version: &str) -> Result<(), String> {
+        match DependencyNotation::parse(notation)? {
+            DependencyNotation::Library(coordinate) => {
+                let coordinate = with_kotlin_version(coordinate, kotlin_version);
+                if !self.libraries.contains(&coordinate) {
+                    self.libraries.push(coordinate);
+                }
+            }
+            DependencyNotation::Platform(coordinate) => self.platforms.push(coordinate),
+        }
+
+        return Ok(());
+    }
+
+    fn add_module(&mut self, module: Arc<BuiltModule>) -> Result<(), String> {
+        match &module.output {
+            ModuleOutput::Jvm(_) => self.modules.push(module),
+            ModuleOutput::Native(output) if output.shared_library.is_some() => self.native.push(module),
+            // nothing to link, like a prebuilt_library with only what programs need when they run: its environment
+            // and the flags of the JVM
+            ModuleOutput::Native(output) if output.link_flags.is_empty() && output.program.is_none() => self.native.push(module),
+            ModuleOutput::Native(_) => {
+                return Err(format!("{} is no shared library: JVM modules load those of build_cpp with shared = true", module.name));
+            }
+            // never in modules: the JVM builds take the jvm() of every module there
+            ModuleOutput::Command(_) => self.commands.push(module),
+            ModuleOutput::Bundle(_) => unreachable!("bundles are unpacked"),
+        }
+
+        return Ok(());
     }
 
     pub fn is_empty(&self) -> bool {
@@ -722,6 +772,42 @@ impl Dependencies {
         dirs.retain(|dir| seen.insert(dir.clone()));
 
         return dirs;
+    }
+
+    /// What programs and tests have in their environment: that of the JVM modules and the C and C++ libraries
+    /// below, like the validation layers of Vulkan
+    pub fn environment(&self) -> Vec<(String, String)> {
+        let natives = BuiltModule::transitive(&self.native);
+        let of_modules = self.modules.iter().flat_map(|module| &module.jvm().environment);
+        let of_natives = natives.iter()
+            .filter_map(|module| match &module.output {
+                ModuleOutput::Native(output) => Some(&output.environment),
+                _ => None,
+            })
+            .flatten();
+
+        return crate::native::joined(of_modules.chain(of_natives));
+    }
+
+    /// The flags of the JVM of programs and tests: those of the JVM modules and the C and C++ libraries below,
+    /// each once
+    pub fn jvm_flags(&self) -> Vec<String> {
+        let natives = BuiltModule::transitive(&self.native);
+        let of_natives = natives.iter()
+            .filter_map(|module| match &module.output {
+                ModuleOutput::Native(output) => Some(&output.jvm_flags),
+                _ => None,
+            })
+            .flatten();
+        let mut flags: Vec<String> = vec![];
+
+        for flag in self.modules.iter().flat_map(|module| &module.jvm().jvm_flags).chain(of_natives) {
+            if !flags.contains(flag) {
+                flags.push(flag.clone());
+            }
+        }
+
+        return flags;
     }
 
     /// For annotation or symbol processors: the Maven artifacts, and the jars
@@ -1015,5 +1101,101 @@ mod tests {
                 .unwrap_err()
                 .contains("known: compose, serialization")
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use crate::command::{CommandOutput, Runtime};
+    use crate::native::NativeOutput;
+
+    use super::*;
+
+    fn module(name: &str, output: ModuleOutput, modules: Vec<Arc<BuiltModule>>) -> Arc<BuiltModule> {
+        return Arc::new(BuiltModule {
+            name: name.to_string(),
+            directory: PathBuf::from(name),
+            artifact: PathBuf::from(name),
+            modules,
+            output,
+            tests: vec![],
+        });
+    }
+
+    fn runtime_library(name: &str, environment: &[(&str, &str)], jvm_flags: &[&str]) -> Arc<BuiltModule> {
+        return native(name, environment, jvm_flags, &[]);
+    }
+
+    fn native(name: &str, environment: &[(&str, &str)], jvm_flags: &[&str], link_flags: &[&str]) -> Arc<BuiltModule> {
+        return module(name, ModuleOutput::Native(NativeOutput {
+            compile_flags: vec![],
+            link_flags: link_flags.iter().map(|flag| flag.to_string()).collect(),
+            program: None,
+            tools_dir: None,
+            shared_library: None,
+            cpp: false,
+            c_compiler: None,
+            header_dirs: vec![],
+            abi: None,
+            runtime_libraries: vec![],
+            environment: environment.iter().map(|(variable, value)| (variable.to_string(), value.to_string())).collect(),
+            jvm_flags: jvm_flags.iter().map(|flag| flag.to_string()).collect(),
+        }), vec![]);
+    }
+
+    #[test]
+    fn programs_run_with_the_environment_and_the_flags_of_the_libraries_below() {
+        let vulkan = runtime_library("vulkan-runtime", &[("VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation")], &["-Dorg.lwjgl.vulkan.libname=/sdk/libvulkan.1.dylib"]);
+        let other = runtime_library("other", &[("VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation")], &["-Dorg.lwjgl.vulkan.libname=/sdk/libvulkan.1.dylib", "-Xss4m"]);
+
+        let mut library = Dependencies::default();
+        library.add_module(vulkan).unwrap();
+        let library = module("library", ModuleOutput::Jvm(JvmOutput {
+            classes: None,
+            libraries: vec![],
+            platforms: vec![],
+            android: None,
+            launch: None,
+            host_library_dirs: vec![],
+            environment: library.environment(),
+            jvm_flags: library.jvm_flags(),
+        }), vec![]);
+
+        let mut app = Dependencies::default();
+        app.add_module(library).unwrap();
+        app.add_module(other).unwrap();
+
+        assert_eq!(app.environment(), [("VK_INSTANCE_LAYERS".to_string(), "VK_LAYER_KHRONOS_validation".to_string())], "each value once");
+        assert_eq!(app.jvm_flags(), ["-Dorg.lwjgl.vulkan.libname=/sdk/libvulkan.1.dylib", "-Xss4m"]);
+
+        // what has to be linked is no library of the JVM
+        let static_library = native("static", &[], &[], &["libstatic.a"]);
+        assert!(Dependencies::default().add_module(static_library).is_err());
+    }
+
+    #[test]
+    fn what_commands_wrote_besides_jars_and_sources_goes_into_the_jar() {
+        let command = |name: &str, outputs: &[&str]| module(name, ModuleOutput::Command(CommandOutput {
+            output_dir: PathBuf::from(format!("build/commands/{name}")),
+            outputs: outputs.iter().map(PathBuf::from).collect(),
+            run: vec![],
+            environment: vec![],
+            path: vec![],
+            runtime: Runtime::default(),
+        }), vec![]);
+
+        let shaders = command("shaders", &["build/shaders/app/double.comp.spv", "build/shaders/app/triangle.vert.spv"]);
+        let generated = command("generated", &["build/commands/generated/com/example/Generated.kt", "build/commands/generated/data/table.bin", "build/commands/generated/lib.jar"]);
+
+        let resources = with_command_resources(JavaResources::default(), &[shaders, generated]);
+        let files: Vec<(String, String)> = resources.files.iter()
+            .map(|(path, source)| (path.display().to_string().replace('\\', "/"), source.display().to_string().replace('\\', "/")))
+            .collect();
+
+        assert_eq!(files, [
+            ("double.comp.spv".to_string(), "build/shaders/app/double.comp.spv".to_string()),
+            ("triangle.vert.spv".to_string(), "build/shaders/app/triangle.vert.spv".to_string()),
+            ("data/table.bin".to_string(), "build/commands/generated/data/table.bin".to_string()),
+        ]);
     }
 }

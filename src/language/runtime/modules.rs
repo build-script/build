@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::bundle::BundleOutput;
 use crate::command::{self, CommandOutput};
 use crate::common::runner::Runner;
 use crate::jvm::{self, JvmOutput};
@@ -103,6 +104,8 @@ pub enum ModuleOutput {
     Native(NativeOutput),
     /// of build_command
     Command(CommandOutput),
+    /// of bundle(): what a library is in every language, the modules depending on it take what theirs takes
+    Bundle(BundleOutput),
 }
 
 /// Starts what a module built and returns the exit code for the process. A program of another target starts
@@ -112,6 +115,7 @@ pub fn launch(module: &BuiltModule, args: &[String], runner: &Runner) -> Result<
         ModuleOutput::Jvm(output) => return jvm::launch(module, output, args),
         ModuleOutput::Native(output) => return crate::native::launch(module, output, args, runner),
         ModuleOutput::Command(output) => return command::launch(module, output, args, runner),
+        ModuleOutput::Bundle(_) => return Err(format!("{} is a bundle, it holds libraries for other modules and runs nothing", module.name)),
     }
 }
 
@@ -347,6 +351,7 @@ impl BuiltModule {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),
             ModuleOutput::Native(output) => return output.program.is_some(),
             ModuleOutput::Command(output) => return !output.run.is_empty(),
+            ModuleOutput::Bundle(_) => return false,
         }
     }
 }

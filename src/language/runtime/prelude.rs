@@ -300,6 +300,7 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
     ];
 
     functions.extend(crate::command::builtins());
+    functions.extend(crate::bundle::builtins());
     functions.extend(crate::tool::builtins());
     return functions;
 }

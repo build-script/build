@@ -13,6 +13,9 @@ const PLUGIN_FILE: &str = "plugin.build";
 /// next to plugin.build: a directory per template of `build new` and `build add`
 pub const TEMPLATES: &str = "templates";
 
+/// next to plugin.build: extends/<language>/<variant>/, templates of a language with the plugin, like cpp:vulkan
+pub const EXTENDS: &str = "extends";
+
 /// the build call of a template
 pub const MODULE_BUILD: &str = "module.build";
 
@@ -229,7 +232,12 @@ fn choose_release(source: &PluginSource, previous: Option<&str>) -> Result<(Stri
 
 /// The templates of the plugin in `plugin_dir`: the directories below templates/ with a module.build
 pub fn template_names(plugin_dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(plugin_dir.join(TEMPLATES))
+    return template_names_in(&plugin_dir.join(TEMPLATES));
+}
+
+/// The directories with a module.build
+fn template_names_in(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(directory)
         .into_iter()
         .flatten()
         .flatten()
@@ -239,6 +247,32 @@ pub fn template_names(plugin_dir: &Path) -> Vec<String> {
 
     names.sort();
     return names;
+}
+
+/// The variants of the plugin in `plugin_dir` for the language: the directories below extends/<language>/ with a
+/// module.build
+pub fn extension_names(plugin_dir: &Path, language: &str) -> Vec<String> {
+    return template_names_in(&plugin_dir.join(EXTENDS).join(language));
+}
+
+/// The languages the plugin in `plugin_dir` extends with their variants
+fn extensions(plugin_dir: &Path) -> Vec<(String, Vec<String>)> {
+    let mut languages: Vec<String> = std::fs::read_dir(plugin_dir.join(EXTENDS))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    languages.sort();
+
+    return languages.into_iter()
+        .map(|language| {
+            let variants = extension_names(plugin_dir, &language);
+            return (language, variants);
+        })
+        .filter(|(_, variants)| !variants.is_empty())
+        .collect();
 }
 
 /// The first comment of a file: what a plugin or a template is for
@@ -252,9 +286,20 @@ fn first_comment(file: &Path) -> String {
         .to_string();
 }
 
-/// The official plugins of the default branch: their names, the first comment of their plugin.build and
-/// their templates with the first comment of their module.build
-pub fn official_plugins(repository: &str, cache: &Path) -> Result<Vec<(String, String, Vec<(String, String)>)>, String> {
+/// An official plugin: its name, what its plugin.build says first, its templates and the languages it extends
+#[derive(Debug, PartialEq)]
+pub struct OfficialPlugin {
+    pub name: String,
+    pub about: String,
+    /// with the first comment of their module.build
+    pub templates: Vec<(String, String)>,
+    /// language, variant and the first comment of its module.build
+    pub extensions: Vec<(String, String, String)>,
+}
+
+/// The official plugins of the default branch: their names, the first comment of their plugin.build, their
+/// templates and the languages they extend
+pub fn official_plugins(repository: &str, cache: &Path) -> Result<Vec<OfficialPlugin>, String> {
     let head = git::remote_references(repository, &["HEAD"])?;
     let Some((_, commit)) = head.into_iter().next() else {
         return Err(format!("{repository} has no default branch"));
@@ -278,10 +323,27 @@ pub fn official_plugins(repository: &str, cache: &Path) -> Result<Vec<(String, S
             })
             .collect();
 
-        plugins.push((entry.file_name().to_string_lossy().to_string(), first_comment(&file), templates));
+        let extensions = extensions(&entry.path())
+            .into_iter()
+            .flat_map(|(language, variants)| {
+                let directory = entry.path().join(EXTENDS).join(&language);
+                return variants.into_iter()
+                    .map(move |variant| {
+                        let about = first_comment(&directory.join(&variant).join(MODULE_BUILD));
+                        return (language.clone(), variant, about);
+                    });
+            })
+            .collect();
+
+        plugins.push(OfficialPlugin {
+            name: entry.file_name().to_string_lossy().to_string(),
+            about: first_comment(&file),
+            templates,
+            extensions,
+        });
     }
 
-    plugins.sort();
+    plugins.sort_by(|first, second| first.name.cmp(&second.name));
     return Ok(plugins);
 }
 
@@ -385,7 +447,12 @@ mod tests {
         assert!(missing.contains("has no zig/plugin.build"), "{missing}");
 
         let names = official_plugins(&url, &cache).unwrap();
-        assert_eq!(names, [("go".to_string(), "Go programs".to_string(), vec![])]);
+        assert_eq!(names, [OfficialPlugin {
+            name: "go".to_string(),
+            about: "Go programs".to_string(),
+            templates: vec![],
+            extensions: vec![],
+        }]);
         lock::close();
     }
 }

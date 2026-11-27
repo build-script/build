@@ -47,6 +47,8 @@ pub fn prebuilt_library_signature() -> FunctionSignature {
         .strings("shared_libraries")
         // NAME=value for the programs linking it when they run, like VK_ADD_LAYER_PATH
         .strings("environment")
+        // for the JVM of the Kotlin and Java programs depending on it when they run, like -Dname=value
+        .strings("jvm_flags")
         // C++ is in it: what links it links with the C++ compiler
         .with_default("cpp", Type::Bool, false)
         .with_default("directory", Type::String, ".")
@@ -66,6 +68,7 @@ pub fn prebuilt_library(context: &BuildScriptContext, args: &Arguments) -> Resul
         args.get("link_flags")?,
         &args.get::<Vec<String>>("shared_libraries")?,
         &args.get::<Vec<String>>("environment")?,
+        args.get("jvm_flags")?,
         args.get("cpp")?,
     )?;
 
@@ -91,6 +94,7 @@ fn prebuilt_output(
     link_flags: Vec<String>,
     shared_libraries: &[String],
     environment: &[String],
+    jvm_flags: Vec<String>,
     cpp: bool,
 ) -> Result<NativeOutput, String> {
     let existing = |path: &String| -> Result<PathBuf, String> {
@@ -125,6 +129,7 @@ fn prebuilt_output(
         abi: None,
         runtime_libraries: shared_libraries.iter().map(existing).collect::<Result<Vec<_>, _>>()?,
         environment,
+        jvm_flags,
     });
 }
 
@@ -346,6 +351,7 @@ fn library_module(
             abi: toolchain.as_ref().map(Toolchain::abi),
             runtime_libraries: vec![],
             environment: vec![],
+            jvm_flags: vec![],
         }),
         tests: vec![],
     }));
@@ -410,6 +416,7 @@ mod prebuilt_tests {
             strings(&["-lvulkan"]),
             &strings(&["sdk/lib/libVkLayer_khronos_validation.dylib"]),
             &strings(&["VK_ADD_LAYER_PATH=/sdk/share/vulkan/explicit_layer.d"]),
+            strings(&["-Dorg.lwjgl.vulkan.libname=/sdk/lib/libvulkan.1.dylib"]),
             false,
         )
         .unwrap();
@@ -418,11 +425,12 @@ mod prebuilt_tests {
         assert_eq!(output.link_flags, ["-lvulkan"]);
         assert_eq!(output.runtime_libraries, [directory.join("sdk/lib/libVkLayer_khronos_validation.dylib")]);
         assert_eq!(output.environment, [("VK_ADD_LAYER_PATH".to_string(), "/sdk/share/vulkan/explicit_layer.d".to_string())]);
+        assert_eq!(output.jvm_flags, ["-Dorg.lwjgl.vulkan.libname=/sdk/lib/libvulkan.1.dylib"]);
 
         // a path of another version of the SDK, an environment without a value
-        let error = prebuilt_output("vulkan", &directory, &strings(&["sdk/1.4/include"]), &[], vec![], &[], &[], false).unwrap_err();
+        let error = prebuilt_output("vulkan", &directory, &strings(&["sdk/1.4/include"]), &[], vec![], &[], &[], vec![], false).unwrap_err();
         assert!(error.starts_with("vulkan: ") && error.ends_with("does not exist"), "{error}");
-        let error = prebuilt_output("vulkan", &directory, &[], &[], vec![], &[], &strings(&["VK_ADD_LAYER_PATH"]), false).unwrap_err();
+        let error = prebuilt_output("vulkan", &directory, &[], &[], vec![], &[], &strings(&["VK_ADD_LAYER_PATH"]), vec![], false).unwrap_err();
         assert_eq!(error, "vulkan: environment takes NAME=value, not VK_ADD_LAYER_PATH");
     }
 }

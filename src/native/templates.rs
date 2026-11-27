@@ -57,10 +57,12 @@ pub fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate>
 
     return Some(ModuleTemplate {
         use_argument: platform.to_string(),
+        more_uses: vec![],
         // the ports come from vcpkg
         repositories: &[],
         is_app,
         files,
+        helpers: vec![],
         function: function.to_string(),
         positional: vec![format!("\"{name}\""), format!("list({})", modules.join(", "))],
         named: match is_app {
