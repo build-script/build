@@ -16,4 +16,3 @@ app = build_kotlin(
     main_class = "AppKt",
     directory = "app",
 )
-
