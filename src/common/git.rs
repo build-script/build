@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use super::{lock, system};
 
 /// File in a checkout with its url, reference and commit
-const MARKER: &str = ".build-script-git";
+const MARKER: &str = ".xkit-git";
 
 /// The checkouts the script uses, with where their modules build in the project
 static CHECKOUTS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
@@ -215,7 +215,7 @@ fn checkout_to(url: &str, reference: &str, expected: Option<&str>, target: &Path
 
         if let Some(expected) = expected && !commit.eq_ignore_ascii_case(expected) {
             return Err(format!(
-                "{reference} of {url} is at {commit} now, project.lock has {expected}: build --refresh takes the new one"
+                "{reference} of {url} is at {commit} now, project.lock has {expected}: xkit --refresh takes the new one"
             ));
         }
 

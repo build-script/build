@@ -224,7 +224,7 @@ fn choose(answer: &str, count: usize) -> Result<usize, String> {
         .ok_or_else(|| "cancelled".to_string());
 }
 
-/// When no device is connected: an emulator build-script set up, or a new one
+/// When no device is connected: an emulator xkit set up, or a new one
 /// the user sets up here. Returns its serial once it booted.
 fn start_or_set_up_emulator(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result<String, String> {
     if !io::stdin().is_terminal() {
@@ -239,7 +239,7 @@ fn start_or_set_up_emulator(adb: &Path, sdk_root: &Path, min_sdk: i64) -> Result
     let name = if avds.is_empty() {
         set_up_virtual_device(sdk_root, &home, min_sdk)?
     } else {
-        println!("\nEmulators set up by build-script:");
+        println!("\nEmulators set up by xkit:");
         for (index, avd) in avds.iter().enumerate() {
             println!("  {}) {}", index + 1, avd.display);
         }
@@ -362,7 +362,7 @@ fn confirm_download(sdk_root: &Path, main_catalog: &SdkCatalog, image: &SystemIm
     return Ok(());
 }
 
-/// Starts the emulator in the background, it keeps running after build-script
+/// Starts the emulator in the background, it keeps running after xkit
 /// ends. Waits until Android booted.
 fn start_emulator(
     adb: &Path,
@@ -399,7 +399,7 @@ fn start_emulator(
         .args(["-no-snapshot-save", "-no-boot-anim"])
         // e.g. -no-window for machines without a display
         .args(
-            std::env::var("BUILD_SCRIPT_EMULATOR_ARGS")
+            std::env::var("XKIT_EMULATOR_ARGS")
                 .unwrap_or_default()
                 .split_whitespace(),
         )
@@ -410,7 +410,7 @@ fn start_emulator(
         .stdout(log)
         .stderr(log_err);
 
-    // its own process group, so Ctrl+C in build-script does not stop it
+    // its own process group, so Ctrl+C in xkit does not stop it
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -539,7 +539,7 @@ fn system_images(catalog: &SdkCatalog, abi: &str, min_sdk: i64) -> Vec<SystemIma
     return images;
 }
 
-/// The AVDs build-script set up
+/// The AVDs xkit set up
 fn list_virtual_devices(home: &Path) -> Vec<AndroidVirtualDevice> {
     let Ok(entries) = fs::read_dir(home) else {
         return vec![];
@@ -571,7 +571,7 @@ fn list_virtual_devices(home: &Path) -> Vec<AndroidVirtualDevice> {
 /// Writes the files avdmanager would write, returns the AVD name
 fn create_virtual_device(home: &Path, image: &SystemImage) -> Result<String, String> {
     let name = format!(
-        "build-script-api{}-{}",
+        "xkit-api{}-{}",
         image.version.replace('.', "_"),
         image.tag
     );
@@ -843,7 +843,7 @@ impl SystemImage {
     }
 }
 
-/// An emulator (AVD) set up by build-script
+/// An emulator (AVD) set up by xkit
 #[derive(Debug, PartialEq)]
 struct AndroidVirtualDevice {
     name: String,
@@ -1088,7 +1088,7 @@ INSTRUMENTATION_CODE: -1";
         };
 
         let name = create_virtual_device(&home, &image).unwrap();
-        assert_eq!(name, "build-script-api36-google_apis_playstore");
+        assert_eq!(name, "xkit-api36-google_apis_playstore");
 
         let config = fs::read_to_string(home.join(format!("{name}.avd/config.ini"))).unwrap();
 

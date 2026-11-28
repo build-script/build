@@ -641,13 +641,13 @@ mod tests {
         ));
 
         let missing = MavenRepository::parse(
-            "https://nexus.example.com credentials(BUILD_SCRIPT_TEST_UNSET_USER, BUILD_SCRIPT_TEST_UNSET_TOKEN)",
+            "https://nexus.example.com credentials(XKIT_TEST_UNSET_USER, XKIT_TEST_UNSET_TOKEN)",
             project,
         )
         .unwrap();
         let error = missing.credentials()
             .err()
             .unwrap();
-        assert!(error.ends_with("but BUILD_SCRIPT_TEST_UNSET_USER is not set"), "{error}");
+        assert!(error.ends_with("but XKIT_TEST_UNSET_USER is not set"), "{error}");
     }
 }

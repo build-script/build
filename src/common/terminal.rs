@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 /// Choices shown at the same time, the others follow while moving
 const SHOWN_CHOICES: usize = 10;
 
-/// Few colors: orange for the modules and what stands out, yellow for the tools build-script brings,
+/// Few colors: orange for the modules and what stands out, yellow for the tools xkit brings,
 /// red only when something failed
 #[derive(Clone, Copy)]
 pub enum Color {
@@ -301,7 +301,7 @@ pub fn log(module: &str, message: &str) {
     }
 }
 
-/// A line about a tool build-script brings itself: `[vcpkg] Installing`, the tool in yellow
+/// A line about a tool xkit brings itself: `[vcpkg] Installing`, the tool in yellow
 pub fn log_tool(tool: &str, message: &str) {
     println!("[{}] {message}", paint(tool, Color::Secondary));
 }

@@ -87,8 +87,8 @@ fn conditions_choose_their_block() {
 fn environment_variables_with_a_default() {
     let runtime = run(r#"
         path = env("PATH")
-        missing = env("BUILD_SCRIPT_SURELY_NOT_SET", default = "fallback")
-        has = has_env("PATH") && !has_env("BUILD_SCRIPT_SURELY_NOT_SET")
+        missing = env("XKIT_SURELY_NOT_SET", default = "fallback")
+        has = has_env("PATH") && !has_env("XKIT_SURELY_NOT_SET")
     "#)
     .unwrap();
 
@@ -96,8 +96,8 @@ fn environment_variables_with_a_default() {
     assert_eq!(string(&runtime, "missing"), "fallback");
     assert_eq!(string(&runtime, "has"), "true");
 
-    let error = run(r#"x = env("BUILD_SCRIPT_SURELY_NOT_SET")"#).err().unwrap();
-    assert!(error.to_string().contains("BUILD_SCRIPT_SURELY_NOT_SET is not set"), "{error}");
+    let error = run(r#"x = env("XKIT_SURELY_NOT_SET")"#).err().unwrap();
+    assert!(error.to_string().contains("XKIT_SURELY_NOT_SET is not set"), "{error}");
 }
 
 /// A JVM library that cannot be started
@@ -354,7 +354,7 @@ fn build_functions_need_use() {
     );
 
     // neither a platform nor in the official list, which is not there either
-    let runtime = Runtime::new(".").with_official_plugins("file:///nonexistent/build-script-plugins");
+    let runtime = Runtime::new(".").with_official_plugins("file:///nonexistent/xkit-plugins");
     let error = run_in(runtime, "use cobol").err().unwrap();
     assert!(matches!(&error.variant, RuntimeErrorType::UnknownPlugin { name, .. } if name == "cobol"));
     assert!(error.to_string().starts_with("cobol is neither a platform nor an official plugin (platforms: kotlin"), "{error}");
@@ -787,7 +787,7 @@ fn scripts_ask_for_their_target_and_for_the_machine() {
     assert_eq!(runtime.context.build_dir(std::path::Path::new("app")), PathBuf::from("app/build").join(other.name()));
     assert_eq!(Runtime::new(".").with_target(Some(host)).context.target, None);
 
-    // build --release, which plugins ask for
+    // xkit --release, which plugins ask for
     let mode = "mode = if release() { \"release\" } else { \"debug\" }";
     assert_eq!(string(&run(mode).unwrap(), "mode"), "debug");
     assert_eq!(string(&run_in(Runtime::new(".").with_release(true), mode).unwrap(), "mode"), "release");
@@ -989,7 +989,7 @@ fn commands_write_their_files_and_take_only_listed_libraries() {
     system::write_file(&file("taken.txt"), "a@1\nb@2\n").unwrap();
     system::write_file(&file("src/main.txt"), "main, which takes b").unwrap();
     let error = build_in(&directory, &script("list(\"a@1\")"), TestSelection::None).unwrap_err();
-    assert!(error.ends_with("m uses b@2, which its libraries do not list: build install b@2"), "{error}");
+    assert!(error.ends_with("m uses b@2, which its libraries do not list: xkit install b@2"), "{error}");
 
     build_in(&directory, &script("list(\"a@1\", \"b@2\")"), TestSelection::None).unwrap();
     assert_eq!(runs(), 4, "listed now, it builds");
@@ -1124,7 +1124,7 @@ fn commands_get_the_flags_and_the_compiler_of_their_c_libraries() {
     assert_eq!(lines.len(), 3, "{first}");
     assert!(!lines[0].is_empty() && !lines[0].contains('{'), "the compiler of the library: {first}");
     assert!(lines[1].contains(&format!("-I{}", file("greet/include").display())), "{first}");
-    assert!(lines[1].contains("-DBUILD_SCRIPT_HEADERS="), "{first}");
+    assert!(lines[1].contains("-DXKIT_HEADERS="), "{first}");
     assert!(lines[2].starts_with(&file("greet/build/lib/libgreet.a").display().to_string()), "{first}");
     assert_eq!(system::read_file(&file("build/commands/plain/compiler")).unwrap().trim(), std::env::var("CC").unwrap_or("unset".to_string()));
 
@@ -1180,7 +1180,7 @@ fn scripts_name_the_targets_of_their_modules() {
     assert!(file("build/commands/info/info").exists(), "host_target() names the machine");
     assert_eq!(built.len(), 2);
 
-    // build --target instead of what the script names
+    // xkit --target instead of what the script names
     system::remove_dir(&file("build")).unwrap();
     build_for(&directory, &info("list(\"linux-aarch64\")"), &[windows]).unwrap();
     assert!(file("build/windows-x86_64/commands/info/info").exists());
@@ -1555,7 +1555,7 @@ fn commands_take_an_environment_a_path_and_run_and_test() {
     let counted = tested(&format!("echo '{report}' > {{test_reports}}/results.xml; exit 1"));
     assert!(matches!(counted, TestOutcome::Failed { counts: Some(TestCounts { tests: 2, failed: 1, .. }), .. }), "{counted:?}");
 
-    // without build test the tests are not prepared
+    // without xkit test the tests are not prepared
     let built = build_in(&directory, "build_command(\"checked\", list(\"true\"), test = list(\"true\"))", TestSelection::None).unwrap();
     assert!(built[0].tests.is_empty());
 }
@@ -1674,7 +1674,7 @@ fn errors_in_plugins_name_the_script_and_the_plugin() {
 
     let directory = ScratchDir::new("plugin-errors");
     let write = |name: &str, content: &str| system::write_file(&directory.join(name), content).unwrap();
-    write("plugins/tools.build", "broken = fn () -> str {\n    undefined_name\n}\nfails = fn () -> module {\n    build_command(\"fails\", list(\"no-such-program-of-build-script\"))\n}\n");
+    write("plugins/tools.build", "broken = fn () -> str {\n    undefined_name\n}\nfails = fn () -> module {\n    build_command(\"fails\", list(\"no-such-program-of-xkit\"))\n}\n");
     write("plugins/bad.build", "x = (\n");
 
     let (_, result) = plugin_runtime(&directory, "use \"./plugins/tools.build\"\nbroken()");
@@ -1684,7 +1684,7 @@ fn errors_in_plugins_name_the_script_and_the_plugin() {
 
     let (_, result) = plugin_runtime(&directory, "use \"./plugins/tools.build\"\n\nfails()");
     let error = result.unwrap_err();
-    assert!(error.starts_with("project.build:3:1: fails: build_command: could not start no-such-program-of-build-script"), "{error}");
+    assert!(error.starts_with("project.build:3:1: fails: build_command: could not start no-such-program-of-xkit"), "{error}");
     assert!(error.ends_with("(in plugins/tools.build:5:5)"), "{error}");
 
     let (_, result) = plugin_runtime(&directory, "use \"./plugins/bad.build\"");

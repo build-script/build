@@ -20,7 +20,7 @@ use crate::language::runtime::{
 /// stands for the directory of the command in its arguments: build/commands/<name>
 const OUTPUT_PLACEHOLDER: &str = "{output}";
 
-/// stands for the directory the tests write JUnit XML reports to, build-script counts them
+/// stands for the directory the tests write JUnit XML reports to, xkit counts them
 const TEST_REPORTS_PLACEHOLDER: &str = "{test_reports}";
 
 /// In `environment`, for tools that compile and link against the C and C++ libraries among the dependencies
@@ -37,13 +37,13 @@ const HEADER_EXTENSIONS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "inl
 /// and run at the same time
 static WRITERS: LazyLock<Mutex<HashMap<PathBuf, (String, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// What `build-script run` and the modules using it need of a command
+/// What `xkit run` and the modules using it need of a command
 #[derive(Debug, Hash)]
 pub struct CommandOutput {
     /// {output}
     pub output_dir: PathBuf,
     pub outputs: Vec<PathBuf>,
-    /// what `build-script run` starts, empty for nothing
+    /// what `xkit run` starts, empty for nothing
     pub run: Vec<String>,
     /// for `run` as well
     pub environment: Vec<(String, String)>,
@@ -170,7 +170,7 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .strings("libraries")
             .with_default("direct_libraries", command_line(), Value::List(vec![]))
             // prints {name} in {version}, latest without one, like direct_libraries or the version alone like npm
-            // view: what build install writes
+            // view: what xkit install writes
             .with_default("resolve", Type::list(Type::String), Value::List(vec![]))
             .returns(Type::Module)
             // a program that writes a file once for every target, a compiler of Go once per target
@@ -290,7 +290,7 @@ fn embedded_header(file_name: &str, bytes: &[u8], words: bool) -> Result<String,
     };
 
     return Ok(format!(
-        "// Embedded by build-script from {file_name}, changes here are lost\n#pragma once\n\n#include <stddef.h>\n#include <stdint.h>\n\n\
+        "// Embedded by xkit from {file_name}, changes here are lost\n#pragma once\n\n#include <stddef.h>\n#include <stdint.h>\n\n\
          static const {kind} {identifier}[] = {{\n{lines}\n}};\nstatic const size_t {identifier}_size = {};\n",
         bytes.len()
     ));
@@ -815,7 +815,7 @@ impl CLibraries {
         headers.dedup();
 
         if !headers.is_empty() {
-            libraries.compile_flags.push(format!("-DBUILD_SCRIPT_HEADERS={:016x}", up_to_date::files_hash(&headers)?));
+            libraries.compile_flags.push(format!("-DXKIT_HEADERS={:016x}", up_to_date::files_hash(&headers)?));
         }
 
         libraries.compile_flags = crate::native::without_repeated_flags(libraries.compile_flags);
@@ -997,7 +997,7 @@ fn checked_libraries(module: &str, listed: &[String], taken: &str) -> Result<Vec
 
     for library in &taken {
         match listing(library) {
-            None => unlisted.push(format!("{module} uses {library}, which its libraries do not list: build install {library}")),
+            None => unlisted.push(format!("{module} uses {library}, which its libraries do not list: xkit install {library}")),
             Some(listed) => {
                 let (wanted, version) = (split_library(listed).1, split_library(library).1);
 
@@ -1021,7 +1021,7 @@ fn checked_libraries(module: &str, listed: &[String], taken: &str) -> Result<Vec
     return Ok(notes);
 }
 
-/// What build install writes for `library` of the command `args` describe: what its `resolve` prints with
+/// What xkit install writes for `library` of the command `args` describe: what its `resolve` prints with
 /// {name} and {version}, latest without one. None when it has no resolve.
 pub fn resolve(context: &BuildScriptContext, args: &Arguments, library: &str) -> Result<Option<String>, String> {
     let resolve: Vec<String> = args.get("resolve")?;
@@ -1041,7 +1041,7 @@ pub fn resolve(context: &BuildScriptContext, args: &Arguments, library: &str) ->
 
     let mut process = Command::new(&line[0]);
     process.args(&line[1..]).current_dir(&directory);
-    // build install builds no C library: entries of theirs are left out
+    // xkit install builds no C library: entries of theirs are left out
     let environment = environment(args, &output_dir, &CLibraries::default())?;
     set_environment(&mut process, &environment, &path(args, &directory, &output_dir)?)?;
 
@@ -1052,7 +1052,7 @@ pub fn resolve(context: &BuildScriptContext, args: &Arguments, library: &str) ->
         .map_err(|problem| format!("{} for {name} {problem}", what(&line)));
 }
 
-/// `build-script run` of a command: its `run` with the arguments after --, in its directory
+/// `xkit run` of a command: its `run` with the arguments after --, in its directory
 pub fn launch(module: &BuiltModule, output: &CommandOutput, args: &[String], runner: &Runner) -> Result<i32, String> {
     let Some((program, arguments)) = output.run.split_first() else {
         return Err(format!("{} has nothing to run, build_command(run = ...) names what", module.name));
@@ -1261,8 +1261,8 @@ mod tests {
         ]);
 
         let error = checked_libraries("m", &listed, "a@v1\nc@v4\nd v5").unwrap_err();
-        assert_eq!(error, "m uses c@v4, which its libraries do not list: build install c@v4\n\
-                           m uses d@v5, which its libraries do not list: build install d@v5");
+        assert_eq!(error, "m uses c@v4, which its libraries do not list: xkit install c@v4\n\
+                           m uses d@v5, which its libraries do not list: xkit install d@v5");
 
         assert_eq!(checked_libraries("m", &[], "").unwrap(), Vec::<String>::new());
     }

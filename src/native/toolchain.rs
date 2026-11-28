@@ -1,5 +1,5 @@
 // The compilers of C and C++ modules: those of the system, zig, which brings clang, libc and libc++ for
-// every target in one download, or the GCC build-script keeps, the same on every machine
+// every target in one download, or the GCC xkit keeps, the same on every machine
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,7 +34,7 @@ pub enum Kind {
     System,
     /// zig cc and zig c++, for this machine and other desktop systems
     Zig,
-    /// the GCC build-script keeps, for this machine
+    /// the GCC xkit keeps, for this machine
     Gcc,
     /// the clang of the NDK, for an Android target
     Ndk(Ndk),
@@ -557,7 +557,7 @@ mod tests {
         let error = Toolchain::for_target("zig", Target::named("android-aarch64"), None).err().unwrap();
         assert!(error.contains("NDK"), "{error}");
 
-        // the GCC build-script keeps builds for this machine
+        // the GCC xkit keeps builds for this machine
         let error = Toolchain::for_target("gcc", Some(other), None).err().unwrap();
         assert!(error.contains("toolchain = \"gcc\" builds for this machine"), "{error}");
     }

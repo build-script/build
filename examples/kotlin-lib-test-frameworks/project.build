@@ -1,4 +1,4 @@
-// One module per test framework, all run with `build test`
+// One module per test framework, all run with `xkit test`
 use kotlin
 
 repositories = list(maven_central())
@@ -6,7 +6,7 @@ repositories = list(maven_central())
 /* JUnit 4 runs on the JUnit Platform's vintage engine, the test is Java */
 build_kotlin("junit4", list(), repositories, directory = "junit4", test_dependencies = list("junit:junit:4.13.2"))
 
-// JUnit 5 without its engine, build-script adds it
+// JUnit 5 without its engine, xkit adds it
 build_kotlin("junit5", list(), repositories, directory = "junit5", test_dependencies = list("org.junit.jupiter:junit-jupiter-api:5.14.4"))
 
 // kotlin("test") without a version, bound to JUnit 5 like by the Kotlin Gradle plugin

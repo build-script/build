@@ -196,7 +196,7 @@ pub fn build_cmake(context: &BuildScriptContext, args: &Arguments) -> Result<Val
     fingerprint.add(&options);
     fingerprint.add(&environment);
     fingerprint.add(&cmake);
-    // its contents: a new build-script may write another one
+    // its contents: a new xkit may write another one
     fingerprint.add(toolchain_file.as_ref().map(|file| std::fs::read_to_string(file).unwrap_or_default()));
 
     // release builds, a debug LLVM is huge

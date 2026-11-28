@@ -92,7 +92,7 @@ fn quoted(text: &str) -> String {
 }
 
 impl Type {
-    /// One of the names of build --target, a misspelled one gets the nearest as a hint
+    /// One of the names of xkit --target, a misspelled one gets the nearest as a hint
     pub fn target() -> Self {
         return Type::Union(crate::common::target::Target::names().into_iter().map(Type::Variant).collect());
     }

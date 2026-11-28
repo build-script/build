@@ -1,4 +1,4 @@
-// What build-script builds for: the machine it runs on, or another system. A target is named
+// What xkit builds for: the machine it runs on, or another system. A target is named
 // <system>-<processor>, Linux also with -musl, like linux-aarch64, linux-x86_64-musl or windows-x86_64.
 
 /// The system a target runs
@@ -54,7 +54,7 @@ pub const TARGETS: &[Target] = &[
 ];
 
 impl Target {
-    /// The machine build-script runs on. On a system it has no release for, the closest one: a script still
+    /// The machine xkit runs on. On a system it has no release for, the closest one: a script still
     /// learns the truth from host_operating_system() and host_architecture().
     pub fn host() -> Target {
         let os = match std::env::consts::OS {

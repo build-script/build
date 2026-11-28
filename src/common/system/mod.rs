@@ -1,4 +1,4 @@
-// The host: where build-script keeps its data, files and directories, processes, downloads and archives
+// The host: where xkit keeps its data, files and directories, processes, downloads and archives
 mod archive;
 mod files;
 mod home;

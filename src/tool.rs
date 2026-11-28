@@ -13,9 +13,9 @@ use crate::language::runtime::{FunctionParameters, Type, Value, builtin};
 use crate::project;
 
 /// in every installed tool: the URL it came from and the SHA-256 of its archive
-const MARKER: &str = ".build-script-tool";
+const MARKER: &str = ".xkit-tool";
 
-/// the tools taken from BUILD_SCRIPT_TOOL_<NAME>, said once per build
+/// the tools taken from XKIT_TOOL_<NAME>, said once per build
 static INSTALLED_ELSEWHERE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 pub fn builtins() -> Vec<(&'static str, Value)> {
@@ -30,7 +30,7 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             // an installer instead of an archive, run once with {archive}, the download or what an archive of it
             // holds, and {directory}, where the tool goes: like an SDK installed without asking
             .strings("install")
-            // the URL of its license: the first download asks for it once, build config license.<name> accepted
+            // the URL of its license: the first download asks for it once, xkit config license.<name> accepted
             // without a terminal
             .with_default("license", Type::String, "")
             .returns(Type::String),
@@ -192,7 +192,7 @@ fn accept_license(tool: &ToolArchive, settings: &mut Settings, ask: impl FnOnce(
     match ask(&question)?.as_deref() {
         Some("y" | "yes") => return settings.set(&key, project::ACCEPTED),
         Some(_) => return Err(format!("{} is not installed: its license at {} is not accepted", tool.name, tool.license)),
-        None => return Err(format!("{} comes under the license at {}: read it, then build config {key} {}", tool.name, tool.license, project::ACCEPTED)),
+        None => return Err(format!("{} comes under the license at {}: read it, then xkit config {key} {}", tool.name, tool.license, project::ACCEPTED)),
     }
 }
 
@@ -268,7 +268,7 @@ fn mirrored(url: &str, mirrors: &[(String, String)]) -> String {
         .map_or_else(|| url.to_string(), |(prefix, mirror)| format!("{mirror}{}", &url[prefix.len()..]));
 }
 
-/// The mirror.<URL> = <URL> settings of build-script config
+/// The mirror.<URL> = <URL> settings of xkit config
 fn mirrors() -> Result<Vec<(String, String)>, String> {
     return Ok(Settings::load()?
         .with_prefix(project::MIRROR)
@@ -277,7 +277,7 @@ fn mirrors() -> Result<Vec<(String, String)>, String> {
         .collect());
 }
 
-/// BUILD_SCRIPT_TOOL_GO for go: a tool installed otherwise, like in a CI image or by Nix
+/// XKIT_TOOL_GO for go: a tool installed otherwise, like in a CI image or by Nix
 fn installed_elsewhere(name: &str) -> Result<Option<PathBuf>, String> {
     let variable = override_variable(name);
     let Some(directory) = std::env::var_os(&variable) else {
@@ -305,7 +305,7 @@ fn override_variable(name: &str) -> String {
         .map(|character| if character.is_ascii_alphanumeric() { character.to_ascii_uppercase() } else { '_' })
         .collect();
 
-    return format!("BUILD_SCRIPT_TOOL_{name}");
+    return format!("XKIT_TOOL_{name}");
 }
 
 #[cfg(test)]
@@ -443,7 +443,7 @@ mod tests {
         };
 
         let error = accept_license(&tool, &mut settings, |_| Ok(None)).unwrap_err();
-        assert_eq!(error, "vulkan-sdk comes under the license at https://vulkan.lunarg.com/license: read it, then build config license.vulkan-sdk accepted");
+        assert_eq!(error, "vulkan-sdk comes under the license at https://vulkan.lunarg.com/license: read it, then xkit config license.vulkan-sdk accepted");
 
         let error = accept_license(&tool, &mut settings, |_| Ok(Some("n".to_string()))).unwrap_err();
         assert!(error.contains("is not accepted"), "{error}");
@@ -475,6 +475,6 @@ mod tests {
 
         assert_eq!(archive_name("https://go.dev/dl/go1.27.4.linux-amd64.tar.gz?download=1").unwrap(), "go1.27.4.linux-amd64.tar.gz");
         assert!(archive_name("https://go.dev/dl/").is_err());
-        assert_eq!(override_variable("protoc-gen"), "BUILD_SCRIPT_TOOL_PROTOC_GEN");
+        assert_eq!(override_variable("protoc-gen"), "XKIT_TOOL_PROTOC_GEN");
     }
 }

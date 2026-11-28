@@ -93,7 +93,7 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                 return Ok(Value::string_list(&prefixed.iter().map(String::as_str).collect::<Vec<_>>()));
             },
         ),
-        // build --release: plugins leave out what only debug builds need, like the validation layers of Vulkan
+        // xkit --release: plugins leave out what only debug builds need, like the validation layers of Vulkan
         builtin(
             "release",
             FunctionParameters::new().returns(Type::Bool),
@@ -135,7 +135,7 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
                 None => host_executable(args),
             },
         ),
-        // of the machine build-script runs on, for the tools a build downloads and runs
+        // of the machine xkit runs on, for the tools a build downloads and runs
         builtin(
             "host_target",
             FunctionParameters::new().returns(Type::String),
@@ -163,7 +163,7 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
             FunctionParameters::new()
                 .required("name", Type::String)
                 .returns(Type::String),
-            // for the caches of tools, like the modules of Go, apart from those of build-script
+            // for the caches of tools, like the modules of Go, apart from those of xkit
             |_, args| {
                 let name: String = args.get("name")?;
 
@@ -305,7 +305,7 @@ pub fn core_functions() -> Vec<(&'static str, Value)> {
     return functions;
 }
 
-/// "macos", "linux" or "windows", as Rust names the system build-script was built for
+/// "macos", "linux" or "windows", as Rust names the system xkit was built for
 fn host_operating_system() -> Value {
     return std::env::consts::OS.into();
 }

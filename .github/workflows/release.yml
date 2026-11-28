@@ -1,4 +1,4 @@
-# A tag v<version> builds build-script for every platform and publishes the archives as the release
+# A tag v<version> builds xkit for every platform and publishes the archives as the release
 # of that tag, with their SHA-256. The version of the tag has to be the one in Cargo.toml.
 name: release
 
@@ -41,27 +41,26 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: sudo apt-get install -q -y musl-tools
 
-      - name: build-script
+      - name: xkit
         shell: bash
         run: |
           rustup update stable --no-self-update
           rustup target add ${{ matrix.target }}
           cargo build --release --locked --target ${{ matrix.target }}
 
-      # the command is build, Cargo can not name it so, see README.md. Without the version in the name
-      # releases/latest/download/ finds it.
+      # the command is xkit. Without the version in the name releases/latest/download/ finds it.
       - name: Archive
         shell: bash
         run: |
-          name=build-script-${{ matrix.target }}
+          name=xkit-${{ matrix.target }}
           mkdir $name
           cp LICENSE README.md $name/
 
           if [[ ${{ matrix.target }} == *windows* ]]; then
-            cp target/${{ matrix.target }}/release/build-script.exe $name/build.exe
+            cp target/${{ matrix.target }}/release/xkit.exe $name/
             7z a -tzip -bso0 $name.zip $name
           else
-            cp target/${{ matrix.target }}/release/build-script $name/build
+            cp target/${{ matrix.target }}/release/xkit $name/
             tar czf $name.tar.gz $name
           fi
 
@@ -69,8 +68,8 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: |
-            build-script-*.tar.gz
-            build-script-*.zip
+            xkit-*.tar.gz
+            xkit-*.zip
 
   publish:
     needs: build
@@ -84,5 +83,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum build-script-* > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes build-script-* SHA256SUMS
+          sha256sum xkit-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes xkit-* SHA256SUMS

@@ -32,7 +32,7 @@ data class Build(val tool: String, val plugins: List<String>) : Parcelable
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val build = Build("build-script", listOf("compose", "parcelize", "serialization"))
+        val build = Build("xkit", listOf("compose", "parcelize", "serialization"))
         // a round trip through a Bundle proves the generated Parcelable code
         val parceled = Bundle().apply { putParcelable("build", build) }.getParcelable<Build>("build")
         val json = Json.encodeToString(parceled)

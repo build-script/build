@@ -1,4 +1,4 @@
-// build install: a library into the dependencies of a module, once it resolved for the module. A module of a
+// xkit install: a library into the dependencies of a module, once it resolved for the module. A module of a
 // plugin takes it in its libraries, in the version its resolve names.
 use std::path::Path;
 

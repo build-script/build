@@ -6,13 +6,13 @@
 int main(int argc, char** argv) {
     int frames = argc > 1 ? std::atoi(argv[1]) : -1;
 
-    InitWindow(640, 360, "build-script");
+    InitWindow(640, 360, "xkit");
     SetTargetFPS(60);
 
     for (int frame = 0; !WindowShouldClose() && frame != frames; frame++) {
         BeginDrawing();
         ClearBackground(RAYWHITE);
-        DrawText("Built with build-script", 160, 160, 28, DARKGRAY);
+        DrawText("Built with xkit", 160, 160, 28, DARKGRAY);
         EndDrawing();
     }
 

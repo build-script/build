@@ -541,7 +541,7 @@ pub fn link(
     return system::run_command_in_one_piece(&mut command, "linking");
 }
 
-/// How the GCC build-script keeps links its runtime: inside, it is newer than that of the systems, what it builds
+/// How the GCC xkit keeps links its runtime: inside, it is newer than that of the systems, what it builds
 /// runs without that GCC. In C++26 its headers define the copy and move members of std::logic_error and
 /// std::runtime_error inline, which libstdc++.a defines too: on ELF and Mach-O the inline ones are weak, on Windows
 /// the linker takes them for a second definition, GCC bug 125151. Both come from the same source, the linker keeps

@@ -15,7 +15,7 @@ pub struct TestSuite {
     pub tests: ModuleTests,
 }
 
-/// The tests `build test` selected, run once the whole script is built
+/// The tests `xkit test` selected, run once the whole script is built
 #[derive(Debug)]
 pub enum ModuleTests {
     Run(Box<dyn TestRunner>),
@@ -49,7 +49,7 @@ pub struct TestRun {
     timeout: Option<Duration>,
 }
 
-/// What `build test` found for a module. A failure is an outcome, not an
+/// What `xkit test` found for a module. A failure is an outcome, not an
 /// error: the other modules still run their tests.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TestOutcome {

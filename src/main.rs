@@ -21,10 +21,13 @@ use language::lexer::line_column;
 use language::parser::Parser;
 use language::runtime::{self, BuiltModule, Runtime, TestCounts, TestOutcome, TestSelection, configurations};
 
+/// The command, what the usage and the messages call it
+const PROGRAM: &str = "xkit";
+
 /// Every command and its arguments, in the order of the usage
 const COMMANDS: &[(&str, &str)] = &[
-    // `build build` builds too
-    ("build", "[<script>]"),
+    // xkit alone builds, `xkit build` too
+    ("build", "[build] [<script>]"),
     ("idea", "idea [<script>]"),
     ("run", "run [--module <name>] [<script>] [-- <args>...]"),
     ("test", "test [--module <name>] [<script>] [-- <args>...]"),
@@ -114,7 +117,7 @@ enum Command {
 fn usage() -> String {
     let lines: Vec<String> = COMMANDS.iter()
         .enumerate()
-        .map(|(index, (_, arguments))| format!("{} build {arguments}", if index == 0 { "usage:" } else { "      " }))
+        .map(|(index, (_, arguments))| format!("{} {PROGRAM} {arguments}", if index == 0 { "usage:" } else { "      " }))
         .collect();
 
     return format!("{}\n{BUILD_OPTIONS_USAGE}", lines.join("\n"));
@@ -143,7 +146,7 @@ fn command_usage(command: &str) -> String {
         _ => vec![],
     };
 
-    let mut lines = vec![format!("usage: build {arguments}")];
+    let mut lines = vec![format!("usage: {PROGRAM} {arguments}")];
     lines.extend(choices.iter().map(|line| format!("       {line}")));
 
     return lines.join("\n");
@@ -151,7 +154,7 @@ fn command_usage(command: &str) -> String {
 
 /// The command, or what is wrong with the arguments and the usage of the command
 fn parse_args(args: &[String]) -> Result<Command, String> {
-    // build alone builds, like make
+    // xkit alone builds, like make
     let Some((first, rest)) = args.split_first() else {
         return Ok(Command::Build { script: DEFAULT_SCRIPT.to_string() });
     };
@@ -161,7 +164,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         .collect();
 
     let no_command = |word: &str| match word.starts_with('-') {
-        true => format!("build has no option {word}{}\n{}", suggestion(word, BUILD_OPTIONS), usage()),
+        true => format!("{PROGRAM} has no option {word}{}\n{}", suggestion(word, BUILD_OPTIONS), usage()),
         false => format!("{word} is no command and no script{}\n{}", suggestion(word, &names), usage()),
     };
 
@@ -448,13 +451,13 @@ fn described_argument(command: &str, given: Option<&str>, label: &str, described
     });
 }
 
-/// The kind new or add was not given, chosen in the terminal from those of build-script and the templates of
+/// The kind new or add was not given, chosen in the terminal from those of xkit and the templates of
 /// the official plugins. Without a terminal the usage says what to give, the official list is not asked.
 fn chosen_kind(command: &str, label: &str, mut choices: Vec<(String, String)>) -> String {
     if io::stdin().is_terminal() {
         match project::plugin_choices(&project::PluginLookup::of_this_machine()) {
             Ok(plugins) => choices.extend(plugins),
-            // new and add go on with the kinds of build-script, like without a network
+            // new and add go on with the kinds of xkit, like without a network
             Err(note) => println!("{}", terminal::paint(&note, Color::Dim)),
         }
     }
@@ -499,7 +502,7 @@ fn help() -> String {
           tests do not stop the others, a summary of all of them follows; arguments
           after -- go to the test programs of C and C++ modules; with --target those of
           that target, started like by run
-  clean   removes the build directories build-script wrote below the script's
+  clean   removes the build directories xkit wrote below the script's
           directory, the downloads stay; --cache removes the downloads and what was
           made of them, the JDKs, SDKs and toolchains stay
   new     creates a project in a new directory: {},
@@ -519,7 +522,7 @@ fn help() -> String {
           one, new <name> <path> starts a project from its template
 
 The script is {DEFAULT_SCRIPT} in the current directory unless one is given, see README.md.
-build --version shows the version.",
+xkit --version shows the version.",
         project::project_kinds().join(", "),
         project::module_kinds().join(", "),
         project::DEPENDENCY_KINDS
@@ -569,7 +572,7 @@ fn main() {
             return;
         }
         Command::Version => {
-            println!("build-script {}", env!("CARGO_PKG_VERSION"));
+            println!("xkit {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Command::New {
@@ -577,7 +580,7 @@ fn main() {
             path,
             package,
         } => {
-            // a kind build-script does not have is a plugin, like go
+            // a kind xkit does not have is a plugin, like go
             let kind = match kind {
                 Some(kind) => kind.clone(),
                 None => chosen_kind("new", "kind of project", project::project_kind_choices()),
@@ -824,11 +827,11 @@ fn take_build_options(args: &[String]) -> Result<(BuildOptions, Vec<String>), St
 struct BuildRequest<'a> {
     script: &'a str,
     tests: TestSelection,
-    /// after -- of build test, for the test programs of C and C++ modules
+    /// after -- of xkit test, for the test programs of C and C++ modules
     test_arguments: Vec<String>,
-    /// build idea: every build after keeps IntelliJ current
+    /// xkit idea: every build after keeps IntelliJ current
     set_up_idea: bool,
-    /// build --target: those instead of the targets the script names, run and test --target: the one they run
+    /// xkit --target: those instead of the targets the script names, run and test --target: the one they run
     targets: Vec<Target>,
     /// run and test: every module for the target they run, the machine without --target
     runs: bool,
@@ -854,7 +857,7 @@ fn run_script(request: BuildRequest, jobs: usize, release: bool) -> Vec<Arc<Buil
     let source = std::fs::read_to_string(script_path).unwrap_or_else(|error| {
         match error.kind() {
             io::ErrorKind::NotFound if script_path == DEFAULT_SCRIPT => eprintln!(
-                "there is no {DEFAULT_SCRIPT} in this directory: give the script, create a project with build new, or see build --help"
+                "there is no {DEFAULT_SCRIPT} in this directory: give the script, create a project with xkit new, or see xkit --help"
             ),
             io::ErrorKind::NotFound => eprintln!("there is no script {script_path}"),
             _ => eprintln!("could not read {script_path}: {error}"),
@@ -1440,25 +1443,25 @@ mod tests {
     fn errors_say_what_is_wrong_and_show_the_usage_of_the_command() {
         let error = |args: &[&str]| parse(args).unwrap_err();
 
-        assert!(error(&["biuld"]).starts_with("biuld is no command and no script, did you mean build?\nusage: build [<script>]"));
-        assert!(error(&["--verbose"]).starts_with("build has no option --verbose\nusage:"));
+        assert!(error(&["biuld"]).starts_with("biuld is no command and no script, did you mean build?\nusage: xkit [build] [<script>]"));
+        assert!(error(&["--verbose"]).starts_with("xkit has no option --verbose\nusage:"));
         assert!(error(&["app/project.build", "x"]).starts_with("app/project.build is a script, the command goes before it"));
         assert_eq!(
             error(&["build", "--relase"]),
-            "build has no option --relase, did you mean --release?\nusage: build [<script>]"
+            "build has no option --relase, did you mean --release?\nusage: xkit [build] [<script>]"
         );
         assert_eq!(
             error(&["run", "--module"]),
-            "--module needs a value\nusage: build run [--module <name>] [<script>] [-- <args>...]"
+            "--module needs a value\nusage: xkit run [--module <name>] [<script>] [-- <args>...]"
         );
-        assert!(error(&["new", "cpp", "a", "b"]).starts_with("new takes a kind and a path, not cpp a b\nusage: build new"));
+        assert!(error(&["new", "cpp", "a", "b"]).starts_with("new takes a kind and a path, not cpp a b\nusage: xkit new"));
         assert!(error(&["install", "a:b", "--test", "--ksp"]).starts_with("install takes one list, not --test --ksp\n"));
         assert!(error(&["install", "a:b", "--tset"]).starts_with("install has no option --tset, did you mean --test?"));
 
         assert_eq!(
             command_usage("new"),
             format!(
-                "usage: build new <kind> <path> [--package <package>]\n       <kind>: {}, or a plugin like go, go:<template>",
+                "usage: xkit new <kind> <path> [--package <package>]\n       <kind>: {}, or a plugin like go, go:<template>",
                 project::project_kinds().join(", ")
             )
         );

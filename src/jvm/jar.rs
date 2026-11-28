@@ -367,7 +367,7 @@ fn copy_to_lib_dir(jars: &[PathBuf], lib_dir: &Path) -> Result<Vec<String>, Stri
 
 fn jar_manifest(main_class: Option<&str>, libraries: &[String], multi_release: bool) -> String {
     let mut manifest = manifest_line("Manifest-Version", "1.0");
-    manifest += &manifest_line("Created-By", "build-script");
+    manifest += &manifest_line("Created-By", "xkit");
 
     if let Some(main_class) = main_class {
         manifest += &manifest_line("Main-Class", main_class);

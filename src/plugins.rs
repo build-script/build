@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 
 use crate::common::{git, lock, system};
 
-/// The official list, BUILD_SCRIPT_PLUGINS names another, like a mirror in a company
-pub const OFFICIAL_REPOSITORY: &str = "https://github.com/build-script/plugins";
+/// The official list, XKIT_PLUGINS names another, like a mirror in a company
+pub const OFFICIAL_REPOSITORY: &str = "https://github.com/xkit-build/plugins";
 
 /// the file of a plugin in its directory
 const PLUGIN_FILE: &str = "plugin.build";
 
-/// next to plugin.build: a directory per template of `build new` and `build add`
+/// next to plugin.build: a directory per template of `xkit new` and `xkit add`
 pub const TEMPLATES: &str = "templates";
 
 /// next to plugin.build: extends/<language>/<variant>/, templates of a language with the plugin, like cpp:vulkan
@@ -34,7 +34,7 @@ pub struct PluginSource {
 }
 
 pub fn official_repository() -> String {
-    return std::env::var("BUILD_SCRIPT_PLUGINS").unwrap_or_else(|_| OFFICIAL_REPOSITORY.to_string());
+    return std::env::var("XKIT_PLUGINS").unwrap_or_else(|_| OFFICIAL_REPOSITORY.to_string());
 }
 
 impl PluginSource {
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn uses_name_repositories_directories_and_releases() {
-        let official = PluginSource::official("go@1.4", "https://github.com/build-script/plugins");
+        let official = PluginSource::official("go@1.4", "https://github.com/xkit-build/plugins");
         assert_eq!((official.directory.as_str(), official.tag_prefixes.clone(), official.selector.clone()), ("go", vec!["go-v".to_string()], Some("1.4".to_string())));
         assert_eq!(official.lock_key(), "plugin:go@1.4");
 

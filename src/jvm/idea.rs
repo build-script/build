@@ -1,5 +1,5 @@
 // IntelliJ: a module writes its module file into .idea/modules once its dependencies are resolved,
-// .idea/modules.xml lists them. `build idea` sets it up, every build after keeps it current.
+// .idea/modules.xml lists them. `xkit idea` sets it up, every build after keeps it current.
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -18,9 +18,9 @@ use super::module::{
 };
 use super::testing::{TEST_RESOURCES_DIR, resolve_test_libraries};
 
-/// Relative to the script: build-script keeps the module files current
-pub const MARKER: &str = ".idea/build-script";
-pub const MARKER_TEXT: &str = "build-script keeps modules.xml and modules/ current when it builds\n";
+/// Relative to the script: xkit keeps the module files current
+pub const MARKER: &str = ".idea/xkit";
+pub const MARKER_TEXT: &str = "xkit keeps modules.xml and modules/ current when it builds\n";
 
 /// For the script and the files next to it, when no module lives in the script's directory
 const ROOT_MODULE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -154,7 +154,7 @@ pub fn write_module(project_dir: &Path, args: &Arguments, module: &IdeaModule) -
 "#,
         // JDK_21, JDK_1_8
         level = jvm_target.replace('.', "_"),
-        // apart from build-script's classes, when IntelliJ compiles itself
+        // apart from xkit's classes, when IntelliJ compiles itself
         output = url(&build_dir.join("idea/main")),
         output_test = url(&build_dir.join("idea/test")),
         directory = url(&inputs.directory),
@@ -317,7 +317,7 @@ fn test_libraries(
     return Ok(files);
 }
 
-/// IntelliJ keeps its JDKs by name, outside the project. A JDK build-script installed is
+/// IntelliJ keeps its JDKs by name, outside the project. A JDK xkit installed is
 /// named like IntelliJ names it, temurin-21, any other jdk-21.
 fn jdk_name(jdk: &Jdk) -> String {
     let installed = jdk.home.strip_prefix(system::data_dir("jdks"))
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(idea_path(project, Path::new("/work/shop/app/src")), "$MODULE_DIR$/../../app/src");
         assert_eq!(idea_path(project, Path::new("/work/shop/./app/../core")), "$MODULE_DIR$/../../core");
         assert_eq!(idea_path(project, project), "$MODULE_DIR$/../..");
-        assert_eq!(idea_path(project, &home.join(".build-script/a.jar")), "$USER_HOME$/.build-script/a.jar");
+        assert_eq!(idea_path(project, &home.join(".xkit/a.jar")), "$USER_HOME$/.xkit/a.jar");
         assert_eq!(idea_path(project, Path::new("/opt/jdk")), "/opt/jdk");
     }
 

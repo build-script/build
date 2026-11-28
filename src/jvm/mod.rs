@@ -26,7 +26,7 @@ use maven::MavenCoordinate;
 
 pub use jdk::jni_include_dirs;
 
-/// Before the script runs: whether the build keeps IntelliJ current. Once `build idea` set it up
+/// Before the script runs: whether the build keeps IntelliJ current. Once `xkit idea` set it up
 /// every build does, release builds leave it.
 pub fn before_build(project_dir: &Path, set_up_idea: bool, release: bool) -> Result<bool, String> {
     let marker = project_dir.join(idea::MARKER);
@@ -93,7 +93,7 @@ pub struct JvmOutput {
     pub jvm_flags: Vec<String>,
 }
 
-/// How `build run` starts a JVM module
+/// How `xkit run` starts a JVM module
 #[derive(Debug, Hash)]
 pub enum JvmLaunch {
     /// `java -jar` with the JDK the module was built with

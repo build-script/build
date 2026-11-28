@@ -84,7 +84,7 @@ pub struct ArchiveFile {
     checksum: Option<Checksum>,
 }
 
-/// The SDKs installed outside of build-script: ANDROID_HOME and ANDROID_SDK_ROOT
+/// The SDKs installed outside of xkit: ANDROID_HOME and ANDROID_SDK_ROOT
 pub fn installed_roots() -> Vec<PathBuf> {
     return ["ANDROID_HOME", "ANDROID_SDK_ROOT"].iter()
         .filter_map(|variable| std::env::var_os(variable))

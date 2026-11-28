@@ -1,5 +1,5 @@
-// New projects and modules: `build new` and `build add`, from the templates of the language
-// categories, and libraries for modules: `build install`
+// New projects and modules: `xkit new` and `xkit add`, from the templates of the language
+// categories, and libraries for modules: `xkit install`
 mod install;
 mod plugin_templates;
 mod script;
@@ -176,7 +176,7 @@ fn module_template(kind: &str, module: &NewModule) -> Option<ModuleTemplate> {
 }
 
 /// A new directory with a project.build and the modules of the kind, like cargo new. A kind that is
-/// none of build-script is a plugin with templates, like go. `package` names the sources, else the
+/// none of xkit is a plugin with templates, like go. `package` names the sources, else the
 /// project below the domain `domain` gives.
 pub fn new_project(
     kind: &str,
@@ -259,7 +259,7 @@ fn new_workspace(path: &Path, name: &str) -> Result<(), String> {
     // clangd keeps its index in .cache/ of C and C++ modules
     system::write_file(&path.join(".gitignore"), "build/\n.cache/\n")?;
     system::write_file(&path.join("project.build"), "")?;
-    println!("Created workspace {name} in {}, build-script add <kind> <name> adds a module", path.display());
+    println!("Created workspace {name} in {}, xkit add <kind> <name> adds a module", path.display());
 
     return Ok(());
 }
@@ -285,7 +285,7 @@ fn new_plugin_project(
     };
     let script = script::with_module("", &variable_name(name), &module, &template)?;
 
-    // what the template ignores besides build/, like the go.mod build-script writes
+    // what the template ignores besides build/, like the go.mod xkit writes
     let mut ignored = "build/\n".to_string();
     let mut files = vec![];
 
@@ -332,7 +332,7 @@ fn plugin_template(
     builtin_kinds: &[&str],
 ) -> Result<(String, ModuleTemplate), String> {
     let found = plugin_templates::find_template(kind, plugins, builtin_language).map_err(|error| {
-        return format!("{kind} is neither a kind of build-script ({}) nor a template of a plugin: {error}", builtin_kinds.join(", "));
+        return format!("{kind} is neither a kind of xkit ({}) nor a template of a plugin: {error}", builtin_kinds.join(", "));
     })?;
 
     let template = plugin_templates::module_template(&found, name, package, domain)?;
@@ -340,7 +340,7 @@ fn plugin_template(
     return Ok((found.description, template));
 }
 
-/// A language of build-script plugins extend, like cpp for cpp:vulkan: the use and the repositories of its programs
+/// A language of xkit plugins extend, like cpp for cpp:vulkan: the use and the repositories of its programs
 fn builtin_language(language: &str) -> Option<plugin_templates::BuiltinLanguage> {
     let probe = NewModule {
         name: "probe".to_string(),
@@ -356,7 +356,7 @@ fn builtin_language(language: &str) -> Option<plugin_templates::BuiltinLanguage>
 }
 
 /// A new module in a directory next to the script, its build call in the script. A kind that is none of
-/// build-script is a plugin with templates. Without `package` its package is project and module below the
+/// xkit is a plugin with templates. Without `package` its package is project and module below the
 /// domain `domain` gives.
 pub fn add_module(
     kind: &str,
@@ -468,7 +468,7 @@ fn new_package(
     return Ok(segments.join("."));
 }
 
-/// Removes the build directories build-script wrote below the script's directory,
+/// Removes the build directories xkit wrote below the script's directory,
 /// those with fingerprints in them. Build directories of other tools stay, and the files
 /// git tracks in a build directory: some repositories keep their scripts there.
 pub fn clean(script_file: &Path) -> Result<(), String> {
@@ -594,13 +594,13 @@ pub fn domain() -> Result<String, String> {
             "" | "y" | "yes" => {
                 settings.set(DOMAIN, &domain)?;
                 println!(
-                    "Remembered in {}, build config {DOMAIN} <domain> changes it",
+                    "Remembered in {}, xkit config {DOMAIN} <domain> changes it",
                     settings.file().display()
                 );
             }
             "never" => {
                 settings.set(REMEMBER_DOMAIN, "never")?;
-                println!("Not offered again, build config {DOMAIN} <domain> remembers one");
+                println!("Not offered again, xkit config {DOMAIN} <domain> remembers one");
             }
             _ => {}
         }
@@ -794,8 +794,8 @@ mod tests {
     /// The official list is not there: no plugin is found
     fn no_plugins() -> PluginLookup {
         return PluginLookup {
-            official: "file:///nonexistent/build-script-plugins".to_string(),
-            cache: std::env::temp_dir().join("build-script-no-plugins"),
+            official: "file:///nonexistent/xkit-plugins".to_string(),
+            cache: std::env::temp_dir().join("xkit-no-plugins"),
         };
     }
 
@@ -880,7 +880,7 @@ mod tests {
                 &no_plugins(),
             )
             .unwrap_err()
-            .contains("cobol is neither a kind of build-script")
+            .contains("cobol is neither a kind of xkit")
         );
         lock::close();
 
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn the_choice_of_kinds_says_what_they_are_and_offers_the_templates_of_plugins() {
-        // every kind of build-script has a word on what it is
+        // every kind of xkit has a word on what it is
         for (kind, about) in project_kind_choices().into_iter().chain(module_kind_choices()) {
             assert!(!about.is_empty(), "{kind} has no description");
         }
@@ -1139,7 +1139,7 @@ mod tests {
             ("go:vulkan".to_string(), "(plugin)".to_string()),
         ]);
 
-        // without the official list new goes on with the kinds of build-script
+        // without the official list new goes on with the kinds of xkit
         let error = plugin_choices(&no_plugins()).unwrap_err();
         assert!(error.starts_with("the official plugins could not be listed: "), "{error}");
     }

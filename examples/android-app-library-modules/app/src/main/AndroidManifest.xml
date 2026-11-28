@@ -4,7 +4,7 @@
 
     <application
         android:label="@string/app_name"
-        android:theme="@style/Theme.BuildScript"
+        android:theme="@style/Theme.Xkit"
         tools:targetApi="34">
         <activity
             android:name=".MainActivity"

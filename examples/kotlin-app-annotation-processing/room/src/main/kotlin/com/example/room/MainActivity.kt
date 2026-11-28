@@ -34,7 +34,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val database = Room.inMemoryDatabaseBuilder(this, NoteDatabase::class.java).allowMainThreadQueries().build()
-        database.notes().insert(Note(text = "Built with build-script"))
+        database.notes().insert(Note(text = "Built with xkit"))
         setContentView(TextView(this).apply { text = database.notes().all().joinToString("\n") { it.text } })
     }
 }

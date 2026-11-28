@@ -47,7 +47,7 @@ const CMAKE_DIR: &str = "intermediates/cmake";
 /// of lib/apksigner.jar in the build tools
 const APKSIGNER_MAIN_CLASS: &str = "com.android.apksigner.ApkSignerTool";
 
-/// Debug, or release with `build --release`
+/// Debug, or release with `xkit --release`
 #[derive(Clone, Copy, PartialEq)]
 pub enum BuildType {
     Debug,

@@ -1,4 +1,4 @@
-// Release builds: R8 shrinks, optimizes and renames the code with the ProGuard rules of build-script,
+// Release builds: R8 shrinks, optimizes and renames the code with the ProGuard rules of xkit,
 // of aapt2, of the libraries and of the app, then dexes it. The apk and the app bundle are signed
 // with the key of the script.
 use std::fs;
@@ -116,7 +116,7 @@ impl ReleaseKey {
     }
 }
 
-/// Every ProGuard rule file of a release build: build-script's, those aapt2 wrote for
+/// Every ProGuard rule file of a release build: xkit's, those aapt2 wrote for
 /// the manifest and the layouts, those of the aars, library modules and jars, those
 /// for the services of `java_resources`, then the app's own
 pub fn proguard_rule_files(

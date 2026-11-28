@@ -63,7 +63,7 @@ fn jni_md(target: Target) -> String {
     };
 
     return format!(
-        "/* jni_md.h for {system}, written by build-script for a JDK of another system */\n\
+        "/* jni_md.h for {system}, written by xkit for a JDK of another system */\n\
          #ifndef _JAVASOFT_JNI_MD_H_\n#define _JAVASOFT_JNI_MD_H_\n\n\
          #define JNIEXPORT {export}\n#define JNIIMPORT {import}\n#define JNICALL {call}\n\n\
          typedef int jint;\n{long}\ntypedef signed char jbyte;\n\n#endif\n",

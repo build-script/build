@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 
 use super::system;
 
-/// build-script-<name>-<process> in the temporary directory, empty at first and removed when the test
+/// xkit-<name>-<process> in the temporary directory, empty at first and removed when the test
 /// ends, also when it fails
 pub struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     pub fn new(name: &str) -> Self {
-        let directory = std::env::temp_dir().join(format!("build-script-{name}-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("xkit-{name}-{}", std::process::id()));
         system::recreate_dir(&directory).unwrap();
         return ScratchDir(directory);
     }

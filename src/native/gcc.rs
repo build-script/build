@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::common::system::{self, HostArchitecture, HostOperatingSystem};
 
-/// The GCC of toolchain = "gcc": a newer build-script may bring a newer one
+/// The GCC of toolchain = "gcc": a newer xkit may bring a newer one
 pub const GCC_VERSION: &str = "16.2.0";
 
 /// gcc-16, g++-16 and gcc-ar-16 are named for it
@@ -94,7 +94,7 @@ fn explicit_file(subdir: &str) -> Result<String, String> {
     let packages: serde_json::Value = serde_json::from_str(PACKAGES).map_err(|error| format!("the packages of GCC: {error}"))?;
     let lines: Vec<&str> = packages[subdir]["packages"]
         .as_array()
-        .ok_or_else(|| format!("build-script lists no packages of GCC for {subdir}"))?
+        .ok_or_else(|| format!("xkit lists no packages of GCC for {subdir}"))?
         .iter()
         .filter_map(serde_json::Value::as_str)
         .collect();
@@ -107,7 +107,7 @@ fn explicit_file(subdir: &str) -> Result<String, String> {
 fn from_conda_forge() -> Result<Gcc, String> {
     let subdir = subdir()?;
     let target = system::data_dir("gcc").join(GCC_VERSION).join(subdir);
-    let marker = target.join(".build-script-gcc");
+    let marker = target.join(".xkit-gcc");
     let gcc = conda_programs(&target, subdir);
 
     return system::installing(&target, || {
@@ -159,7 +159,7 @@ fn conda_triple(subdir: &str) -> &'static str {
 /// micromamba into <build home>/micromamba/<version>, checked against the SHA-256 of its release
 fn install_micromamba(subdir: &str) -> Result<PathBuf, String> {
     let Some((_, asset, sha256)) = MICROMAMBA.iter().find(|(name, ..)| *name == subdir) else {
-        return Err(format!("build-script knows no micromamba for {subdir}"));
+        return Err(format!("xkit knows no micromamba for {subdir}"));
     };
 
     let directory = system::data_dir("micromamba").join(MICROMAMBA_VERSION);
@@ -173,7 +173,7 @@ fn install_micromamba(subdir: &str) -> Result<PathBuf, String> {
         let url = format!("https://github.com/mamba-org/micromamba-releases/releases/download/{MICROMAMBA_VERSION}/{asset}");
         let checked = |file: &Path| match system::sha(file, 256)? == *sha256 {
             true => Ok(()),
-            false => Err(format!("{url} is not the micromamba build-script knows")),
+            false => Err(format!("{url} is not the micromamba xkit knows")),
         };
 
         if !system::download_checked(&url, &program, false, None, checked)? {
@@ -230,7 +230,7 @@ fn build_for_macos() -> Result<PathBuf, String> {
         let patch = work.join("darwin.diff");
         let checked = |file: &Path| match system::sha(file, 256)? == DARWIN_PATCH_SHA256 {
             true => Ok(()),
-            false => Err(format!("{DARWIN_PATCH} is not the patch build-script knows")),
+            false => Err(format!("{DARWIN_PATCH} is not the patch xkit knows")),
         };
         if !system::download_checked(DARWIN_PATCH, &patch, false, None, checked)? {
             return Err(format!("{DARWIN_PATCH} is not available"));
@@ -285,7 +285,7 @@ fn configure_arguments(prefix: &Path, architecture: &str, kernel: &str, sdk: &Pa
         "--with-gcc-major-version-only".to_string(),
         format!("--program-suffix=-{MAJOR}"),
         "--with-system-zlib".to_string(),
-        format!("--with-pkgversion=build-script GCC {GCC_VERSION}"),
+        format!("--with-pkgversion=xkit GCC {GCC_VERSION}"),
     ];
 }
 

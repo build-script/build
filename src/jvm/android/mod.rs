@@ -84,7 +84,7 @@ pub fn builtins() -> Vec<(&'static str, Value)> {
             .optional("core_library_desugaring", Type::String)
             // asset name of a JSON report of the libraries' licenses
             .optional("license_report", Type::String)
-            // only for build --release: R8 with these rules besides the libraries'
+            // only for xkit --release: R8 with these rules besides the libraries'
             .with_default("minify", Type::Bool, true)
             .strings("proguard_files")
             // release builds also build an app bundle for Google Play

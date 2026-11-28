@@ -1,5 +1,5 @@
 // The evaluations of a script a build needs: one for the machine, then one for every other target the
-// script names or build --target asks for. They run one after another, the builds they start side by side.
+// script names or xkit --target asks for. They run one after another, the builds they start side by side.
 use std::sync::Arc;
 
 use crate::common::target::Target;
@@ -20,7 +20,7 @@ pub struct Evaluations {
 
 /// What a build is for
 pub struct Wanted<'a> {
-    /// build --target: those instead of the targets the script names, run and test --target: the one they run
+    /// xkit --target: those instead of the targets the script names, run and test --target: the one they run
     pub targets: &'a [Target],
     /// run and test: every module for the target they run, the machine without --target, and of the other
     /// targets only what modules for that one pack

@@ -13,7 +13,7 @@ class LetterTest {
 
     @Test
     fun `letters survive a round trip`() {
-        val letter = Letter(Greeting("Moshi", 2), Signature("build-script"))
+        val letter = Letter(Greeting("Moshi", 2), Signature("xkit"))
         assertEquals(letter, adapter.fromJson(adapter.toJson(letter)))
     }
 

@@ -26,7 +26,7 @@ pub struct BuiltModule {
     /// modules of the script it depends on
     pub modules: Vec<Arc<BuiltModule>>,
     pub output: ModuleOutput,
-    /// empty when `build test` did not select it
+    /// empty when `xkit test` did not select it
     pub tests: Vec<TestSuite>,
 }
 
@@ -97,7 +97,7 @@ pub enum BuildFailure {
     DependencyFailed,
 }
 
-/// What a language category keeps of a module for the modules depending on it and for `build run`
+/// What a language category keeps of a module for the modules depending on it and for `xkit run`
 #[derive(Debug)]
 pub enum ModuleOutput {
     Jvm(JvmOutput),
@@ -345,7 +345,7 @@ impl BuiltModule {
         return out;
     }
 
-    /// Whether `build run` can start it
+    /// Whether `xkit run` can start it
     pub fn can_launch(&self) -> bool {
         match &self.output {
             ModuleOutput::Jvm(output) => return output.launch.is_some(),

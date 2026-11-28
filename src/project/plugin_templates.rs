@@ -1,4 +1,4 @@
-// Templates of plugins for `build new` and `build add`: templates/<name>/ next to their plugin.build, and the
+// Templates of plugins for `xkit new` and `xkit add`: templates/<name>/ next to their plugin.build, and the
 // extensions of a language by a plugin in extends/<language>/<variant>/, like cpp:vulkan-glfw. module.build holds
 // the build call, before it what the script uses besides the language and the plugin and the modules the call takes,
 // like its shaders. The other files with {{build.name}}, {{build.identifier}}, {{build.domain}}, {{build.package}}
@@ -15,7 +15,7 @@ use super::{ModuleTemplate, TemplateCall};
 /// the template of a kind without :<template>
 pub const DEFAULT_TEMPLATE: &str = "app";
 
-/// What templates write where build-script fills in: {{build.name}}. Unusual in any language, and without a
+/// What templates write where xkit fills in: {{build.name}}. Unusual in any language, and without a
 /// colon, which Windows does not take in file names.
 const PLACEHOLDER_START: &str = "{{build.";
 
@@ -36,7 +36,7 @@ impl PluginLookup {
     }
 }
 
-/// A kind of `new` and `add` that is no kind of build-script: go, go:cli, go@1, someone/zig:lib
+/// A kind of `new` and `add` that is no kind of xkit: go, go:cli, go@1, someone/zig:lib
 pub struct PluginKind {
     /// how `use` names the plugin: go, go@1, "someone/zig"
     pub use_argument: String,
@@ -107,7 +107,7 @@ impl PluginKind {
 pub struct FoundTemplate {
     /// what the script uses for it: the language, when it is a plugin or needs a use, then the plugin
     pub uses: Vec<String>,
-    /// of a language of build-script, like Maven Central for Kotlin
+    /// of a language of xkit, like Maven Central for Kotlin
     pub repositories: &'static [&'static str],
     pub name: String,
     pub directory: PathBuf,
@@ -115,16 +115,16 @@ pub struct FoundTemplate {
     pub description: String,
 }
 
-/// What a language of build-script needs in a script: its use and the repositories of its modules
+/// What a language of xkit needs in a script: its use and the repositories of its modules
 pub struct BuiltinLanguage {
     pub use_argument: String,
     pub repositories: &'static [&'static str],
 }
 
-/// The template `kind` names that is no kind of build-script: a plugin with the template app or its only one (go),
+/// The template `kind` names that is no kind of xkit: a plugin with the template app or its only one (go),
 /// a template of a plugin (go:cli), or a plugin extending a language with a variant of its own: cpp:vulkan for the
 /// variant app, cpp:vulkan-glfw or cpp:vulkan:glfw for others, go:vulkan for a language of a plugin. A plugin of a
-/// repository like for use: cpp:someone/vulkan-glfw. `builtin` knows the languages of build-script.
+/// repository like for use: cpp:someone/vulkan-glfw. `builtin` knows the languages of xkit.
 pub fn find_template(
     kind: &str,
     plugins: &PluginLookup,
@@ -150,7 +150,7 @@ pub fn find_template(
     // a language of a plugin: a template of its own first, like go:cli
     let plugin = PluginKind::parse(language, &plugins.official)?;
     let plugin_dir = plugin.plugin_dir(&plugins.cache)
-        .map_err(|error| format!("{language} is no language of build-script and no plugin: {error}"))?;
+        .map_err(|error| format!("{language} is no language of xkit and no plugin: {error}"))?;
 
     let templates = plugins::template_names(&plugin_dir);
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn kinds_name_plugins_and_their_templates() {
-        let official = "https://github.com/build-script/plugins";
+        let official = "https://github.com/xkit-build/plugins";
 
         let go = PluginKind::parse("go", official).unwrap();
         assert_eq!((go.use_argument.as_str(), go.template.as_deref()), ("go", None));

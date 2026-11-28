@@ -1,4 +1,4 @@
-// Libraries of C and C++ modules from vcpkg: build-script installs vcpkg at a release, which pins every
+// Libraries of C and C++ modules from vcpkg: xkit installs vcpkg at a release, which pins every
 // port to one version. Their flags come from their .pc files, of ports without one from their files.
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -83,7 +83,7 @@ pub fn install(
     }
 
     let vcpkg = install_vcpkg()?;
-    let tools = vcpkg.join("build-script");
+    let tools = vcpkg.join("xkit");
     system::write_file(&manifest_file, &manifest)?;
     let _ = fs::remove_file(&installed_manifest);
 
@@ -272,7 +272,7 @@ fn install_vcpkg() -> Result<PathBuf, String> {
             .arg(&root);
         system::run_command_quietly(&mut clone, "git clone of vcpkg")?;
 
-        let tools = root.join("build-script");
+        let tools = root.join("xkit");
 
         // Windows takes its own, its programs have no RPATH
         if !cfg!(windows) {
@@ -729,7 +729,7 @@ mod tests {
         .unwrap();
         system::write_file(
             &pc_dir.join("spdlog.pc"),
-            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\nName: libspdlog\nCFlags: -DSPDLOG_FMT_EXTERNAL\nLibs: \"-L${libdir}\" -lspdlog -pthread\nLibs.private: -ldl\nRequires.private: fmt build-script-no-package\n",
+            "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\nName: libspdlog\nCFlags: -DSPDLOG_FMT_EXTERNAL\nLibs: \"-L${libdir}\" -lspdlog -pthread\nLibs.private: -ldl\nRequires.private: fmt xkit-no-package\n",
         )
         .unwrap();
 

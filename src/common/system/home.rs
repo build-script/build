@@ -1,12 +1,12 @@
-// Where build-script runs and keeps its things: the host, the build directories of modules, the home
-// of build-script with its data, caches and settings, programs in the PATH
+// Where xkit runs and keeps its things: the host, the build directories of modules, the home
+// of xkit with its data, caches and settings, programs in the PATH
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-const BUILD_SCRIPT_DIR_NAME: &str = "build-script";
+const XKIT_DIR_NAME: &str = "xkit";
 
-/// In the user's home, when neither BUILD_SCRIPT_HOME nor XDG is set
-const DEFAULT_BUILD_SCRIPT_HOME_DIR_NAME: &str = ".build-script";
+/// In the user's home, when neither XKIT_HOME nor XDG is set
+const DEFAULT_XKIT_HOME_DIR_NAME: &str = ".xkit";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HostOperatingSystem {
@@ -102,7 +102,7 @@ enum BaseDirectory {
 #[derive(Debug, Default)]
 struct BuildHomeEnvironment {
     home: Option<OsString>,
-    build_script_home: Option<OsString>,
+    xkit_home: Option<OsString>,
     xdg_data_home: Option<OsString>,
     xdg_cache_home: Option<OsString>,
     xdg_config_home: Option<OsString>,
@@ -112,21 +112,21 @@ impl BuildHomeEnvironment {
     fn read() -> Self {
         return BuildHomeEnvironment {
             home: home_dir(),
-            build_script_home: std::env::var_os("BUILD_SCRIPT_HOME"),
+            xkit_home: std::env::var_os("XKIT_HOME"),
             xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
             xdg_cache_home: std::env::var_os("XDG_CACHE_HOME"),
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
         };
     }
 
-    /// $BUILD_SCRIPT_HOME keeps everything in one directory, the caches in caches/
-    /// like ~/.gradle. Without it the XDG variables decide, ~/.build-script for those not set.
+    /// $XKIT_HOME keeps everything in one directory, the caches in caches/
+    /// like ~/.gradle. Without it the XDG variables decide, ~/.xkit for those not set.
     fn base_directory(&self, kind: BaseDirectory) -> PathBuf {
-        let build_script_home = self.build_script_home.as_deref()
+        let xkit_home = self.xkit_home.as_deref()
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
 
-        if build_script_home.is_none() {
+        if xkit_home.is_none() {
             let xdg_base_dir = match kind {
                 BaseDirectory::Data => self.xdg_data_home.as_deref(),
                 BaseDirectory::Cache => self.xdg_cache_home.as_deref(),
@@ -137,18 +137,18 @@ impl BuildHomeEnvironment {
             if let Some(xdg_base_dir) = xdg_base_dir.map(PathBuf::from)
                 .filter(|path| path.is_absolute())
             {
-                return xdg_base_dir.join(BUILD_SCRIPT_DIR_NAME);
+                return xdg_base_dir.join(XKIT_DIR_NAME);
             }
         }
 
-        let build_script_home = build_script_home.unwrap_or_else(|| {
+        let xkit_home = xkit_home.unwrap_or_else(|| {
             let home = self.home.as_deref().map_or(PathBuf::from("."), PathBuf::from);
-            home.join(DEFAULT_BUILD_SCRIPT_HOME_DIR_NAME)
+            home.join(DEFAULT_XKIT_HOME_DIR_NAME)
         });
 
         return match kind {
-            BaseDirectory::Data | BaseDirectory::Config => build_script_home,
-            BaseDirectory::Cache => build_script_home.join("caches"),
+            BaseDirectory::Data | BaseDirectory::Config => xkit_home,
+            BaseDirectory::Cache => xkit_home.join("caches"),
         };
     }
 }
@@ -193,8 +193,8 @@ mod tests {
         assert_eq!(
             base_dirs(home_a()),
             (
-                PathBuf::from("/home/a/.build-script"),
-                PathBuf::from("/home/a/.build-script/caches"),
+                PathBuf::from("/home/a/.xkit"),
+                PathBuf::from("/home/a/.xkit/caches"),
             )
         );
 
@@ -205,8 +205,8 @@ mod tests {
                 ..home_a()
             }),
             (
-                PathBuf::from("/data/build-script"),
-                PathBuf::from("/cache/build-script"),
+                PathBuf::from("/data/xkit"),
+                PathBuf::from("/cache/xkit"),
             )
         );
 
@@ -217,8 +217,8 @@ mod tests {
                 ..home_a()
             }),
             (
-                PathBuf::from("/data/build-script"),
-                PathBuf::from("/home/a/.build-script/caches"),
+                PathBuf::from("/data/xkit"),
+                PathBuf::from("/home/a/.xkit/caches"),
             )
         );
 
@@ -229,13 +229,13 @@ mod tests {
                 ..home_a()
             })
             .1,
-            PathBuf::from("/home/a/.build-script/caches")
+            PathBuf::from("/home/a/.xkit/caches")
         );
 
         // settings go with the data, or to $XDG_CONFIG_HOME
         assert_eq!(
             home_a().base_directory(BaseDirectory::Config),
-            PathBuf::from("/home/a/.build-script")
+            PathBuf::from("/home/a/.xkit")
         );
         assert_eq!(
             BuildHomeEnvironment {
@@ -243,14 +243,14 @@ mod tests {
                 ..home_a()
             }
             .base_directory(BaseDirectory::Config),
-            PathBuf::from("/config/build-script")
+            PathBuf::from("/config/xkit")
         );
 
         // one directory for everything wins over XDG
         assert_eq!(
             base_dirs(BuildHomeEnvironment {
                 xdg_data_home: Some("/data".into()),
-                build_script_home: Some("/bs".into()),
+                xkit_home: Some("/bs".into()),
                 ..home_a()
             }),
             (PathBuf::from("/bs"), PathBuf::from("/bs/caches"),)

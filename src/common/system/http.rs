@@ -182,7 +182,7 @@ pub fn http_get(url: &str, credentials: Option<&Credentials>) -> Result<(u16, St
 fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::http::Response<ureq::Body>, String> {
     // one client for every request: the connection to a repository stays open for its next files
     static CLIENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
-        // a Linux without CA certificates, like a slim container, gets those of Mozilla build-script brings
+        // a Linux without CA certificates, like a slim container, gets those of Mozilla xkit brings
         #[cfg(target_os = "linux")]
         let roots = match rustls_native_certs::load_native_certs().certs.is_empty() {
             true => ureq::tls::RootCerts::WebPki,
@@ -199,7 +199,7 @@ fn http_request(url: &str, credentials: Option<&Credentials>) -> Result<ureq::ht
             .http_status_as_error(false)
             .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
             .tls_config(tls)
-            .user_agent(format!("build-script/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("xkit/{}", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .build()

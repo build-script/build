@@ -22,7 +22,7 @@ pub struct InputFingerprint {
 }
 
 impl InputFingerprint {
-    /// Starts with the build-script executable: another version may build differently
+    /// Starts with the xkit executable: another version may build differently
     pub fn new(file: PathBuf) -> Self {
         let mut hasher = DefaultHasher::new();
 

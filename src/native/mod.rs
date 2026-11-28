@@ -130,7 +130,7 @@ struct TestSetup<'a> {
     main_flags: Vec<String>,
     /// patterns of test sources that are a program each
     programs: Vec<String>,
-    /// after those of the framework, then those after `build test --`
+    /// after those of the framework, then those after `xkit test --`
     arguments: Vec<String>,
     timeout: Duration,
     /// of the libraries it and its tests link, like VK_ADD_LAYER_PATH
@@ -182,7 +182,7 @@ fn signature(language: Language) -> FunctionSignature {
         // jni.h of the JDK
         .with_default("jni", Type::Bool, false)
         // "auto": cc and c++ of the system for this machine, zig for other targets, "system" and "zig": those.
-        // "gcc": the GCC build-script keeps, the same on every machine, for this machine alone
+        // "gcc": the GCC xkit keeps, the same on every machine, for this machine alone
         .with_default("toolchain", Type::Union(["auto", "system", "zig", "gcc"].map(|name| Type::Variant(name.to_string())).to_vec()), "auto")
         // the targets it is built for, like list("linux-aarch64", "windows-x86_64"), each into build/<target>/:
         // this machine without them, and the targets of the modules depending on it
@@ -939,7 +939,7 @@ fn test_program(
 
     compile::link(tests.toolchain, cpp, objects, link_flags, &executable)?;
 
-    // those of another target run through its runner, see build test --target
+    // those of another target run through its runner, see xkit test --target
     let target = tests.toolchain.target;
     let starts_it = match target.is_host() {
         true => Runner::direct(),

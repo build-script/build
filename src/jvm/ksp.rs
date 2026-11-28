@@ -21,7 +21,7 @@ const KSP_MAIN_CLASS: &str = "com.google.devtools.ksp.cmdline.KSPJvmMain";
 /// path and no option value, so values may contain ':' like URLs.
 const KSP_LIST_SEPARATOR: char = '\u{1F}';
 /// in the caches directory: what the last run saw
-const SNAPSHOT_FILE_NAME: &str = "build-script-snapshot";
+const SNAPSHOT_FILE_NAME: &str = "xkit-snapshot";
 /// in the caches directory: KSP's map of sources to their outputs
 const SOURCE_TO_OUTPUTS_FILE_NAME: &str = "sourceToOutputs";
 /// The entry of sourceToOutputs with outputs of incremental runs that became

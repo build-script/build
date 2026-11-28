@@ -45,7 +45,7 @@ impl Runner {
         }
 
         let name = target.name();
-        let mut message = format!("programs for {name} do not run on {}, a runner starts them: build config {RUNNER}{name} <command>", machine.name());
+        let mut message = format!("programs for {name} do not run on {}, a runner starts them: xkit config {RUNNER}{name} <command>", machine.name());
         if let Some(example) = example(target) {
             message.push_str(&format!(", like '{example}'"));
         }
@@ -135,7 +135,7 @@ mod tests {
         assert!(!named("linux-aarch64").runs_on(named("linux-x86_64")));
 
         let error = Runner::of(named("linux-aarch64"), named("linux-x86_64"), None).unwrap_err();
-        assert_eq!(error, "programs for linux-aarch64 do not run on linux-x86_64, a runner starts them: build config runner.linux-aarch64 <command>, like 'qemu-aarch64 -L /usr/aarch64-linux-gnu'");
+        assert_eq!(error, "programs for linux-aarch64 do not run on linux-x86_64, a runner starts them: xkit config runner.linux-aarch64 <command>, like 'qemu-aarch64 -L /usr/aarch64-linux-gnu'");
         let error = Runner::of(named("windows-x86_64"), mac, None).unwrap_err();
         assert!(error.ends_with("like 'wine'"), "{error}");
         assert!(Runner::of(named("windows-x86_64"), mac, Some("  ")).is_err());

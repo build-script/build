@@ -43,15 +43,15 @@ pub struct Platform {
 pub struct BuildScriptContext {
     /// relative paths of the script are resolved against it
     pub project_dir: PathBuf,
-    /// modules that run their tests once they are built, `build test`
+    /// modules that run their tests once they are built, `xkit test`
     pub tests: TestSelection,
-    /// after `build test --`, for the test programs of C and C++ modules, like --gtest_filter=Parser.*
+    /// after `xkit test --`, for the test programs of C and C++ modules, like --gtest_filter=Parser.*
     pub test_arguments: Vec<String>,
-    /// `build --release`: Android apps are built for release
+    /// `xkit --release`: Android apps are built for release
     pub release: bool,
-    /// modules write their module files for IntelliJ, see `build idea`
+    /// modules write their module files for IntelliJ, see `xkit idea`
     pub idea: bool,
-    /// what the script is evaluated for: none for the machine build-script runs on, or another target
+    /// what the script is evaluated for: none for the machine xkit runs on, or another target
     pub target: Option<Target>,
     /// for an Android target: what the NDK builds with, from the apps that pack the libraries
     pub android: Option<AndroidSettings>,
@@ -98,11 +98,11 @@ pub enum Requests {
     /// what the script names: on the machine the modules with its own among their targets and those without
     /// targets no module for another target alone needs, for another target the modules with that one
     Declared,
-    /// every module: build --target names this one, or run and test, which need the machine's
+    /// every module: xkit --target names this one, or run and test, which need the machine's
     All,
-    /// only the modules built once for every target, like jars: build --target without the machine
+    /// only the modules built once for every target, like jars: xkit --target without the machine
     HostOnly,
-    /// none, and what waits for a module gets an error: build install, which reads the arguments of a module
+    /// none, and what waits for a module gets an error: xkit install, which reads the arguments of a module
     Nothing,
 }
 
@@ -350,7 +350,7 @@ impl Runtime {
         return errors;
     }
 
-    /// The targets besides the machine that modules of the script name, in the order of build --help
+    /// The targets besides the machine that modules of the script name, in the order of xkit --help
     pub fn declared_targets(&self) -> Vec<Target> {
         return crate::common::target::TARGETS.iter()
             .filter(|target| !target.is_host())
@@ -455,7 +455,7 @@ impl Runtime {
     }
 
     /// The build functions the plugins of the script define, with the name of their plugin, without running
-    /// the script: build install finds the modules of plugins by them
+    /// the script: xkit install finds the modules of plugins by them
     pub fn plugin_build_functions(&mut self, script: &Script) -> Result<Vec<(String, String, Arc<FunctionSignature>)>, String> {
         let mut functions = vec![];
 
@@ -603,7 +603,7 @@ impl Runtime {
             .map_or_else(|| self.context.project_dir.clone(), Path::to_path_buf);
     }
 
-    /// A platform of build-script, otherwise a plugin of the official list: `use go`, `use go@1.4`
+    /// A platform of xkit, otherwise a plugin of the official list: `use go`, `use go@1.4`
     fn load_platform(&mut self, name: &str, span: Span) -> Result<Vec<(String, Value)>, RuntimeError> {
         let Some(platform) = platforms().find(|platform| platform.name == name) else {
             let repository = self.official_plugins.clone();
@@ -996,7 +996,7 @@ impl Runtime {
                 "module" => return Ok(Type::Module),
                 "any" => return Ok(Type::Any),
                 "unit" => return Ok(Type::Unit),
-                // one of the names of build --target, for plugins that take targets
+                // one of the names of xkit --target, for plugins that take targets
                 "target" => return Ok(Type::target()),
                 _ => {
                     return Err(RuntimeError::new(
@@ -1465,7 +1465,7 @@ impl Runtime {
             terminal::set_target_label(label);
 
             if !builds {
-                let needed = format!("build install builds nothing, but the script needs {} {} built", module.function, module.name);
+                let needed = format!("xkit install builds nothing, but the script needs {} {} built", module.function, module.name);
                 module.finish(Err(BuildFailure::Failed(needed)));
                 return;
             }

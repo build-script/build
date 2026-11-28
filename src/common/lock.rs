@@ -7,8 +7,8 @@ use std::sync::Mutex;
 
 use crate::common::system;
 
-const HEADER: &str = "# Written by build-script: the SHA-256 of every file the build downloaded, and the build a SNAPSHOT
-# resolved to. Keep it with the script, build --refresh takes newer builds and files.
+const HEADER: &str = "# Written by xkit: the SHA-256 of every file the build downloaded, and the build a SNAPSHOT
+# resolved to. Keep it with the script, xkit --refresh takes newer builds and files.
 ";
 
 struct Lock {
@@ -129,7 +129,7 @@ pub fn check_sha256(key: &str, sha256: &str) -> Result<(), String> {
 
     if let Some(expected) = expected && *expected != actual {
         return Err(format!(
-            "{key} does not match {}: it says {expected}, the file has {actual}. build --refresh takes the new file",
+            "{key} does not match {}: it says {expected}, the file has {actual}. xkit --refresh takes the new file",
             lock.file.display()
         ));
     }
@@ -187,7 +187,7 @@ pub fn check(path: &str, file: &Path, downloaded: bool) -> Result<(), String> {
 
     if let Some(expected) = locked && expected != actual {
         return Err(format!(
-            "{path} does not match {}: it says {expected}, the download has {actual}. build --refresh takes the new file",
+            "{path} does not match {}: it says {expected}, the download has {actual}. xkit --refresh takes the new file",
             lock_file.display()
         ));
     }

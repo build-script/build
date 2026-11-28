@@ -9,7 +9,7 @@
 #include "stats.h"
 
 int main() {
-    spdlog::info("{}", core::greeting("build-script"));
+    spdlog::info("{}", core::greeting("xkit"));
 
     std::vector<int> values{5, 3, 8, 1};
     auto squares = values | std::views::transform([](int value) { return value * value; });

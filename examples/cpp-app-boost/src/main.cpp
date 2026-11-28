@@ -9,7 +9,7 @@ int main(int argc, char** argv) {
     options::options_description description("options");
     description.add_options()
         ("help", "shows the options")
-        ("name", options::value<std::string>()->default_value("build-script"), "who to greet")
+        ("name", options::value<std::string>()->default_value("xkit"), "who to greet")
         ("times", options::value<int>()->default_value(1), "how often");
 
     options::variables_map values;

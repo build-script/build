@@ -22,7 +22,7 @@ int main(void) {
 
     const char *sql =
         "CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT);"
-        "INSERT INTO notes (text) VALUES ('build-script'), ('builds C');"
+        "INSERT INTO notes (text) VALUES ('xkit'), ('builds C');"
         "SELECT id, text FROM notes;";
 
     if (sqlite3_exec(db, sql, print_row, NULL, &error) != SQLITE_OK) {

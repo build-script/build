@@ -1,4 +1,4 @@
-// Templates of C and C++ modules for `build new` and `build add`: programs and static
+// Templates of C and C++ modules for `xkit new` and `xkit add`: programs and static
 // libraries, whose headers are in include/<name>/
 use crate::project::{ModuleTemplate, NewModule};
 
