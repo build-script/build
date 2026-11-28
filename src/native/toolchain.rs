@@ -1,5 +1,5 @@
 // The compilers of C and C++ modules: those of the system, zig, which brings clang, libc and libc++ for
-// every target in one download, or the GCC build-script keeps, for C++26 reflection
+// every target in one download, or the GCC build-script keeps, the same on every machine
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

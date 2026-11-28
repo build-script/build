@@ -114,7 +114,7 @@ What build-script does not do yet, or what is not known yet:
 - No Kotlin Multiplatform modules, only the JVM and Android variants of their libraries. No kapt: use KSP or javac annotation processors.
 - No publishing to Maven repositories.
 - C and C++ build for other targets with zig and the NDK. The ABI of MSVC builds only on Windows itself, and programs for macOS from other machines go without the frameworks of its SDK. CMake projects do not build for Android yet.
-- C++26 reflection builds only with `toolchain = "gcc"`, for this machine: on macOS, on Linux for x86_64 and aarch64, on Windows for x86_64. clangd does not know it yet.
+- `toolchain = "gcc"` builds only for this machine: on macOS, on Linux for x86_64 and aarch64, on Windows for x86_64.
 - The build language has no loops. A function that calls itself has to end with an `if` and may go at most 64 calls deep.
 - Modules that share a directory must not build at the same time: give them `--jobs 1`.
 

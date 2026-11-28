@@ -1,8 +1,8 @@
-// The GCC of toolchain = "gcc": C++26 reflection is in GCC alone so far. On Linux and Windows the packages of
-// conda-forge, which micromamba installs from a list of them with their SHA-256. On macOS it is built once from
-// its sources, with the Darwin branch Homebrew takes, against the SDK of the Command Line Tools: conda-forge builds
-// it there without libstdc++, which has <meta>. Its libstdc++ is configured for that SDK, another SDK builds it
-// again.
+// The GCC of toolchain = "gcc", which builds every C and C++ module the same on every machine, also code only GCC
+// compiles so far. On Linux and Windows the packages of conda-forge, which micromamba installs from a list of them
+// with their SHA-256. On macOS it is built once from its sources, with the Darwin branch Homebrew takes, against
+// the SDK of the Command Line Tools: conda-forge builds it there without its libstdc++, on libc++, which lacks
+// parts of the newest standard, like <meta>. Its libstdc++ is configured for that SDK, another SDK builds it again.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

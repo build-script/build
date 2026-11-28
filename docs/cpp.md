@@ -282,51 +282,20 @@ standalone = build_cpp(
 | `"auto"`    | The default: `"system"` for this machine, `"zig"` for other systems, the clang of the NDK for Android.                                                                                                                                                                                                                                                                   |
 | `"system"`  | `cc`, `c++` and `ar` of the system: Apple Clang of the Xcode Command Line Tools, gcc or clang on Linux. On Windows `clang`, `clang++` and `llvm-ar` of LLVM or of Visual Studio, with the ABI of MSVC: they link with the linker and the C library of Visual Studio, its Build Tools are enough. `CC`, `CXX` and `AR` name others, like for make. Only for this machine. |
 | `"zig"`     | [zig](https://ziglang.org) `0.17.0`, downloaded once with a checked SHA-256. It brings clang, libc and libc++, which it links into the program. vcpkg builds the ports with zig too. On Windows it builds for MinGW and needs no Visual Studio. It builds for every system but Android.                                                                                  |
-| `"gcc"`     | GCC `16.2.0`, which build-script keeps itself, for C++26 reflection. It links its runtime into the program, vcpkg builds the ports with it too. Only for this machine, see [GCC](#gcc).                                                                                                                                                                                  |
+| `"gcc"`     | GCC `16.2.0`, which build-script keeps itself, the same on every machine. It builds every C and C++ module, also code that only GCC compiles so far. It links its runtime into the program, vcpkg builds the ports with it too. Only for this machine, see [GCC](#gcc).                                                                                                  |
 
 > The system's compiler builds faster and links the system's libc++, zig is the same on every machine.
 
 ### GCC
 
-`toolchain = "gcc"` builds with GCC `16.2.0`, which build-script keeps itself, not the GCC of the system. It is there for C++26 reflection, which only GCC has so far: `cpp_standard = "c++26"` and the flag `-freflection` turn it on.
+`toolchain = "gcc"` builds with GCC `16.2.0`, which build-script keeps itself, the same on every machine, not the GCC of the system. It builds every C and C++ module like the other toolchains, also those that use C++26 reflection, which only GCC has so far.
 
 ```kotlin
 use cpp
 
-names = build_cpp(
-    "names",
-    list("fmt"),
-    directory = "names",
-    toolchain = "gcc",
-    cpp_standard = "c++26",
-    flags = list("-freflection"),
-)
-
-build_cpp(
-    "colors",
-    list(names),
-    program = true,
-    directory = "colors",
-    toolchain = "gcc",
-    cpp_standard = "c++26",
-    flags = list("-freflection"),
-)
-```
-
-```cpp
-#include <meta>
-#include <string_view>
-
-// the name of an enumerator, without a list kept by hand
-template <typename E>
-constexpr std::string_view name_of(E value) {
-    template for (constexpr auto enumerator : std::define_static_array(std::meta::enumerators_of(^^E))) {
-        if (value == [:enumerator:]) {
-            return std::meta::identifier_of(enumerator);
-        }
-    }
-    return "?";
-}
+// the library and the program that links it take the same toolchain, that GCC builds fmt too
+core = build_cpp("core", list("fmt"), directory = "core", toolchain = "gcc")
+build_cpp("app", list(core), program = true, directory = "app", toolchain = "gcc")
 ```
 
 | Machine                  | GCC comes from                                                                                                                                                                                                                                                                                                                                                                   |
@@ -335,12 +304,12 @@ constexpr std::string_view name_of(E value) {
 | Linux, x86_64 or aarch64 | The packages of conda-forge, which build-script installs with micromamba, every package checked with its SHA-256.                                                                                                                                                                                                                                                                |
 | Windows, x86_64          | The same, GCC of MinGW-w64.                                                                                                                                                                                                                                                                                                                                                      |
 
-- It builds for this machine alone. `targets` of other systems and Android take zig or the NDK with `"auto"`, which have no reflection.
+- It builds for this machine alone. `targets` of other systems and Android take zig or the NDK with `"auto"`.
 - Programs and shared libraries link the runtime of GCC inside, with `-static-libgcc -static-libstdc++`: they run without that GCC, on macOS with the libraries of the system alone. On Linux it builds against its own glibc 2.28: programs run on glibc 2.28 or newer, libraries of the system, like those of apt, do not link with it.
 - vcpkg builds the ports with the same GCC, see [Libraries from vcpkg](#libraries-from-vcpkg).
 - `build_cmake` and `system_library` have no `toolchain`: their libraries are of the compilers of the system. Their C++ libraries link into modules of GCC on Linux, where both have libstdc++, not on macOS or Windows.
 - On Windows it links with `--allow-multiple-definition`: in C++26 the headers of GCC 16 define members of `std::logic_error` and `std::runtime_error` that its static libstdc++ defines too, GCC bug 125151. The linker keeps the first definition, so a symbol defined twice in a project is no error there.
-- clangd is of clang, which has no reflection yet: it marks `^^E` and `[: :]` as errors that GCC compiles. With `--query-driver`, like `--query-driver=**/gcc/16.2.0/**`, clangd reads the headers of that GCC.
+- clangd is of clang: it marks code that only GCC compiles as errors. With `--query-driver`, like `--query-driver=**/gcc/16.2.0/**`, clangd reads the headers of that GCC.
 
 ## Other targets
 
