@@ -91,8 +91,8 @@ A newer build rebuilds the modules that use it.
 
 ## Tests
 
-`build test` compiles `src/test/java` against the module and runs it on the JUnit Platform.
-List only the test framework, build-script adds its engine:
+`xkit test` compiles `src/test/java` against the module and runs it on the JUnit Platform.
+List only the test framework, xkit adds its engine:
 
 | Framework               | Runs with                                    |
 |-------------------------|----------------------------------------------|

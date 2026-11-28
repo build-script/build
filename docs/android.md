@@ -32,7 +32,7 @@ app = build_android(
 ```
 
 `build_android` builds a signed debug apk into `build/outputs/apk/debug/<name>-debug.apk`: resources with aapt2, Kotlin and Java against `android.jar`, dex with d8, and the Java resources, assets and native libraries of the app and of all its libraries.
-`build_android_library` builds a library that apps use like an aar. `build --release` builds for release, see [Release builds](#release-builds).
+`build_android_library` builds a library that apps use like an aar. `xkit --release` builds for release, see [Release builds](#release-builds).
 
 > The debug source set (`src/debug/...`) overlays `src/main`, as with the Android Gradle plugin.
 
@@ -86,7 +86,7 @@ Only `build_android_library`:
 
 ## Release builds
 
-A release build only happens on purpose: `build --release` or `run --release`. The script only says how to build it, never whether. Tests always run against debug builds.
+A release build only happens on purpose: `xkit --release` or `run --release`. The script only says how to build it, never whether. Tests always run against debug builds.
 
 ```kotlin
 app = build_android(
@@ -103,7 +103,7 @@ app = build_android(
 ```
 
 ```bash
-ANDROID_KEYSTORE_PASSWORD=... build --release
+ANDROID_KEYSTORE_PASSWORD=... xkit --release
 ```
 
 What changes for release:
@@ -117,7 +117,7 @@ What changes for release:
 
 R8 gets its rules like with the Android Gradle plugin:
 
-1. build-script's own, like `proguard-android-optimize.txt`
+1. xkit's own, like `proguard-android-optimize.txt`
 2. those aapt2 writes for the classes the manifest and the layouts name
 3. `proguard.txt` of the aars and `consumer_proguard_files` of the library modules
 4. the rules libraries keep in their jars, in `META-INF/com.android.tools` and `META-INF/proguard`
@@ -129,9 +129,9 @@ A variable that is not set is an error.
 
 ## The SDK, devices and emulators
 
-- An Android SDK in `ANDROID_HOME` is used when it is complete. Otherwise build-script installs what it needs into its own SDK, once its license is accepted: in the terminal, or with `accept_sdk_license = true`.
+- An Android SDK in `ANDROID_HOME` is used when it is complete. Otherwise xkit installs what it needs into its own SDK, once its license is accepted: in the terminal, or with `accept_sdk_license = true`.
 - `run` installs the app with `adb` and starts its launcher activity. With several devices `ANDROID_SERIAL` picks one.
-- Without a device, build-script offers system images and sets up an emulator. `BUILD_SCRIPT_EMULATOR_ARGS` passes options to it, like `-no-window`.
+- Without a device, xkit offers system images and sets up an emulator. `XKIT_EMULATOR_ARGS` passes options to it, like `-no-window`.
 
 ## How the app is put together
 
@@ -143,14 +143,14 @@ A variable that is not set is an error.
 ## Tests
 
 - **Unit tests** in `src/test` run on the JUnit Platform like those of [Kotlin](kotlin.md#tests). They compile against `android.jar`, whose methods throw `Stub!`: tests that call Android need a fake.
-- **Instrumented tests** in `src/androidTest` run on a device. The module and its tests become one apk that instruments itself. An app keeps its application id, a library gets `<namespace>.test`. build-script uninstalls it afterwards. The tests run every time, the device is an input too.
+- **Instrumented tests** in `src/androidTest` run on a device. The module and its tests become one apk that instruments itself. An app keeps its application id, a library gets `<namespace>.test`. xkit uninstalls it afterwards. The tests run every time, the device is an input too.
 
 ```kotlin
 test_dependencies = list("junit:junit:4.13.2"),
 android_test_dependencies = list("androidx.test.ext:junit:1.3.0", "androidx.test.espresso:espresso-core:3.7.0"),
 ```
 
-> With the default runner, build-script adds `androidx.test:runner` when it is missing.
+> With the default runner, xkit adds `androidx.test:runner` when it is missing.
 
 ## Outputs
 

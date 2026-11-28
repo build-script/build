@@ -10,4 +10,4 @@
 | [cpp.md](cpp.md)           | `use c` and `use cpp`: C and C++ modules, vcpkg, CMake, toolchains, other targets, tests |
 | [plugins.md](plugins.md)   | Plugins: `use go`, `use "owner/repository"`, versions, `build_command` and `tool`        |
 
-How plugins work inside and how to write one: [build-script/plugins](https://github.com/build-script/plugins).
+How plugins work inside and how to write one: [xkit-build/plugins](https://github.com/xkit-build/plugins).

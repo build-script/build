@@ -61,10 +61,10 @@ Built-in functions and their parameters are written in lower case with underscor
 
 ## use
 
-`use` loads functions into the script. It takes a language of build-script, a plugin of the official list, a plugin of a repository, or a file of the project:
+`use` loads functions into the script. It takes a language of xkit, a plugin of the official list, a plugin of a repository, or a file of the project:
 
 ```kotlin
-use kotlin                    // a language of build-script
+use kotlin                    // a language of xkit
 use go                        // the Go plugin of the official list
 use go@1                      // its newest release 1.x
 use "someone/zig"             // a plugin from GitHub, "gitlab.com/someone/zig" from another host
@@ -87,17 +87,17 @@ A plugin is itself a script. It runs once, in a scope of its own, and the script
 | `architecture()`           | Its processor: `"aarch64"`, `"x86_64"`, `"armv7"` or `"x86"`                                    |
 | `executable(name)`         | The name of a program on that system: `name`, on Windows `name.exe`                             |
 | `target()`                 | The target the script is evaluated for, like `"linux-aarch64"`, see below                       |
-| `host_target()`            | The target of the machine build-script runs on                                                  |
-| `host_operating_system()`  | The system build-script runs on, like `operating_system()`                                      |
-| `host_architecture()`      | The processor build-script runs on                                                              |
-| `host_executable(name)`    | The name of a program on the machine build-script runs on                                       |
+| `host_target()`            | The target of the machine xkit runs on                                                          |
+| `host_operating_system()`  | The system xkit runs on, like `operating_system()`                                              |
+| `host_architecture()`      | The processor xkit runs on                                                                      |
+| `host_executable(name)`    | The name of a program on the machine xkit runs on                                               |
 | `read_file(path, default)` | The content of a file, relative to the script, `default` when it does not exist                 |
 | `match(text, pattern)`     | The first group of a regular expression in `text`, the whole match without groups, `""` without |
 | `fail(message)`            | Stops the build with this message                                                               |
 | `current_time_millis()`    | The time in milliseconds                                                                        |
 | `build_command(...)`       | Any program as a module, see [plugins.md](plugins.md#build_command)                             |
 | `tool(name, version, url)` | A program downloaded once and checked, see [plugins.md](plugins.md#tool)                        |
-| `cache_directory(name)`    | A directory in the cache of build-script for the caches of tools, like the modules of Go        |
+| `cache_directory(name)`    | A directory in the cache of xkit for the caches of tools, like the modules of Go                |
 
 `git(url, commit)` fetches only this commit and returns the directory of a plain checkout in the cache, `caches/git/checkouts/<repository>/<commit>/`, shared by all projects. Modules take it as their `directory`, and what they build stays in the project, in `build/git/<repository>/<commit>/`:
 
@@ -107,7 +107,7 @@ fmt = build_cpp("fmt", list(), directory = git("https://github.com/fmtlib/fmt", 
 
 The commit is best given as its whole hash, which is then checked. A tag like `"v1.3.1"` works too: project.lock keeps the commit it pointed to, and a tag that was moved since stops the build.
 
-A script is evaluated once for every target its modules are built for, see [cpp.md](cpp.md#other-targets): first for this machine, then for the others, like those of `targets` and the ABIs of Android apps with libraries of C and C++. `operating_system()`, `architecture()`, `executable()` and `target()` describe the target of each evaluation, the `host_` functions always the machine build-script runs on. For this machine both describe the same. Plugins download their tools with the `host_` functions, which run on this machine, see [plugins.md](plugins.md#tool).
+A script is evaluated once for every target its modules are built for, see [cpp.md](cpp.md#other-targets): first for this machine, then for the others, like those of `targets` and the ABIs of Android apps with libraries of C and C++. `operating_system()`, `architecture()`, `executable()` and `target()` describe the target of each evaluation, the `host_` functions always the machine xkit runs on. For this machine both describe the same. Plugins download their tools with the `host_` functions, which run on this machine, see [plugins.md](plugins.md#tool).
 
 The functions of a language come with its `use`, see [java.md](java.md), [kotlin.md](kotlin.md), [android.md](android.md) and [cpp.md](cpp.md).
 

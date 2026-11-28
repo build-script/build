@@ -20,8 +20,8 @@ app = build_cpp(
 )
 ```
 
-A library goes to `build/lib/lib<name>.a`, a program to `build/bin/<name>`, which `build run` starts in its module directory. On Windows they are `build/lib/<name>.lib` and `build/bin/<name>.exe`. For other systems a module builds into `build/<target>/`, see [Other targets](#other-targets). A script with C and C++ modules has both `use` lines.
-`build --release` builds with `-O2`, other builds with `-O0 -g`.
+A library goes to `build/lib/lib<name>.a`, a program to `build/bin/<name>`, which `xkit run` starts in its module directory. On Windows they are `build/lib/<name>.lib` and `build/bin/<name>.exe`. For other systems a module builds into `build/<target>/`, see [Other targets](#other-targets). A script with C and C++ modules has both `use` lines.
+`xkit --release` builds with `-O2`, other builds with `-O0 -g`.
 
 ## Parameters
 
@@ -106,11 +106,11 @@ build_c(
 ## New projects
 
 ```bash
-build new cpp hello            # hello/project.build and hello/src/main.cpp
+xkit new cpp hello            # hello/project.build and hello/src/main.cpp
 cd hello
-build add cpp-library greet    # greet/include/greet/greeting.hpp and greet/src/greeting.cpp
-build install fmt              # "fmt" in the dependencies of hello
-build install doctest --test --module greet
+xkit add cpp-library greet    # greet/include/greet/greeting.hpp and greet/src/greeting.cpp
+xkit install fmt              # "fmt" in the dependencies of hello
+xkit install doctest --test --module greet
 ```
 
 `c` and `c-app`, `c-library` do the same in C. See [commands.md](commands.md#new-and-add).
@@ -126,7 +126,7 @@ build install doctest --test --module greet
 
 With `shared = true` a library becomes `build/lib/lib<name>.dylib`, on Linux `.so`, with what it needs inside. A program, a shared library and the tests that load shared libraries of other modules get them copied into their own `build/lib` and find them relative to themselves, by `@loader_path` or `$ORIGIN`: a `build/` directory runs wherever it is copied. Kotlin and Java modules take it among their `dependencies` and load it with `System.loadLibrary`: `run` and the tests start Java with its directory in `java.library.path`.
 
-On Windows it is `build/bin/<name>.dll`, next to the programs that load it, and `build/lib/<name>.lib` links it. Windows exports only what `__declspec(dllexport)` marks, so build-script exports every function and variable of the library's own objects through a `.def` file, like `WINDOWS_EXPORT_ALL_SYMBOLS` of CMake. Programs reach its variables only through `__declspec(dllimport)`.
+On Windows it is `build/bin/<name>.dll`, next to the programs that load it, and `build/lib/<name>.lib` links it. Windows exports only what `__declspec(dllexport)` marks, so xkit exports every function and variable of the library's own objects through a `.def` file, like `WINDOWS_EXPORT_ALL_SYMBOLS` of CMake. Programs reach its variables only through `__declspec(dllimport)`.
 
 ```kotlin
 use cpp
@@ -144,7 +144,7 @@ build_kotlin("app", list(greeter), repositories, main_class = "com.example.MainK
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_NativeKt_greet(JNIEnv *env, jclass, jstring name) { ... }
 ```
 
-A library with [targets](#other-targets) goes into the jars of the Kotlin and Java modules depending on it, for each of its targets but those of Android: `META-INF/native/<target>/` with `lib<name>.so`, `lib<name>.dylib` or `<name>.dll`, also in the fat jar. build-script brings no loader: a program that runs from the jar alone copies the one of its system out of the jar and loads it with `System.load`. `run` and the tests load the one of this machine from `java.library.path`. A library without `targets` stays outside the jar.
+A library with [targets](#other-targets) goes into the jars of the Kotlin and Java modules depending on it, for each of its targets but those of Android: `META-INF/native/<target>/` with `lib<name>.so`, `lib<name>.dylib` or `<name>.dll`, also in the fat jar. xkit brings no loader: a program that runs from the jar alone copies the one of its system out of the jar and loads it with `System.load`. `run` and the tests load the one of this machine from `java.library.path`. A library without `targets` stays outside the jar.
 
 ```kotlin
 // in the jar for three systems, run and the tests take the one of this machine
@@ -165,12 +165,12 @@ build_android("app", "com.example.app", list(greeter, ...), repositories, target
 
 - Its vcpkg ports, the libraries it links and its commands are built for the ABI too. vcpkg builds the ports with the NDK, at the API level of the apps and with the static libc++, as triplets like `ndk-android-aarch64-24`.
 - It links `liblog`, for `__android_log_print`.
-- The API level is the lowest `min_sdk` of the apps that pack it. The NDK is the `ndk_version` of that app, of `ANDROID_HOME`, else build-script installs it next to its Android SDK, once its license is accepted, like with `accept_sdk_license` of the app.
+- The API level is the lowest `min_sdk` of the apps that pack it. The NDK is the `ndk_version` of that app, of `ANDROID_HOME`, else xkit installs it next to its Android SDK, once its license is accepted, like with `accept_sdk_license` of the app.
 - A library with `targets` of its own is packed for the ABIs both name. When its targets leave out this machine, it is not built for this machine either.
 
 ## Generated headers
 
-Many CMake projects generate headers into the build: `configure_file` fills templates like `config.h.in`, `generate_export_header` writes the macros that mark what a library exports. build-script writes both into `build/generated/`, which the module and the modules depending on it see.
+Many CMake projects generate headers into the build: `configure_file` fills templates like `config.h.in`, `generate_export_header` writes the macros that mark what a library exports. xkit writes both into `build/generated/`, which the module and the modules depending on it see.
 
 ```kotlin
 cmark = build_cpp(
@@ -265,7 +265,7 @@ standalone = build_cpp(
 
 ## Libraries from vcpkg
 
-- Strings in `dependencies` are [vcpkg ports](https://vcpkg.io/en/packages). build-script installs vcpkg at the release `2026.10.16`, which pins every port to one version, and builds a port once: then it comes from the cache.
+- Strings in `dependencies` are [vcpkg ports](https://vcpkg.io/en/packages). xkit installs vcpkg at the release `2026.10.16`, which pins every port to one version, and builds a port once: then it comes from the cache.
 - Features of a port go in brackets: `"llvm[clang,lld]"`, `"sqlite3[fts5]"`. `install` checks that the port has them.
 - The flags come from the pkg-config files of the ports, like `-DSPDLOG_FMT_EXTERNAL` and `-lfmt`, with their private libraries like `pkg-config --static`: the ports are static libraries. Packages vcpkg did not install, like the `x11` that `glfw3` requires on Linux, come from the `pkg-config` of the system. Ports without a pkg-config file bring their include directory and their libraries.
 - Modules install their ports one after another, because vcpkg gives up waiting for its lock.
@@ -282,13 +282,13 @@ standalone = build_cpp(
 | `"auto"`    | The default: `"system"` for this machine, `"zig"` for other systems, the clang of the NDK for Android.                                                                                                                                                                                                                                                                   |
 | `"system"`  | `cc`, `c++` and `ar` of the system: Apple Clang of the Xcode Command Line Tools, gcc or clang on Linux. On Windows `clang`, `clang++` and `llvm-ar` of LLVM or of Visual Studio, with the ABI of MSVC: they link with the linker and the C library of Visual Studio, its Build Tools are enough. `CC`, `CXX` and `AR` name others, like for make. Only for this machine. |
 | `"zig"`     | [zig](https://ziglang.org) `0.17.0`, downloaded once with a checked SHA-256. It brings clang, libc and libc++, which it links into the program. vcpkg builds the ports with zig too. On Windows it builds for MinGW and needs no Visual Studio. It builds for every system but Android.                                                                                  |
-| `"gcc"`     | GCC `16.2.0`, which build-script keeps itself, the same on every machine. It builds every C and C++ module, also code that only GCC compiles so far. It links its runtime into the program, vcpkg builds the ports with it too. Only for this machine, see [GCC](#gcc).                                                                                                  |
+| `"gcc"`     | GCC `16.2.0`, which xkit keeps itself, the same on every machine. It builds every C and C++ module, also code that only GCC compiles so far. It links its runtime into the program, vcpkg builds the ports with it too. Only for this machine, see [GCC](#gcc).                                                                                                          |
 
 > The system's compiler builds faster and links the system's libc++, zig is the same on every machine.
 
 ### GCC
 
-`toolchain = "gcc"` builds with GCC `16.2.0`, which build-script keeps itself, the same on every machine, not the GCC of the system. It builds every C and C++ module like the other toolchains, also those that use C++26 reflection, which only GCC has so far.
+`toolchain = "gcc"` builds with GCC `16.2.0`, which xkit keeps itself, the same on every machine, not the GCC of the system. It builds every C and C++ module like the other toolchains, also those that use C++26 reflection, which only GCC has so far.
 
 ```kotlin
 use cpp
@@ -298,11 +298,11 @@ core = build_cpp("core", list("fmt"), directory = "core", toolchain = "gcc")
 build_cpp("app", list(core), program = true, directory = "app", toolchain = "gcc")
 ```
 
-| Machine                  | GCC comes from                                                                                                                                                                                                                                                                                                                                                                   |
-|--------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| macOS                    | Its sources, with the Darwin patch that Homebrew takes too, built once against the SDK of the Command Line Tools, in about ten minutes, into `gcc/16.2.0/macos-<arch>-sdk-<version>/` of the data directory, like `~/.build-script`, see [Where downloads go](commands.md#where-downloads-go). Another SDK, like after an update of the Command Line Tools, builds it once more. |
-| Linux, x86_64 or aarch64 | The packages of conda-forge, which build-script installs with micromamba, every package checked with its SHA-256.                                                                                                                                                                                                                                                                |
-| Windows, x86_64          | The same, GCC of MinGW-w64.                                                                                                                                                                                                                                                                                                                                                      |
+| Machine                  | GCC comes from                                                                                                                                                                                                                                                                                                                                                           |
+|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| macOS                    | Its sources, with the Darwin patch that Homebrew takes too, built once against the SDK of the Command Line Tools, in about ten minutes, into `gcc/16.2.0/macos-<arch>-sdk-<version>/` of the data directory, like `~/.xkit`, see [Where downloads go](commands.md#where-downloads-go). Another SDK, like after an update of the Command Line Tools, builds it once more. |
+| Linux, x86_64 or aarch64 | The packages of conda-forge, which xkit installs with micromamba, every package checked with its SHA-256.                                                                                                                                                                                                                                                                |
+| Windows, x86_64          | The same, GCC of MinGW-w64.                                                                                                                                                                                                                                                                                                                                              |
 
 - It builds for this machine alone. `targets` of other systems and Android take zig or the NDK with `"auto"`.
 - Programs and shared libraries link the runtime of GCC inside, with `-static-libgcc -static-libstdc++`: they run without that GCC, on macOS with the libraries of the system alone. On Linux it builds against its own glibc 2.28: programs run on glibc 2.28 or newer, libraries of the system, like those of apt, do not link with it.
@@ -313,7 +313,7 @@ build_cpp("app", list(core), program = true, directory = "app", toolchain = "gcc
 
 ## Other targets
 
-`targets` builds a module for other systems and processors, each into `build/<target>/`, inside like `build/`. The target of this machine builds into `build/` itself. A plain `build` builds them all, on every machine:
+`targets` builds a module for other systems and processors, each into `build/<target>/`, inside like `build/`. The target of this machine builds into `build/` itself. A plain `xkit` builds them all, on every machine:
 
 ```kotlin
 use cpp
@@ -342,12 +342,12 @@ tool = build_cpp(
 - A module without `targets` is built for this machine. When only modules for other targets need it, like a library they link, it is built for their targets and not for this machine.
 - `host_target()` names this machine: `targets = list(host_target(), "linux-aarch64")` builds for both.
 - The modules a module depends on are built for its target too: `tool` for `linux-aarch64` links `core` for `linux-aarch64`.
-- `build --target <name>` builds for that target instead of those the script names, every module that has targets or is built for this machine. It may be given several times, like for a matrix in CI.
+- `xkit --target <name>` builds for that target instead of those the script names, every module that has targets or is built for this machine. It may be given several times, like for a matrix in CI.
 - Jars and Android apps are built once, for every target. Android apps name their ABIs with `targets`, see [Shared libraries and JNI](#shared-libraries-and-jni).
 - The script is evaluated once for every target. `operating_system()`, `architecture()` and `executable(name)` describe the target, `target()` names it, `host_operating_system()` and the other `host_` functions describe this machine, see [language.md](language.md#functions-every-script-has). So `if operating_system() == "windows"` holds for the build for Windows.
 - Every log line names the target: `[tool linux-aarch64] Compiling 2 C/C++ file(s)`. An error starts with it: `project.build:7:9 [linux-aarch64]: ...`.
 
-With `toolchain = "auto"`, the default, other systems build with zig and Android with the clang of the NDK, `"system"` and `"gcc"` build only for this machine. zig builds programs for Windows with the ABI of MinGW. From other machines, programs for macOS build without the frameworks of the macOS SDK, like Cocoa. `jni = true` takes `jni.h` of the JDK and a `jni_md.h` of the target, which build-script writes into its cache when the JDK has none for that system.
+With `toolchain = "auto"`, the default, other systems build with zig and Android with the clang of the NDK, `"system"` and `"gcc"` build only for this machine. zig builds programs for Windows with the ABI of MinGW. From other machines, programs for macOS build without the frameworks of the macOS SDK, like Cocoa. `jni = true` takes `jni.h` of the JDK and a `jni_md.h` of the target, which xkit writes into its cache when the JDK has none for that system.
 
 vcpkg ports build for other systems with zig too, on macOS and Linux, and for Android with the NDK. [CMake projects](#cmake-projects) build for other systems with zig, not yet for Android. Not for other targets:
 
@@ -357,12 +357,12 @@ vcpkg ports build for other systems with zig too, on macOS and Linux, and for An
 
 ### Programs of other targets
 
-`build run --target <name>` and `build test --target <name>` build for that target and start its program or its tests. This machine starts them itself where it can: the programs of its own target, those of `macos-x86_64` on Apple silicon with Rosetta, of `windows-x86_64` on Windows on ARM, and of Linux for its processor, those of musl too. The others start through the runner the setting `runner.<target>` names: the program and its arguments come after it, `{directory}` in it is the module directory.
+`xkit run --target <name>` and `xkit test --target <name>` build for that target and start its program or its tests. This machine starts them itself where it can: the programs of its own target, those of `macos-x86_64` on Apple silicon with Rosetta, of `windows-x86_64` on Windows on ARM, and of Linux for its processor, those of musl too. The others start through the runner the setting `runner.<target>` names: the program and its arguments come after it, `{directory}` in it is the module directory.
 
 ```bash
-build config runner.linux-aarch64 'qemu-aarch64 -L /usr/aarch64-linux-gnu'
-build config runner.windows-x86_64 wine
-build config runner.linux-aarch64 'docker run --rm --platform linux/arm64 -v {directory}:{directory} -w {directory} debian'
+xkit config runner.linux-aarch64 'qemu-aarch64 -L /usr/aarch64-linux-gnu'
+xkit config runner.windows-x86_64 wine
+xkit config runner.linux-aarch64 'docker run --rm --platform linux/arm64 -v {directory}:{directory} -w {directory} debian'
 ```
 
 - `run` and `test` take one `--target`.
@@ -376,7 +376,7 @@ Every source compiles on its own, at the same time as the others. A source compi
 
 ## Precompiled headers
 
-Headers every source includes, like those of the standard library, of Boost or of fmt, often take the compiler longer than the sources themselves. `precompiled_headers` names them: build-script translates them once, before the sources, and every source takes the result before its first line.
+Headers every source includes, like those of the standard library, of Boost or of fmt, often take the compiler longer than the sources themselves. `precompiled_headers` names them: xkit translates them once, before the sources, and every source takes the result before its first line.
 
 ```kotlin
 build_cpp(
@@ -399,7 +399,7 @@ build_cpp(
 
 ## Tests
 
-`build test` compiles the files of `test_sources`, `test/**` by default, into the program `build/bin/<name>-test`, with the library, or with everything of a program but the source with `int main(`.
+`xkit test` compiles the files of `test_sources`, `test/**` by default, into the program `build/bin/<name>-test`, with the library, or with everything of a program but the source with `int main(`.
 The tests see the headers of the module and those next to them, in the directories of their patterns.
 
 | In `test_dependencies` | Runs with  |
@@ -412,7 +412,7 @@ The tests see the headers of the module and those next to them, in the directori
 - The frameworks write JUnit reports into `build/test-results`, the summary counts their test cases: disabled tests of GoogleTest count as skipped. With another framework the exit code of the test program decides.
 - Tests whose program did not change since they passed do not run again.
 - A test program that runs longer than `test_timeout` seconds is stopped and fails, the other tests still run.
-- Arguments after `build test --` go to every test program, after `test_arguments`: `build test --module parser -- --gtest_filter=Lexer.*`.
+- Arguments after `xkit test --` go to every test program, after `test_arguments`: `xkit test --module parser -- --gtest_filter=Lexer.*`.
 
 Many projects build a program per test, whose tests define the same helpers or change the locale for the others. `test_programs` names those test sources: each becomes `build/bin/<name>-<file>`, with the other test sources, like a shared `main()`.
 

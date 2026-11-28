@@ -1,24 +1,24 @@
 # Commands
 
-| Command                                                                                                                                      | What it does                                                                    |
-|----------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
-| `build [<script>]`                                                                                                                           | Builds every module. Modules that did not change are up to date.                |
-| `build run [--module <name>] [<script>] [-- <args>...]`                                                                                      | Builds, then starts a module. Arguments after `--` go to the program.           |
-| `build test [--module <name>] [<script>] [-- <args>...]`                                                                                     | Builds, then runs the tests of every module, or of one, and sums them up.       |
-| `build idea [<script>]`                                                                                                                      | Builds and sets the project up for IntelliJ, see [IntelliJ](#intellij).         |
-| `build new <kind> <path> [--package <package>]`                                                                                              | Creates a project in a new directory.                                           |
-| `build add <kind> <name> [<script>] [--package <package>]`                                                                                   | Adds a module next to the script and its build call to the script.              |
-| `build install <group:artifact[:version]> [<script>] [--module <name>] [--compile-only \| --test \| --android-test \| --processor \| --ksp]` | Adds a Maven library to a module, or a vcpkg port to a C or C++ module.         |
-| `build clean [<script>]`, `clean --cache`                                                                                                    | Removes the build directories build-script wrote, `--cache` also the downloads. |
-| `build config [<setting> [<value>]]`, `config --unset <setting>`                                                                             | Shows the settings, shows one, sets one or removes one.                         |
-| `build plugins`                                                                                                                              | Lists the official plugins and their templates.                                 |
-| `build --help`                                                                                                                               | Shows the commands.                                                             |
-| `build --version`                                                                                                                            | Shows the version of build-script.                                              |
-| `build <command> --help`, `help <command>`                                                                                                   | Shows the usage of a command and what its arguments may be.                     |
+| Command                                                                                                                                     | What it does                                                              |
+|---------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
+| `xkit [<script>]`                                                                                                                           | Builds every module. Modules that did not change are up to date.          |
+| `xkit run [--module <name>] [<script>] [-- <args>...]`                                                                                      | Builds, then starts a module. Arguments after `--` go to the program.     |
+| `xkit test [--module <name>] [<script>] [-- <args>...]`                                                                                     | Builds, then runs the tests of every module, or of one, and sums them up. |
+| `xkit idea [<script>]`                                                                                                                      | Builds and sets the project up for IntelliJ, see [IntelliJ](#intellij).   |
+| `xkit new <kind> <path> [--package <package>]`                                                                                              | Creates a project in a new directory.                                     |
+| `xkit add <kind> <name> [<script>] [--package <package>]`                                                                                   | Adds a module next to the script and its build call to the script.        |
+| `xkit install <group:artifact[:version]> [<script>] [--module <name>] [--compile-only \| --test \| --android-test \| --processor \| --ksp]` | Adds a Maven library to a module, or a vcpkg port to a C or C++ module.   |
+| `xkit clean [<script>]`, `clean --cache`                                                                                                    | Removes the build directories xkit wrote, `--cache` also the downloads.   |
+| `xkit config [<setting> [<value>]]`, `config --unset <setting>`                                                                             | Shows the settings, shows one, sets one or removes one.                   |
+| `xkit plugins`                                                                                                                              | Lists the official plugins and their templates.                           |
+| `xkit --help`                                                                                                                               | Shows the commands.                                                       |
+| `xkit --version`                                                                                                                            | Shows the version of xkit.                                                |
+| `xkit <command> --help`, `help <command>`                                                                                                   | Shows the usage of a command and what its arguments may be.               |
 
 > Without a script, the commands use `project.build` in the current directory.
 
-> In a terminal the log is colored: the modules in orange, the tools build-script brings, like the JDK or vcpkg, in yellow, failed tests in red.
+> In a terminal the log is colored: the modules in orange, the tools xkit brings, like the JDK or vcpkg, in yellow, failed tests in red.
 > `NO_COLOR=1` turns the colors off, and output into a file or a pipe has none.
 
 > In a terminal, `new`, `add`, `install` and `config --unset` ask for what is missing. A kind or setting is picked from a list: typing filters it
@@ -48,33 +48,33 @@
 
 ## Up to date
 
-Every module keeps a fingerprint of its inputs in `build/fingerprints/`: the arguments of its build call, the JDK, its sources and resources, what the modules it depends on built, the builds of its SNAPSHOT libraries, and build-script itself.
+Every module keeps a fingerprint of its inputs in `build/fingerprints/`: the arguments of its build call, the JDK, its sources and resources, what the modules it depends on built, the builds of its SNAPSHOT libraries, and xkit itself.
 When none of it changed and the outputs exist, the module is not built again. A build that fails half way never counts as up to date.
 
 ## IntelliJ
 
-`build idea` builds and sets the project up for IntelliJ: a module file per module in `.idea/modules/`, and `.idea/modules.xml`, which lists them. Then open the script's directory in IntelliJ.
+`xkit idea` builds and sets the project up for IntelliJ: a module file per module in `.idea/modules/`, and `.idea/modules.xml`, which lists them. Then open the script's directory in IntelliJ.
 
 - From then on, every `build`, `run` and `test` keeps the files current. A module writes its file once its libraries are resolved, before it compiles: a new library shows up in IntelliJ even while the code does not compile yet.
 - Only files that changed are written, because IntelliJ reloads every file that changes.
 - A module file has the sources, resources and tests, the sources generated by KSP, javac processors and Android, the modules and libraries with their scopes, and the Kotlin compiler plugins, like Compose.
 - After a successful build, the files of modules that are gone from the script are deleted. The script's directory gets a module of its own when no module lives in it.
-- IntelliJ keeps its JDKs outside the project, by name. A JDK that build-script installed is named the way IntelliJ names it, like `temurin-21`. If IntelliJ does not know it yet, add it once under *Project Structure > SDKs* with that name.
+- IntelliJ keeps its JDKs outside the project, by name. A JDK that xkit installed is named the way IntelliJ names it, like `temurin-21`. If IntelliJ does not know it yet, add it once under *Project Structure > SDKs* with that name.
 - Release builds leave the files as they are, they describe the debug build.
-- build-script only writes `.idea/modules.xml` and `.idea/modules/`, IntelliJ's own files stay untouched.
+- xkit only writes `.idea/modules.xml` and `.idea/modules/`, IntelliJ's own files stay untouched.
 - To IntelliJ, Android modules are Kotlin modules with `android.jar`: completion and navigation work, layout previews do not.
 
 ## new and add
 
 ```bash
-build new kotlin hello          # hello/project.build and hello/src/main/kotlin/...
-cd hello && build run           # Hello from hello
+xkit new kotlin hello          # hello/project.build and hello/src/main/kotlin/...
+cd hello && xkit run           # Hello from hello
 
-build new workspace shop        # shop/project.build without modules
+xkit new workspace shop        # shop/project.build without modules
 cd shop
-build add kotlin-library payments
-build add android-app shop-android
-build add go api                # a module of the Go plugin, next to the others
+xkit add kotlin-library payments
+xkit add android-app shop-android
+xkit add go api                # a module of the Go plugin, next to the others
 ```
 
 | Project kind | What `new` creates                                                            |
@@ -95,9 +95,9 @@ build add go api                # a module of the Go plugin, next to the others
 | `c-app`, `c-library`             | `build_c`, the same in C                                                                      |
 | a plugin                         | the build function of the plugin's template, like `build_go`                                  |
 
-- Without a kind, in a terminal, `new` and `add` offer a list: the kinds of build-script and the templates of the official plugins, each with a short description. Without network, the list shows the kinds of build-script and a note that the plugins could not be listed.
+- Without a kind, in a terminal, `new` and `add` offer a list: the kinds of xkit and the templates of the official plugins, each with a short description. Without network, the list shows the kinds of xkit and a note that the plugins could not be listed.
 - After `new workspace`, a terminal asks whether to add a first module, and then continues like `add`.
-- A plugin's template comes from the release that `project.lock` keeps, or from its newest release, which then goes into the lock: `add` uses the same release as the modules already there. `go:cli` picks the template `cli`, without one the plugin's `app` is taken. `build plugins` lists the templates.
+- A plugin's template comes from the release that `project.lock` keeps, or from its newest release, which then goes into the lock: `add` uses the same release as the modules already there. `go:cli` picks the template `cli`, without one the plugin's `app` is taken. `xkit plugins` lists the templates.
 - C and C++ modules have no packages, so `new` and `add` do not ask for a domain then. A plugin's template asks only when it uses the domain, like the `go.mod` of the Go plugin.
 - Packages start with your domain, reversed: `mvmo.dev` gives `dev.mvmo.<project>`, and a module in its own directory `dev.mvmo.<project>.<module>`. `--package` sets the whole package.
 - Without a remembered domain, `new` and `add` ask for it and offer to remember it: `y` remembers it, `n` asks again next time, `never` stops offering. Without a terminal, like in CI, they use `example.com`.
@@ -109,9 +109,9 @@ build add go api                # a module of the Go plugin, next to the others
 `install` adds a Maven library to a module, like `cargo add`:
 
 ```bash
-build install com.google.code.gson:gson            # the newest release
-build install com.google.code.gson:gson:2.10.1     # this version, replacing another one
-build install org.spigotmc:spigot-api --compile-only --module plugin
+xkit install com.google.code.gson:gson            # the newest release
+xkit install com.google.code.gson:gson:2.10.1     # this version, replacing another one
+xkit install org.spigotmc:spigot-api --compile-only --module plugin
 ```
 
 - Without a version, it takes the newest final version in the module's repositories. When there are only milestones, release candidates or SNAPSHOTs, it takes the newest of those and says so.
@@ -125,11 +125,11 @@ build install org.spigotmc:spigot-api --compile-only --module plugin
 
 - The script changes only where it has to. The library goes to the end of the `list(...)`, in the style of the list. A list in a variable is changed where the variable is assigned. A missing argument is added to the build call. Another version of the same library is replaced.
 - A library that is in none of the module's repositories needs its repository in the script first, as `maven(url)`.
-- For C and C++ modules, `install` adds vcpkg ports, like `build install fmt` or `install doctest --test`. A port is added once vcpkg knows it, without a version: the vcpkg release pins every port to one.
+- For C and C++ modules, `install` adds vcpkg ports, like `xkit install fmt` or `install doctest --test`. A port is added once vcpkg knows it, without a version: the vcpkg release pins every port to one.
 
 ## clean
 
-`clean` removes the build directories below the script's directory that build-script wrote, those with `fingerprints/` in them. Build directories of other tools and the downloads stay, and so do files that git tracks in a build directory: some repositories keep scripts in `build/`.
+`clean` removes the build directories below the script's directory that xkit wrote, those with `fingerprints/` in them. Build directories of other tools and the downloads stay, and so do files that git tracks in a build directory: some repositories keep scripts in `build/`.
 
 `clean --cache` removes the downloads of Maven, git and vcpkg, the caches of plugins and what was made of them, and the next build downloads them again. The JDKs, SDKs, toolchains and tools stay.
 Files that a stopped build left behind are removed by themselves once they have not changed for an hour.
@@ -164,18 +164,18 @@ The settings are in the file `settings` next to the downloads, one `name = value
 | `runner.<target>` | What starts the programs of a target this machine does not run itself, see [cpp.md](cpp.md#programs-of-other-targets) |
 
 ```bash
-build config domain mvmo.dev                                         # remembers the domain
-build config --unset remember_domain                                 # offers to remember it again
-build config mirror.https://dl.google.com/go/ https://mirror.example.com/go/
-build config runner.linux-aarch64 'qemu-aarch64 -L /usr/aarch64-linux-gnu'
+xkit config domain mvmo.dev                                         # remembers the domain
+xkit config --unset remember_domain                                 # offers to remember it again
+xkit config mirror.https://dl.google.com/go/ https://mirror.example.com/go/
+xkit config runner.linux-aarch64 'qemu-aarch64 -L /usr/aarch64-linux-gnu'
 ```
 
 ## Where downloads go
 
-Everything build-script downloads is shared by all projects.
+Everything xkit downloads is shared by all projects.
 
-| Variable                                             | Effect                                                                                                                                                                                                                      |
-|------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `BUILD_SCRIPT_HOME`                                  | One directory for everything, with the caches in `caches/` below it, like `~/.gradle`                                                                                                                                       |
-| `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` | Without `BUILD_SCRIPT_HOME`: JDKs, SDK, emulators and tools in `$XDG_DATA_HOME/build-script`, Maven artifacts, git checkouts and plugins in `$XDG_CACHE_HOME/build-script`, the settings in `$XDG_CONFIG_HOME/build-script` |
-| neither                                              | `~/.build-script`, with the caches in `~/.build-script/caches`                                                                                                                                                              |
+| Variable                                             | Effect                                                                                                                                                                                      |
+|------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `XKIT_HOME`                                          | One directory for everything, with the caches in `caches/` below it, like `~/.gradle`                                                                                                       |
+| `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` | Without `XKIT_HOME`: JDKs, SDK, emulators and tools in `$XDG_DATA_HOME/xkit`, Maven artifacts, git checkouts and plugins in `$XDG_CACHE_HOME/xkit`, the settings in `$XDG_CONFIG_HOME/xkit` |
+| neither                                              | `~/.xkit`, with the caches in `~/.xkit/caches`                                                                                                                                              |
